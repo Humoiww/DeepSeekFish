@@ -6,7 +6,7 @@
 
 ## 已验证
 
-离线测试 36 项，覆盖：
+离线测试 38 项，覆盖：
 
 - 普通消息零模型调用、归并后回复、消息去重、自回声、群白名单和群上下文隔离。
 - SocialGate 兴趣/话题变化/活跃窗口、持久冷却、每日插话上限。
@@ -21,6 +21,7 @@
 - Mock PNG 的真实 chunk CRC 校验；损坏图片明确拒绝；CodexImageProvider 明确返回 unsupported。
 - 命令行 Codex 生图的本机审核/登录前置、原生完成事件约束、实际 PNG/路径/CRC/大小校验、拒绝私密路径与软链接、空原生保护目录兼容，以及额外文件整批拒绝。
 - WebUI 的独立会话、受限文本文件操作、DeepSeek 官方 Function Calling 与 tool_call_id 回传、每轮用量结算、工具白名单/循环限制、取消和并发、跨会话路径/链接/大小/数量拒绝、本机鉴权/一次性 bootstrap 重放拒绝、下载安全头、Codex 待审与 QQ 恢复时的跨入口额度保留。
+- 鲸酱共用人设、固定外观与不扩权指引；自画像参考图分发、缺图拒绝、原生输入图哈希匹配和普通生图不附加人设。
 
 Mock CLI demo 已实际运行，得到 Mock 聊天、独立任务目录、result.txt 清单、Mock 搜索来源与 Mock PNG。实际文件可在 runtime/outputs 下查看。常驻 Mock 的启动、消息、状态、停止和再次启动也已通过 scripts/smoke-mock.mjs 实测，结果保存在 runtime/cli-smoke.json。测试和 demo 不访问真实 QQ 或模型服务。
 

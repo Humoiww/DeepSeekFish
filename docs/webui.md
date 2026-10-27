@@ -12,6 +12,8 @@
 
 模型默认 `deepseek-flash`。采用[官方非思考模式 Function Calling](https://api-docs.deepseek.com/guides/tool_calls/)的 assistant.tool_calls → tool.tool_call_id → assistant 循环；请求固定发往 `https://api.deepseek.com/chat/completions`，禁止重定向和自定义内网 endpoint。不依赖 OpenAI SDK，不额外引入前端构建链。主模型每轮非流式返回；浏览器通过 NDJSON 实时显示请求阶段、工具结果和最终文字，**不是 token 级输出流**。
 
+默认人设是鲸酱，昵称“小鱼”，共用 `prompts/whalechan-rp.txt` 的简短 RP。服务器把固定外观文字加入 system prompt；不会把设定图的像素逐轮发给 DeepSeek，也不声称纯文本对话已经看过图片。用户原图保存在本机 runtime/character；获准的 Codex CLI 自画像流程才附上真实参考图，缺图或原生事件未记录使用该图时失败。人设不启用 WebUI 生图、不增加工具或审批权限。来源与许可见 [人设说明](../prompts/README.md)。
+
 每个会话有独立服务器端上下文，只发送最近 3 个完整成功回合、合计约 24 KiB 的历史；不接受浏览器提交伪造 system/tool 历史。失败或取消的未完成工具链不加入后续上下文。最多 50 个会话、每会话 100 条用户消息；达到上限时需要本机维护数据库。当前未提供永久删除/重命名会话界面，历史与文件不会自动长期归档。
 
 ## 工具与权限

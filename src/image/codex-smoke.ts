@@ -9,6 +9,7 @@ import { Ledger } from '../budget/ledger.js';
 import { AppServerRunner, type CodexImageItem } from '../codex/runner.js';
 import { collectArtifacts, type Artifact } from '../codex/artifacts.js';
 import { verifyPng } from './provider.js';
+import { prepareCharacterPortrait,verifyCharacterReference,type CharacterReference } from './character-reference.js';
 
 /** Accept only a native imageGeneration completion, never an agent's claimed path.
  * CODEX_HOME/generated_images is a trusted harness output, not model filesystem access. */
@@ -58,21 +59,25 @@ export async function codexImageSmoke(root:string,prompt:string,reviewed:boolean
   const report:ImageSmokeReport={ok:false,id,source:'codex-app-server',elapsedMs:0};
   let store:Store|undefined,ledger:Ledger|undefined,codexReservation:string|undefined,imageReservation:string|undefined;
   let stopUnconfirmed=false;
+  let reference:CharacterReference|undefined;
   const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
   const cancelled=()=>controller.abort();
   process.once('SIGINT',cancelled);process.once('SIGTERM',cancelled);
   try{
     if(!fs.existsSync(safePath(root,'runtime/codex-home/auth.json')))throw new FishError('CODEX_PROJECT_LOGIN_REQUIRED');
     const cfg=loadConfig(root),cwd=makeDir(root,'runtime/workspace/'+id);
+    const prepared=prepareCharacterPortrait(root,cwd,prompt);reference=prepared.reference;
     store=new Store(root);ledger=new Ledger(store,()=>cfg);
     // Same live ledger as QQ: no hidden second allowance for the smoke test.
     codexReservation=ledger.reserve('codex','local-cli','local-human',0,0,cfg.codexTimeoutMs);
     imageReservation=ledger.reserve('image','local-cli','local-human');
     timer=setTimeout(cancelled,cfg.codexTimeoutMs);
-    const result=await new AppServerRunner(root).generateImage(cwd,prompt,controller.signal);
+    const result=await new AppServerRunner(root).generateImage(cwd,prepared.prompt,controller.signal,reference?.path);
     controller.signal.throwIfAborted();
     report.nativeImageCompletions=result.images.length;
+    if(reference)verifyCharacterReference(result.images,reference);
     captureCodexImage(root,cwd,result.images,cfg.maxArtifactBytes);
+    if(reference){fs.rmSync(reference.path,{force:true});reference=undefined;}
     // App-server has already stopped. Publish precisely one verified image.
     const manifest=publishCodexImage(root,id,cfg.maxArtifactBytes);
     report.ok=true;report.manifest=manifest;report.outputDir=safePath(root,'runtime/outputs/'+id);
@@ -82,6 +87,7 @@ export async function codexImageSmoke(root:string,prompt:string,reviewed:boolean
     if(ledger)ledger.error();
   }finally{
     if(timer)clearTimeout(timer);
+    if(reference&&!stopUnconfirmed)fs.rmSync(reference.path,{force:true});
     process.removeListener('SIGINT',cancelled);process.removeListener('SIGTERM',cancelled);
     if(codexReservation&&!stopUnconfirmed)ledger!.settle(codexReservation,undefined,Date.now()-started);
     if(imageReservation)ledger!.settle(imageReservation);

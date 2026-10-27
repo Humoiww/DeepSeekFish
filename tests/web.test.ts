@@ -42,6 +42,7 @@ test('DeepSeek sends real tool wire format, settles each request, and never expo
   let calls=0;const payloads:any[]=[];
   const http=(async(url:any,opts:any)=>{calls++;assert.equal(url,'https://api.deepseek.com/chat/completions');assert.equal(opts.redirect,'error');assert.equal(opts.headers.authorization,'Bearer fixture-key');
     const p=JSON.parse(opts.body);payloads.push(p);assert.equal(p.thinking.type,'disabled');
+    assert.match(p.messages[0].content,/鲸酱/);assert.match(p.messages[0].content,/白米饭/);assert.match(p.messages[0].content,/鲸鳍耳/);
     return calls===1?reply({content:'',tool_calls:[call('c1','write_file',{path:'plan.md',content:'a useful plan'})]}):reply({content:'文件已保存。'});
   }) as typeof fetch;
   const w=web(false,http);try{

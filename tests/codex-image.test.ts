@@ -7,6 +7,8 @@ import { makeDir } from '../src/paths.js';
 import { MockImageProvider } from '../src/image/provider.js';
 import { captureCodexImage,codexImageSmoke,publishCodexImage } from '../src/image/codex-smoke.js';
 import { executionFeatures } from '../src/codex/platform.js';
+import { CHARACTER_REFERENCE,characterPrompt } from '../src/character.js';
+import { isCharacterPortrait,prepareCharacterPortrait,verifyCharacterReference } from '../src/image/character-reference.js';
 
 test('image smoke requires native completion and valid PNG, never an assistant claim or fileId alone',async()=>{
   const f=fixture();try{
@@ -65,4 +67,24 @@ test('native empty protection directories allow one PNG; any additional file blo
     assert.throws(()=>publishCodexImage(f.root,'native-extra',10000),/ARTIFACT_LIMIT/);
     assert.ok(!fs.existsSync(path.join(f.root,'runtime/outputs/native-extra')));
   }finally{f.cleanup();}
+});
+test('self portraits stage the fixed character PNG, ordinary images do not read it, and missing references fail closed',async()=>{
+  const f=fixture();try{
+    const cwd=makeDir(f.root,'runtime/workspace/portrait');
+    assert.equal(isCharacterPortrait('生成一张你自己的图'),true);assert.equal(isCharacterPortrait('鲸酱喝茶的立绘'),true);
+    assert.equal(isCharacterPortrait('画一只猫'),false);
+    assert.deepEqual(prepareCharacterPortrait(f.root,cwd,'画一只猫'),{prompt:'画一只猫'});
+    assert.throws(()=>prepareCharacterPortrait(f.root,cwd,'生成你的自画像'),/CHARACTER_REFERENCE_MISSING/);
+    const dir=makeDir(f.root,'runtime/character');await new MockImageProvider().generate('fixture only',dir);
+    fs.renameSync(path.join(dir,'mock.png'),path.join(f.root,CHARACTER_REFERENCE));
+    const prepared=prepareCharacterPortrait(f.root,cwd,'生成一张你自己的图');
+    assert.ok(prepared.reference?.path.startsWith(cwd+path.sep));assert.match(prepared.prompt,/鲸鳍耳/);assert.match(prepared.prompt,/referenced_image_paths/);
+    verifyCharacterReference([{inputImages:[prepared.reference!]}],prepared.reference!);
+    assert.throws(()=>verifyCharacterReference([{}],prepared.reference!),/CHARACTER_REFERENCE_NOT_USED/);
+    assert.throws(()=>verifyCharacterReference([{inputImages:[{...prepared.reference!,sha256:'wrong'}]}],prepared.reference!),/CHARACTER_REFERENCE_NOT_USED/);
+  }finally{f.cleanup();}
+});
+test('shared character prompt keeps the requested appearance and roleplay within existing tool permissions',()=>{
+  const prompt=characterPrompt();
+  for(const part of ['鲸酱','白米饭','鲸鳍耳','女仆裙','鲸尾','不改变工具权限','不能声称已经生成'])assert.ok(prompt.includes(part));
 });

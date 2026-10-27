@@ -4,22 +4,27 @@ import { FishError } from '../types.js';
 import { RpcProcess } from './process.js';
 import { appServerSpec,executionFeatures,PERMISSION_PROFILE,taskDirectory } from './platform.js';
 import { initialize,probeIsolation } from './probe.js';
+import { verifyPng } from '../image/provider.js';
 export { childEnvironment,codexEntry,permissionArgs,PERMISSION_PROFILE } from './platform.js';
 
 export interface TaskRunner { run(cwd:string,brief:string,signal:AbortSignal):Promise<string> }
-export interface CodexImageItem {id:string;type:'imageGeneration';status:string;savedPath?:string|null;result?:string;fileId?:string;failure?:unknown}
+export interface CodexImageItem {id:string;type:'imageGeneration';status:string;savedPath?:string|null;result?:string;fileId?:string;failure?:unknown;inputImages?:{path:string;sha256:string}[]}
 export interface CodexRunResult {text:string;images:CodexImageItem[]}
 export class AppServerRunner implements TaskRunner {
   constructor(private root:string){}
   async run(cwd:string,brief:string,signal:AbortSignal):Promise<string>{
     return (await this.execute(cwd,brief,signal,false)).text;
   }
-  async generateImage(cwd:string,prompt:string,signal:AbortSignal):Promise<CodexRunResult>{
-    return this.execute(cwd,prompt,signal,true);
+  async generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string):Promise<CodexRunResult>{
+    return this.execute(cwd,prompt,signal,true,referencePath);
   }
-  private async execute(cwd:string,brief:string,signal:AbortSignal,imageGeneration:boolean):Promise<CodexRunResult>{
+  private async execute(cwd:string,brief:string,signal:AbortSignal,imageGeneration:boolean,referencePath?:string):Promise<CodexRunResult>{
     if(!['linux','win32'].includes(process.platform))throw new FishError('CODEX_PLATFORM_UNSUPPORTED');
     cwd=taskDirectory(this.root,cwd);
+    if(referencePath){
+      if(referencePath!==safePath(cwd,'character-reference.png'))throw new FishError('CODEX_IMAGE_REFERENCE_INVALID');
+      verifyPng(cwd,'character-reference.png',10485760);
+    }
     if(!fs.existsSync(safePath(this.root,'runtime/codex-home/auth.json')))throw new FishError('CODEX_PROJECT_LOGIN_REQUIRED');
     const features=executionFeatures(imageGeneration),images:CodexImageItem[]=[],seenImages=new Set<string>();
     const rpc=new RpcProcess(appServerSpec(this.root,cwd,process.platform,imageGeneration),signal);
@@ -63,7 +68,8 @@ export class AppServerRunner implements TaskRunner {
       await rpc.call('turn/start',{threadId:thread.id,cwd,approvalPolicy:'never',permissions:PERMISSION_PROFILE,
         input:[{type:'text',text:imageGeneration?
           'Use your built-in image generation tool to generate exactly one PNG for this prompt. Do not call any separate Image API or create a replacement with code. No retries.\n'+brief:
-          '只处理以下有限任务。仅在当前目录创建产物；不访问私人文件、凭据、网络或其他项目。\n'+brief}]});
+          '只处理以下有限任务。仅在当前目录创建产物；不访问私人文件、凭据、网络或其他项目。\n'+brief},
+          ...(referencePath?[{type:'localImage',path:referencePath}]:[])]});
       return await done;
     }finally{await rpc.stop();}
   }
