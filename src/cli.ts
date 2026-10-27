@@ -12,6 +12,9 @@ import { codexEntry, childEnvironment } from './codex/runner.js';
 import { boundaryStatus } from './codex/platform.js';
 import { checkSandbox } from './codex/probe.js';
 import { codexImageSmoke } from './image/codex-smoke.js';
+import { createWebApp } from './web/app.js';
+import { webServer } from './web/server.js';
+import { openLocalBrowser } from './web/browser.js';
 
 const root=projectRoot();prepare(root);loadSecrets(root);
 const [command='help',...args]=process.argv.slice(2);
@@ -25,7 +28,38 @@ async function api(route:string,value?:unknown,approval?:string):Promise<any>{
   const data=await res.json();if(!res.ok)throw new FishError(data.error??'LOCAL_API_ERROR');return data;
 }
 async function main():Promise<void>{
-  if(command==='start'){
+  if(command==='webui'){
+    if(args.some(a=>!['--mock','--no-open'].includes(a)))throw new FishError('USAGE_WEBUI_MOCK_NO_OPEN');
+    const app=createWebApp(root,args.includes('--mock'));let closing=false;
+    const stop=()=>{if(closing)return;closing=true;void(async()=>{await app.close();server.close();await once(server,'close');})();};
+    const {server,url,launchUrl}=webServer(app,17862,stop);
+    server.listen(17862,'127.0.0.1');
+    try{await once(server,'listening');}catch(e){
+      await app.close();if((e as NodeJS.ErrnoException).code!=='EADDRINUSE')throw new FishError('WEBUI_LISTEN_FAILED');
+      // A second launch reconnects to this project's existing UI rather than
+      // reusing an expired one-time link or resetting its credentials.
+      const token=fs.readFileSync(safePath(root,'runtime/data/webui-admin-token'),'utf8').trim();
+      const response=await fetch('http://127.0.0.1:17862/api/open',{method:'POST',headers:{authorization:'Bearer '+token},signal:AbortSignal.timeout(5000)});
+      if(!response.ok)throw new FishError('WEBUI_PORT_IN_USE_BY_ANOTHER_SERVICE');
+      const data=await response.json();
+      if(typeof data.launchUrl!=='string'||!/^http:\/\/127\.0\.0\.1:17862\/#bootstrap=[a-f0-9]{64}$/.test(data.launchUrl))throw new FishError('WEBUI_INVALID_LAUNCH_URL');
+      print('WebUI 已在运行（'+(data.mock?'离线演示':'正式模式')+'）：http://127.0.0.1:17862');
+      if(!args.includes('--no-open'))openLocalBrowser(data.launchUrl);return;
+    }
+    app.recover();process.once('SIGINT',stop);process.once('SIGTERM',stop);
+    print(`DeepSeekFish WebUI ${app.mock?'离线演示':'DeepSeek API'}：${url}；Ctrl+C 停止。`);
+    print('手动打开时，本机令牌位于 runtime/data/webui-admin-token。');
+    if(!args.includes('--no-open')&&!openLocalBrowser(launchUrl))print('当前为无桌面环境，请手动打开链接；远程主机可用 SSH 转发 17862 端口。');
+  }else if(['web-status','web-stop','web-approve'].includes(command)){
+    const p=safePath(root,'runtime/data/webui-admin-token');if(!fs.existsSync(p))throw new FishError('START_WEBUI_FIRST');
+    if(command==='web-approve'&&(!args[0]||!args.includes('--reviewed')))throw new FishError('READ_WEB_TASK_THEN_APPROVE_ID_REVIEWED');
+    const route=command==='web-status'?'status':command==='web-stop'?'stop':'approve';
+    const value=route==='approve'?{id:args[0],reviewed:true}:{};
+    const response=await fetch('http://127.0.0.1:17862/api/'+route,{method:route==='status'?'GET':'POST',
+      headers:{authorization:'Bearer '+fs.readFileSync(p,'utf8').trim(),'content-type':'application/json',...(route==='approve'?{'x-fish-local-approval':args[0]}:{})},
+      body:route==='status'?undefined:JSON.stringify(value),signal:AbortSignal.timeout(10000)});
+    const data=await response.json();if(!response.ok)throw new FishError(data.error??'WEBUI_API_ERROR');print(data);
+  }else if(command==='start'){
     const app=createApp(root,args.includes('--mock'));let closing=false;
     const stop=()=>{if(closing)return;closing=true;void (async()=>{await app.bot.stop();server.close();await once(server,'close');clearInterval(prune);app.store.close();})();};
     const server=adminServer(app,stop);
@@ -84,6 +118,6 @@ async function main():Promise<void>{
     await app.bot.receive({...m,id:randomUUID(),text:'/fish image 测试图片'});
     print({messages:(app.transport as any).sent,files:(app.transport as any).files,task:app.tasks.get(task.id),budget:app.ledger.snapshot()});
     await app.bot.stop();app.store.close();
-  }else print(`DeepSeekFish\n  npm run build / npm test\n  npm run mock / npm start / npm run demo\n  npm run cli -- status|tasks|history GROUP|clear GROUP|cancel ID|stop\n  npm run cli -- set autonomous false\n  npm run cli -- approve ID --reviewed\n  npm run cli -- say "你好小鱼"  (Mock only)\n  npm run bind / npm run cli -- codex-login [--device-auth]\n  npm run doctor / npm run cli -- sandbox-check (keyless, no model turn)\n  npm run cli -- codex-image --reviewed "one-image prompt" (real Codex subscription smoke test)`);
+  }else print(`DeepSeekFish\n  npm run build / npm test\n  npm run mock / npm start / npm run demo\n  npm run cli -- status|tasks|history GROUP|clear GROUP|cancel ID|stop\n  npm run cli -- set autonomous false\n  npm run cli -- approve ID --reviewed\n  npm run cli -- say "你好小鱼"  (Mock only)\n  npm run bind / npm run cli -- codex-login [--device-auth]\n  npm run doctor / npm run cli -- sandbox-check (keyless, no model turn)\n  npm run cli -- codex-image --reviewed "one-image prompt" (real Codex subscription smoke test)\n  ./start.sh / start.bat (WebUI)\n  npm run cli -- webui [--mock] [--no-open]\n  npm run cli -- web-status|web-stop|web-approve ID --reviewed`);
 }
 main().catch(e=>{console.error('DeepSeekFish: '+codeOf(e));process.exitCode=1;});

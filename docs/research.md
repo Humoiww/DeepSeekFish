@@ -51,3 +51,9 @@ Codex 0.164.0 schema 有 `imageGeneration` 事件、savedPath 和 provider 能�
 [官方生图文档](https://learn.chatgpt.com/docs/image-generation)说明 CLI 可描述图片或显式使用 imagegen skill，内置生图使用 Codex 通用额度。本地固定版本 0.164.0 的 `features list` 列出 stable `image_generation`；官方生成的 app-server schema 包含 `imageGeneration` 的 `status`、`savedPath`、`result`/`fileId` 字段。因此新增仅本机明确授权的 `codex-image` 验证命令，普通代码任务仍关闭此能力。
 
 真实 Linux 调用已验证原生事件和项目 CODEX_HOME/generated_images 下的 PNG；详见 [验收](status.md)。本集成只支持本地 PNG 或内联 PNG，不根据模型声称的链接下载文件，不使用单独计费的 Image API。只有远程 fileId 而没有可校验本地数据时仍失败关闭。QQ ImageProvider 暂不自动开启该路径。
+
+## 独立 WebUI 与受限工具补充
+
+按 [DeepSeek 官方 Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/) 的非思考模式实现函数调用循环。客户端必须实际执行允许的函数，并将 tool_call_id 匹配的结果回传；模型本身不会执行函数。采用稳定 Chat Completions，不假设 JSON schema 的约束足以授权操作；服务器另行校验名字、参数、路径、开关、次数和预算。
+
+[当前模型说明](https://api-docs.deepseek.com/quick_start/pricing/)列出 `deepseek-flash`，故新 WebUI 默认使用这个名称；旧 `deepseek-v4-flash` 是兼容别名，现有 QQ 配置不被静默覆盖。默认禁用 thinking，避免引入未实现的 reasoning_content 工具回传契约。当前 WebUI 是小型独立调度层，没有声称完整 DSH 或两个 DSH 插件已经接通。

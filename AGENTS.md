@@ -6,3 +6,4 @@
 - No unattended real Codex: each job needs local CLI approval. Never weaken sandbox or expose private files.
 - Keep API reservations atomic and persistent; unknown usage keeps the reservation charged.
 - Do not enable image generation or paid calls implicitly. Keep limitations documented.
+- WebUI model tools only access their generated session workspace; never expose shell, secrets, settings or approval tools.

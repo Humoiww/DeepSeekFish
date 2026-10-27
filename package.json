@@ -6,6 +6,7 @@
     "build": "tsc -p tsconfig.json", "test": "tsc -p tsconfig.json && node --test --test-isolation=none dist/tests/*.test.js",
     "start": "node dist/src/cli.js start", "mock": "node dist/src/cli.js start --mock",
     "cli": "node dist/src/cli.js", "demo": "node dist/src/cli.js demo",
+    "webui": "node dist/src/cli.js webui", "webui:mock": "node dist/src/cli.js webui --mock",
     "doctor": "node dist/src/cli.js doctor", "bind": "node dist/src/cli.js bind"
   },
   "dependencies": {

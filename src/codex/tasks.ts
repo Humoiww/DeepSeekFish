@@ -15,7 +15,7 @@ export class Tasks {
   recover():void {
     // No automatic replays after a crash and no refund of unknown usage.
     this.store.db.exec("UPDATE tasks SET state='failed',result='PROCESS_RESTART_REQUIRES_REVIEW' WHERE state='running'");
-    this.store.db.exec("UPDATE reservations SET state='unknown' WHERE state='held'");
+    this.store.db.exec("UPDATE reservations SET state='unknown' WHERE state='held' AND grp NOT LIKE 'web:%'");
   }
   enqueue(message:Message,request:string,brief:string):Task{
     if(!this.cfg().codex)throw new FishError('CODEX_DISABLED');

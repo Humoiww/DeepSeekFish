@@ -4,6 +4,32 @@
 
 **当前状态：Linux 和 Windows 均可部署 QQ / DeepSeek / Mock；Linux 隔离探针、进程取消及一次命令行 Codex 内置生图已实测。真实 QQ / DeepSeek 仍需配置账号后验证，Windows MXC 尚未现场验证。Codex、自动插话、搜索、群聊生图默认关闭，Codex 每任务必须本机审核。**
 
+## 本地 WebUI：独立对话与受限助手
+
+不需要 QQ 账号。安装 Node.js **24.9+**（含 npm），然后在仓库根目录运行：
+
+```bash
+# Linux：首次缺少依赖时自动 npm ci，然后构建、启动并打开默认浏览器
+./start.sh
+# 无桌面 / SSH：只启动服务
+./start.sh --no-open
+# 无 API Key 的离线演示
+./start.sh --mock
+```
+
+Windows 双击根目录 **`start.bat`**，或在终端执行 `start.bat --mock`。脚本不需要管理员权限，不修改系统策略，不安装全局包。已有的 `scripts/start.sh` / `scripts/start.ps1` 仍用于 QQ 机器人。
+
+WebUI 地址为 **http://127.0.0.1:17862**，与 QQ 管理页的 17861 端口分开。自动打开时使用一次性本机连接；手动打开时，输入 `runtime/data/webui-admin-token` 中的令牌。首次点击「连接与设置」，填入 DeepSeek API Key 并保存即可对话；保存设置本身不会调用模型。Key 仅写入被忽略的 `runtime/data/webui-secrets.json`，服务器也可读取项目 `.env` 的 `DEEPSEEK_API_KEY`，不会将 Key 回传前端。
+
+- **纯对话**：多轮独立会话，无模型工具；支持代码块、停止请求、历史恢复。
+- **受限助手**：DeepSeek 使用官方 Function Calling，列出、读取和写入本次会话的文本文件；界面展示真实工具结果，文件可以下载。
+- **可选操作**：设置中明确开启后才提供公开搜索、提交 Codex 待审任务。Codex 仍需在本机终端运行 `npm run cli -- web-approve 任务UUID --reviewed`；模型和网页按钮都不能自动批准。
+- **固定边界**：无任意 shell、删除、依赖安装、凭据读取、其他项目访问、任意 URL Fetch 或自动生图；每条消息最多 4 次模型请求、6 次工具调用。每会话最多 20 个文本文件，单文件 64 KiB、总计 1 MiB。
+
+会话文件位于 `runtime/workspace/web-UUID/`。正式 WebUI 与 QQ、命令行真实任务共享 `fish.sqlite` 的预算账本；Mock 的会话与预算独立。关闭终端 Ctrl+C，或执行 `npm run cli -- web-stop`。远程 Linux 可通过 `ssh -N -L 17862:127.0.0.1:17862 用户@服务器` 在自己电脑打开页面，不要把服务绑定公网。
+
+完整说明见 [WebUI](docs/webui.md)。目前浏览器流程及官方 API 请求格式已用 Mock/假 HTTP 验证；真实 DeepSeek 验收需要你在本机页面配置自己的 Key。
+
 ## Linux 快速部署
 
 需要 Bash、Node.js **24.9+** 和 npm；支持 npm 官方 Codex payload 提供的 Linux x64 / arm64。普通聊天、搜索和 Mock 不需要 Docker、systemd 或 bubblewrap，也不需要 sudo。可使用已有 Node，或者把[官方 Node 便携发行包](https://nodejs.org/en/download)解压到 `runtime/tools/node/`，让 `runtime/tools/node/bin/node` 存在。

@@ -4,7 +4,7 @@
 
 ## 已验证
 
-离线测试 28 项，覆盖：
+离线测试 36 项，覆盖：
 
 - 普通消息零模型调用、归并后回复、消息去重、自回声、群白名单和群上下文隔离。
 - SocialGate 兴趣/话题变化/活跃窗口、持久冷却、每日插话上限。
@@ -18,6 +18,7 @@
 - 本机 HTTP 管理接口的令牌、Host、Origin 拒绝，以及开关、任务授权与历史清理。
 - Mock PNG 的真实 chunk CRC 校验；损坏图片明确拒绝；CodexImageProvider 明确返回 unsupported。
 - 命令行 Codex 生图的本机审核/登录前置、原生完成事件约束、实际 PNG/路径/CRC/大小校验、拒绝私密路径与软链接、空原生保护目录兼容，以及额外文件整批拒绝。
+- WebUI 的独立会话、受限文本文件操作、DeepSeek 官方 Function Calling 与 tool_call_id 回传、每轮用量结算、工具白名单/循环限制、取消和并发、跨会话路径/链接/大小/数量拒绝、本机鉴权/一次性 bootstrap 重放拒绝、下载安全头、Codex 待审与 QQ 恢复时的跨入口额度保留。
 
 Mock CLI demo 已实际运行，得到 Mock 聊天、独立任务目录、result.txt 清单、Mock 搜索来源与 Mock PNG。实际文件可在 runtime/outputs 下查看。常驻 Mock 的启动、消息、状态、停止和再次启动也已通过 scripts/smoke-mock.mjs 实测，结果保存在 runtime/cli-smoke.json。测试和 demo 不访问真实 QQ 或模型服务。
 
@@ -38,6 +39,12 @@ Linux 增补已实测：`sandbox-check` 的正向读写、工作区外与 Codex 
 - 正式 SQLite 已计入一次 Codex 任务、一次生图；没有自动重试或复原次数。账号、图片、日志和数据库均被 Git 忽略。
 
 这证明当前 Linux 主机上的单次命令行 Codex 内置生图路径可用。尚未证明 QQ 图片 provider、本机 Windows、图片编辑、批量生成或只有远程 fileId 的结果获取。
+
+## 本地 WebUI 验收
+
+根目录 `./start.sh`、Windows `start.bat` 已提供。Linux 已从项目外目录启动、构建并服务页面；默认浏览器唤起参数用项目内替身验证，一次性本机连接在真实浏览器成功消费，地址 fragment 随即移除。浏览器中已验证 Mock 会话文件创建、工具结果回显、新会话工作区隔离、设置窗口、无 Key 的正式模式启动，以及笔记本窗口布局。测试预览截图位于被忽略的 `runtime/outputs/webui-preview.jpg`。
+
+WebUI 不需要 QQ，正式账本复用 fish.sqlite，历史/任务单独保存在 webui.sqlite。已用假 HTTP 验证正式 DeepSeek 请求/usage/Function Calling；本次初始环境没有 DeepSeek Key，真实付费对话需要用户在页面填写后另行验收。Windows 双击与默认浏览器链路仍待目标机现场验证。详见 [WebUI](webui.md)。
 
 ## 尚未证明 / 未完成
 
