@@ -2,7 +2,7 @@
 
 ## 安装与数据目录
 
-使用普通用户，准备 Node >=24.9、npm、Bash 和可写的独立项目目录。不需要 root、Docker 或系统服务安装。Linux amd64 / arm64 对应官方 npm native payload；其他架构的聊天功能可用，但 Codex launcher 会报告 `CODEX_LINUX_ARCH_UNSUPPORTED`。Node 便携发行包本身的 libc 要求仍以官方发行说明为准。
+使用普通用户、Bash 和可写的独立项目目录。不需要 root、Docker 或系统服务安装。缺少 Node >=24.9 时，脚本通过 Python 3 + tar 自动下载官方 Node v24.22.1 的 Linux x64 / arm64 便携包，按源码固定的 SHA-256 校验后安装到 runtime/tools/node；下载缓存和临时解压也在 runtime/tools 内。已有兼容 Node/npm 时不重复下载。其他架构需自行准备 Node，Codex launcher 会报告 `CODEX_LINUX_ARCH_UNSUPPORTED`。便携发行包本身的 libc 要求仍以官方发行说明为准。
 
 执行 `bash scripts/install.sh` 安装项目依赖并构建。脚本优先使用 `runtime/tools/node/bin/node`，否则使用 PATH 中的 Node；也可用绝对路径 `FISH_NODE=/路径/node bash scripts/install.sh`。特殊的本地 npm 布局可通过 `FISH_NPM_CLI=/路径/npm-cli.js` 指定。所有环境变更只影响该进程及子进程，不修改 ~/.bashrc、系统 PATH 或全局包。
 
@@ -32,7 +32,7 @@
 
 | 现象/错误 | 处理 |
 | --- | --- |
-| Node 过旧 / node not found | 准备 >=24.9 的发行包，可放 runtime/tools/node；不使用 sudo npm |
+| Node 过旧 / node not found | 重试启动脚本自动准备项目运行时；若缺 Python 3/tar 或网络不可用，可手动放官方便携包到 runtime/tools/node |
 | QQ_CREDENTIALS_MISSING_RUN_BIND | 先执行本机 bind，或填写本项目 .env 的 QQ 凭据 |
 | DEEPSEEK_KEY_MISSING | 在 .env 填入真实 API Key，再重启 |
 | CODEX_BWRAP_MISSING | 缺少系统和项目 bundled bwrap；先恢复正确的官方依赖安装，再由管理员决定是否安装系统包 |

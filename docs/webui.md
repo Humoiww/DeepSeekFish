@@ -1,6 +1,6 @@
 # 本地 WebUI
 
-根目录 `./start.sh`（Linux）或 `start.bat`（Windows）会检查 Node >=24.9，依赖缺失时在项目内执行 `npm ci --ignore-scripts`，构建后启动 WebUI 并请求系统默认浏览器打开本地地址。没有桌面环境时打印手动访问提示；`--no-open` 不调用浏览器，`--mock` 使用明确标记的离线演示。自动安装需要能访问 npm。也可先 `npm ci --ignore-scripts && npm run build`，随后 `npm run webui`。
+根目录 `./start.sh`（Linux）或 `start.bat`（Windows）会检查 Node >=24.9，依赖缺失时在项目内执行 `npm ci --ignore-scripts`，构建后启动 WebUI 并请求系统默认浏览器打开本地地址。Linux 若没有兼容 Node，会先通过 Python 3 + tar 自动下载并校验官方便携版 Node/npm，保存在 runtime/tools/node；不需要全局安装。Windows 当前仍需先准备 Node/npm。没有桌面环境时打印手动访问提示；`--no-open` 不调用浏览器，`--mock` 使用明确标记的离线演示。首次准备需要访问 nodejs.org/npm。也可先 `npm ci --ignore-scripts && npm run build`，随后 `npm run webui`。
 
 ## 连接与对话
 

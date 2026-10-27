@@ -6,10 +6,10 @@
 
 ## 本地 WebUI：独立对话与受限助手
 
-不需要 QQ 账号。安装 Node.js **24.9+**（含 npm），然后在仓库根目录运行：
+不需要 QQ 账号。在仓库根目录运行即可。Linux 已有 Node.js **24.9+** 时直接使用；缺少或版本过旧时，脚本会用 Python 3 + tar 从 Node.js 官网下载已固定 SHA-256 的便携版 Node/npm，安装到 `runtime/tools/node/`。首次准备需要联网，不需要 sudo，不修改系统 Node、Conda 或 shell 配置。Windows 目前仍需已有 Node.js **24.9+**（含 npm），或手动放置官方便携版。
 
 ```bash
-# Linux：首次缺少依赖时自动 npm ci，然后构建、启动并打开默认浏览器
+# Linux：自动准备项目内 Node/npm（如缺少）、安装依赖、构建并打开浏览器
 ./start.sh
 # 无桌面 / SSH：只启动服务
 ./start.sh --no-open
@@ -32,7 +32,7 @@ WebUI 地址为 **http://127.0.0.1:17862**，与 QQ 管理页的 17861 端口分
 
 ## Linux 快速部署
 
-需要 Bash、Node.js **24.9+** 和 npm；支持 npm 官方 Codex payload 提供的 Linux x64 / arm64。普通聊天、搜索和 Mock 不需要 Docker、systemd 或 bubblewrap，也不需要 sudo。可使用已有 Node，或者把[官方 Node 便携发行包](https://nodejs.org/en/download)解压到 `runtime/tools/node/`，让 `runtime/tools/node/bin/node` 存在。
+需要 Bash；Linux x64 / arm64 缺少 Node 时，脚本可通过 Python 3 + tar 自动准备官方便携版 Node/npm。支持 npm 官方 Codex payload 提供的 Linux x64 / arm64。普通聊天、搜索和 Mock 不需要 Docker、systemd 或 bubblewrap，也不需要 sudo。也可使用已有 Node.js **24.9+** 和 npm，或把[官方 Node 便携发行包](https://nodejs.org/en/download)手动解压到 `runtime/tools/node/`。
 
 ```bash
 git clone https://github.com/Humoiww/DeepSeekFish.git

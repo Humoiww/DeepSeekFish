@@ -2,6 +2,8 @@
 
 验收日期：2026-10-27。主机为 Ubuntu Linux，Node 24.19.0，依赖固定在 package-lock.json。`npm ci --ignore-scripts` 不需要编译第三方 native addon；SQLite 由 Node 内置提供。
 
+后续启动修复：最初验收使用显式指定的开发 Node，导致用户终端无 Node 时 `./start.sh` 失败。已补上 Linux 项目内自动准备：官方 Node v24.22.1 x64 发行包 SHA-256 校验、解压、Node/npm 版本检查完成；随后没有 FISH_NODE/FISH_NPM_CLI 覆盖的 `./start.sh --no-open` 已实际构建并启动。再次启动复用项目运行时，不下载或修改系统/Conda 配置。
+
 ## 已验证
 
 离线测试 36 项，覆盖：
