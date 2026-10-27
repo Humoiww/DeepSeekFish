@@ -28,7 +28,7 @@
           <button data-prompt="帮我把一个模糊的想法整理成可执行的计划，先问我几个关键问题。"><span class="suggestion-icon lavender">✧</span><strong>把想法理清楚</strong><small>从一点灵感，走到下一步</small><span class="suggestion-arrow">↗</span></button>
           <button data-prompt="帮我写一份简洁的项目备忘录，先了解我的需求。"><span class="suggestion-icon peach">≡</span><strong>写点有用的东西</strong><small>备忘录、文案，或一段代码</small><span class="suggestion-arrow">↗</span></button>
           <button data-agent="true" data-prompt="在当前会话工作区创建 notes.md，写一份三步学习计划。"><span class="suggestion-icon mint">▱</span><strong>创建一份文件</strong><small>保存在这次对话的工作区</small><span class="suggestion-arrow">↗</span></button>
-          <button data-agent="true" data-prompt="请列出当前会话工作区里的文件，告诉我可以如何继续整理。"><span class="suggestion-icon blue">⌘</span><strong>让助手动动手</strong><small>查看文件，完成有限操作</small><span class="suggestion-arrow">↗</span></button>
+          <button data-image="true" data-prompt="画一张你自己的图，具体场景和构图你来设计。"><span class="suggestion-icon blue">⌘</span><strong>让灵感变成画</strong><small>小鱼设计，再交给 Codex 生图</small><span class="suggestion-arrow">↗</span></button>
         </div>
       </div>
       <div id="messages" class="messages" aria-live="polite"></div>
@@ -36,17 +36,17 @@
     <div class="composer-area">
       <form id="chat-form" class="composer">
         <textarea id="prompt" aria-label="发送给小鱼的消息" placeholder="和小鱼说点什么…" rows="2" maxlength="4000"></textarea>
-        <div class="composer-bottom"><div class="mode-switch" role="group" aria-label="对话模式"><button type="button" id="mode-chat" class="selected" aria-pressed="true">◌ 纯对话</button><button type="button" id="mode-agent" aria-pressed="false">✦ 受限助手</button></div><div class="send-actions"><small id="input-hint">Enter 发送</small><button id="send" type="submit" class="send-button" aria-label="发送消息">↑</button><button id="cancel" type="button" class="cancel-button" hidden>停止</button></div></div>
+        <div class="composer-bottom"><div class="mode-switch" role="group" aria-label="对话模式"><button type="button" id="mode-chat" class="selected" aria-pressed="true">◌ 聊天</button><button type="button" id="mode-agent" aria-pressed="false">✦ 受限助手</button><button type="button" id="mode-image" aria-pressed="false">▧ 画图</button></div><div class="send-actions"><small id="input-hint">Enter 发送</small><button id="send" type="submit" class="send-button" aria-label="发送消息">↑</button><button id="cancel" type="button" class="cancel-button" hidden>停止</button></div></div>
       </form>
-      <div class="composer-note"><span id="mode-note">纯对话模式不会调用工具。</span><span>回答可能不准确，请核对重要内容。</span></div>
+      <div class="composer-note"><span id="mode-note">明确请求画图时，小鱼会设计方案并交给 Codex 生成一张。</span><span>回答可能不准确，请核对重要内容。</span></div>
     </div>
   </main>
   <aside class="workspace-panel" id="workspace-panel">
     <div class="panel-header"><h2>这次对话的工作区</h2><button id="close-panel" class="icon-button" aria-label="关闭工作区">×</button></div>
     <div class="boundary-card"><span class="boundary-icon">◇</span><strong>能力有边界，想法没边界。</strong><p>助手只能读写本次会话的文件。其他项目、私人文件和凭据不在它的操作范围内。</p></div>
-    <div class="panel-section"><div class="section-title">可用操作 <span id="mode-label">纯对话</span></div><ul class="capabilities"><li><span>✓</span> 查看和读写会话文本文件</li><li><span>✓</span> 下载已生成的文本文件</li><li><span id="search-dot">○</span> 公开搜索 <small id="search-state">未开启</small></li><li><span id="codex-dot">○</span> 提交 Codex 待审任务 <small id="codex-state">未开启</small></li></ul><div class="limit-note">无任意终端、删除、安装或自动审批。<br>每条消息最多 6 次工具调用。</div></div>
+    <div class="panel-section"><div class="section-title">可用操作 <span id="mode-label">聊天</span></div><ul class="capabilities"><li><span>✓</span> 查看和读写会话文本文件</li><li><span>✓</span> 下载已生成的文本文件</li><li><span>✓</span> 明确请求后生成单张图片</li><li><span id="search-dot">○</span> 公开搜索 <small id="search-state">未开启</small></li><li><span id="codex-dot">○</span> 提交 Codex 待审任务 <small id="codex-state">未开启</small></li></ul><div class="limit-note">无任意终端、删除或安装。画图请求仅授权一张。<br>每条消息最多 6 次工具调用。</div></div>
     <div class="panel-section"><div class="section-title">会话文件 <span id="file-count">0</span></div><div id="files" class="files"><div class="empty-files"><span>▱</span><p>文件会出现在这里</p><small>试试让助手创建 notes.md</small></div></div><small class="file-limit">最多 20 个文件 · 合计 1 MiB</small></div>
-    <div class="panel-section task-section"><div class="section-title">Codex 任务 <span id="task-count">0</span></div><div id="tasks" class="tasks"><p class="muted">暂时没有待审任务</p></div></div>
+    <div class="panel-section"><div class="section-title">今日生图 <span id="image-quota">—</span></div><p class="muted">直接说“画一张…”或选择「画图」。小鱼补齐画面方案，通过项目 Codex 生成；消耗 Codex 订阅额度。</p></div><div class="panel-section task-section"><div class="section-title">Codex 任务 <span id="task-count">0</span></div><div id="tasks" class="tasks"><p class="muted">暂时没有待审任务</p></div></div>
     <div class="panel-footer"><i></i> 文件与对话都保存在本机项目目录</div>
   </aside>
 </div>

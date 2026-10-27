@@ -8,10 +8,10 @@ import { verifyPng } from './provider.js';
 
 export interface CharacterReference {path:string;sha256:string}
 export function isCharacterPortrait(prompt:string):boolean{
-  return /(?:[你她](?:自己|本人)|你的(?:照片|画像|立绘|形象|样子)|自画像|自拍|鲸酱|whale[- ]?chan|self[- ]?portrait|portrait of yourself|your (?:own )?(?:portrait|selfie))/i.test(prompt);
+  return /(?:[你她](?:自己|本人)|你的(?:照片|图片|图|画像|立绘|形象|样子)|自画像|自拍|鲸酱|whale[- ]?chan|self[- ]?portrait|portrait of yourself|your (?:own )?(?:portrait|selfie))/i.test(prompt);
 }
-export function prepareCharacterPortrait(root:string,cwd:string,prompt:string):{prompt:string;reference?:CharacterReference}{
-  if(!isCharacterPortrait(prompt))return {prompt};
+export function prepareCharacterPortrait(root:string,cwd:string,prompt:string,character=isCharacterPortrait(prompt)):{prompt:string;reference?:CharacterReference}{
+  if(!character)return {prompt};
   cwd=taskDirectory(root,cwd);
   const source=safePath(root,CHARACTER_REFERENCE);
   if(!fs.existsSync(source))throw new FishError('CHARACTER_REFERENCE_MISSING');

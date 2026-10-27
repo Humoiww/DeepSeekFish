@@ -35,7 +35,7 @@ export class AppServerRunner implements TaskRunner {
       await probeIsolation(rpc,this.root,cwd);
       const threadResult=await rpc.call('thread/start',{cwd,ephemeral:true,approvalPolicy:'never',permissions:PERMISSION_PROFILE,
         config:{web_search:'disabled',mcp_servers:{},features},
-        ...(imageGeneration?{developerInstructions:'This is one locally approved image-generation smoke test. Use only the built-in image generation tool, exactly once, generating one PNG. No shell tools, external APIs, paid API keys, MCP, code-drawn images, or substitute images. If the built-in tool is unavailable, report unsupported. Do not retry or edit. The harness will collect the generated image; do not move files or read credentials.'}: {})});
+        ...(imageGeneration?{developerInstructions:'This is one locally authorized single-image request. Use only the built-in image generation tool, exactly once, generating one PNG. No shell tools, external APIs, paid API keys, MCP, code-drawn images, or substitute images. If the built-in tool is unavailable, report unsupported. Do not retry or edit. The harness will collect the generated image; do not move files or read credentials.'}: {})});
       if(threadResult.activePermissionProfile?.id!==PERMISSION_PROFILE)throw new FishError('CODEX_EFFECTIVE_PROFILE_MISMATCH');
       const {thread}=threadResult;
       if(!thread?.id)throw new FishError('CODEX_INVALID_THREAD');

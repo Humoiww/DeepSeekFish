@@ -2,7 +2,7 @@
 
 运行在 Linux / Windows 本机的 QQ 群 DeepSeek 机器人 MVP。普通聊天先在本地归并和判断；模型、搜索、任务均经过 SQLite 额度检查。管理员群命令可以提出 Codex 任务，但真实执行必须由本机逐次审核。
 
-**当前状态：Linux 和 Windows 均可部署 QQ / DeepSeek / Mock；Linux 隔离探针、进程取消及一次命令行 Codex 内置生图已实测。真实 QQ / DeepSeek 仍需配置账号后验证，Windows MXC 尚未现场验证。Codex、自动插话、搜索、群聊生图默认关闭，Codex 每任务必须本机审核。**
+**当前状态：Linux 和 Windows 均可部署 QQ / DeepSeek / Mock；Linux 隔离探针、进程取消及一次命令行 Codex 内置生图已实测。真实 QQ / DeepSeek 仍需配置账号后验证，Windows MXC 尚未现场验证。Codex、自动插话、搜索、群聊生图默认关闭，普通 Codex 任务必须本机审核；WebUI 明确画图请求可自动设计并生成一张。**
 
 ## 本地 WebUI：独立对话与受限助手
 
@@ -23,14 +23,15 @@ Windows 双击根目录 **`start.bat`**，或在终端执行 `start.bat --mock`�
 
 WebUI 地址为 **http://127.0.0.1:17862**，与 QQ 管理页的 17861 端口分开。自动打开时使用一次性本机连接；手动打开时，输入 `runtime/data/webui-admin-token` 中的令牌。首次点击「连接与设置」，填入 DeepSeek API Key 并保存即可对话；保存设置本身不会调用模型。Key 仅写入被忽略的 `runtime/data/webui-secrets.json`，服务器也可读取项目 `.env` 的 `DEEPSEEK_API_KEY`，不会将 Key 回传前端。
 
-- **纯对话**：多轮独立会话，无模型工具；支持代码块、停止请求、历史恢复。
+- **聊天**：多轮独立会话，日常聊天无文件/任务工具；支持代码块、停止请求、历史恢复。
 - **受限助手**：DeepSeek 使用官方 Function Calling，列出、读取和写入本次会话的文本文件；界面展示真实工具结果，文件可以下载。
 - **可选操作**：设置中明确开启后才提供公开搜索、提交 Codex 待审任务。Codex 仍需在本机终端运行 `npm run cli -- web-approve 任务UUID --reviewed`；模型和网页按钮都不能自动批准。
-- **固定边界**：无任意 shell、删除、依赖安装、凭据读取、其他项目访问、任意 URL Fetch 或自动生图；每条消息最多 4 次模型请求、6 次工具调用。每会话最多 20 个文本文件，单文件 64 KiB、总计 1 MiB。
+- **画图**：直接说“画一张你自己的图，场景你来设计”，或选择「画图」输入想法。DeepSeek 自主补齐主体、场景、画风、构图、光线与配色，显示方案后自动通过项目 Codex 内置生图生成一张，支持预览和下载；无需再去终端审批这一张。自拍/鲸酱会附上本机设定图。需要 DeepSeek Key、项目 Codex ChatGPT 登录和剩余额度；默认每天 1 张，与 CLI/QQ 共用正式预算。
+- **固定边界**：无任意 shell、删除、依赖安装、凭据读取、其他项目访问或任意 URL Fetch；每条消息最多 4 次模型请求、6 次工具调用。每会话最多 20 个文本文件，单文件 64 KiB、总计 1 MiB。
 
 会话文件位于 `runtime/workspace/web-UUID/`。正式 WebUI 与 QQ、命令行真实任务共享 `fish.sqlite` 的预算账本；Mock 的会话与预算独立。关闭终端 Ctrl+C，或执行 `npm run cli -- web-stop`。远程 Linux 可通过 `ssh -N -L 17862:127.0.0.1:17862 用户@服务器` 在自己电脑打开页面，不要把服务绑定公网。
 
-完整说明见 [WebUI](docs/webui.md)。目前浏览器流程及官方 API 请求格式已用 Mock/假 HTTP 验证；真实 DeepSeek 验收需要你在本机页面配置自己的 Key。
+完整说明见 [WebUI](docs/webui.md)。目前包括画面方案 → Codex 调用 → PNG 回传的链路、浏览器流程及官方 API 请求格式已用 Mock/假 HTTP/假 runner 验证；真实 DeepSeek → Codex 全链路仍待有剩余额度时验收。
 
 ## Linux 快速部署
 

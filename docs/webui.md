@@ -12,7 +12,7 @@
 
 模型默认 `deepseek-flash`。采用[官方非思考模式 Function Calling](https://api-docs.deepseek.com/guides/tool_calls/)的 assistant.tool_calls → tool.tool_call_id → assistant 循环；请求固定发往 `https://api.deepseek.com/chat/completions`，禁止重定向和自定义内网 endpoint。不依赖 OpenAI SDK，不额外引入前端构建链。主模型每轮非流式返回；浏览器通过 NDJSON 实时显示请求阶段、工具结果和最终文字，**不是 token 级输出流**。
 
-默认人设是鲸酱，昵称“小鱼”，共用 `prompts/whalechan-rp.txt` 的简短 RP。服务器把固定外观文字加入 system prompt；不会把设定图的像素逐轮发给 DeepSeek，也不声称纯文本对话已经看过图片。用户原图保存在本机 runtime/character；获准的 Codex CLI 自画像流程才附上真实参考图，缺图或原生事件未记录使用该图时失败。人设不启用 WebUI 生图、不增加工具或审批权限。来源与许可见 [人设说明](../prompts/README.md)。
+默认人设是鲸酱，昵称“小鱼”，共用 `prompts/whalechan-rp.txt` 的简短 RP。服务器把固定外观文字加入 system prompt；不会把设定图的像素逐轮发给 DeepSeek，也不声称纯文本对话已经看过图片。用户原图保存在本机 runtime/character；Codex CLI 或本机 WebUI 的明确自画像请求才附上真实参考图，缺图或原生事件未记录使用该图时失败。人设本身不增加工具或审批权限。来源与许可见 [人设说明](../prompts/README.md)。
 
 每个会话有独立服务器端上下文，只发送最近 3 个完整成功回合、合计约 24 KiB 的历史；不接受浏览器提交伪造 system/tool 历史。失败或取消的未完成工具链不加入后续上下文。最多 50 个会话、每会话 100 条用户消息；达到上限时需要本机维护数据库。当前未提供永久删除/重命名会话界面，历史与文件不会自动长期归档。
 
@@ -26,7 +26,7 @@
 | search_web | 设置默认关闭；复用 SearchService 的 query、公开 URL、缓存、次数预算检查 |
 | queue_codex | 设置默认关闭；只创建 waiting 任务，返回明确待审状态；没有授权工具 |
 
-纯对话模式完全不向 API 提供工具，收到意外工具调用也拒绝。受限模式只暴露上表当前允许的工具；服务器验证名字、参数字段、类型和实际权限，模型输出无法开启设置。文件工作区由服务器按 UUID 生成在 `runtime/workspace/web-UUID/`；拒绝绝对路径、../、Windows ADS/设备名、symlink/junction、硬链接、隐藏路径和任意执行文件。模型不会获得操作系统 shell 或项目目录访问能力，文件限制由 Node 工具处理器执行，不依赖 prompt 充当文件隔离。
+普通聊天完全不向 API 提供文件/任务工具，收到意外工具调用也拒绝；当前用户消息明确要求画图时，服务器选择下面的独立单张生图流程。受限模式只暴露上表当前允许的工具；服务器验证名字、参数字段、类型和实际权限，模型输出无法开启设置。文件工作区由服务器按 UUID 生成在 `runtime/workspace/web-UUID/`；拒绝绝对路径、../、Windows ADS/设备名、symlink/junction、硬链接、隐藏路径和任意执行文件。模型不会获得操作系统 shell 或项目目录访问能力，文件限制由 Node 工具处理器执行，不依赖 prompt 充当文件隔离。
 
 下载只通过受认证的文件接口，强制 `Content-Disposition: attachment`、`text/plain` 和 sandbox CSP；HTML/SVG/脚本不会在工作台页面执行。所有动态消息和工具结果用 textContent 渲染，代码块不执行、不解析任意 HTML。
 
@@ -37,18 +37,34 @@ npm run cli -- web-status
 npm run cli -- web-approve 任务UUID --reviewed
 ```
 
-审核前核对任务 request/brief。真实执行仍使用既有项目 ChatGPT 登录、生成的独立 Codex UUID 工作区、隔离探针与 Linux/Windows 边界。没有将会话文件隐式复制给 Codex；需要上下文时，应在待审任务说明中明确提供可公开内容。任务结果与清单进入既有 runtime/outputs；当前 WebUI 只展示状态/摘要，没有嵌入执行终端或 Codex 图片入口。
+审核前核对任务 request/brief。真实执行仍使用既有项目 ChatGPT 登录、生成的独立 Codex UUID 工作区、隔离探针与 Linux/Windows 边界。没有将会话文件隐式复制给 Codex；需要上下文时，应在待审任务说明中明确提供可公开内容。任务结果与清单进入既有 runtime/outputs；当前 WebUI 只展示状态/摘要，没有嵌入执行终端；图片使用下面独立的生图入口。
+
+## 请求图片 → 自主设计 → Codex 生图
+
+直接发送“帮我生成一张猫猫图”或“画一张你自己的图，场景你来设计”。页面也有「画图」模式，适合只输入“窗边喝茶，水彩风”这样的简短想法。明确请求即授权本次最多一张，不再要求第二次 CLI 审批；普通聊天、文件内容、工具结果和历史都不能自行授权图片任务。问题、教程、代码和否定句不会按关键字直接出图；自动识别较保守，未识别时可手动选「画图」。
+
+1. 代码先检查项目 Codex 登录、设定图（自画像时）与当前剩余额度；不满足时在模型调用前返回原因。
+2. DeepSeek 收到单独的画面设计指引，自主补齐主体、场景与动作、画风、构图比例、光线、配色、细节与避免项，不追问未指定的细节。只接受一次 `generate_image` 结构化方案，字段/类型/长度及调用数量均由服务器校验。不会同时提供 shell、文件、搜索或普通 Codex 工具。
+3. 页面显示方案卡片，代码把原始请求与方案一起交给项目官方 Codex app-server，单次启用内置生图，禁用 shell、外部 MCP/插件；沿用每次隔离探针和生成的 UUID 工作目录。没有调用本聊天助手的 ImageGen 或单独付费 Image API。
+4. 自画像身份由当前用户原始请求确定，DeepSeek 改写后也不会丢失。代码将本机鲸酱设定图以 `localImage` 附给 Codex，必须在原生完成事件看到匹配的参考路径和 SHA-256；不匹配拒绝发布。
+5. 进程停止后，只接受一张原生 `imageGeneration` 完成的 PNG，校验路径、大小、CRC 和产物清单，再存到 `runtime/outputs/UUID/image.png`。会话只记录自己的图片 ID、方案和清单；预览/下载通过本机鉴权接口，逐次复核归属与 SHA-256。刷新后图片和方案仍能显示，不接受模型声称的文件或成功状态。
+
+正式生图同时占用共享 `fish.sqlite` 的一个 Codex 任务、一次生图及最长执行时长，两项次数原子预留，默认每日 1 张、Codex 每日 2 次；不会扩大或重置额度。失败/取消不自动重试，已经预留的次数保留。单次 Codex 默认 300 秒，连同规划有界等待；可用停止按钮取消。普通 Codex 排队仍需要原有 CLI 审核，不因画图请求获得权限。`--mock` 使用固定 1×1 PNG 测试占位，页面明确标记离线演示，不是 AI 作品，不消费正式预算。
+
+项目未登录时运行 `bash scripts/manage.sh codex-login --device-auth`；Windows 对应 `npm run cli -- codex-login --device-auth`。使用项目自己的 ChatGPT 登录，不复制系统现有 Codex 凭据。设定图仍需本机 `runtime/character/whalechan-reference.png`，不会公开到 GitHub。
 
 ## 预算、取消与持久化
 
 正式模式复用 `runtime/data/fish.sqlite` 的全局额度，QQ 与 WebUI 的调用合并统计。会话/任务记录在 `webui.sqlite`；Mock 使用 `webui-mock.sqlite` 和 `webui-mock-budget.sqlite`，不污染正式账本。每轮 API 请求在发送前按序列化消息、工具 schema、输出上限原子预留，按真实 usage 结算；无有效 usage 的失败保留预留，异常超额锁住后续请求。默认全局 120000 tokens、每用户每日 50 次模型请求；工具循环中的每轮也算请求。输出默认 1024，上限可设 128–4096。
 
-每条用户消息最多 4 次模型请求、6 次工具调用、120 秒，总并发最多 2 个会话，同一会话只允许 1 条处理中消息。第 4 轮请求禁止再调用工具；若 provider 不遵守，服务器拒绝执行。停止按钮断开流并中止上游 fetch；已经完成的文件写入和已经发生的 API 用量不会回滚。进程重启不自动重放消息/任务，运行状态变为失败；QQ 的恢复不会释放 WebUI 活跃 Codex 预留。
+普通消息最多 4 次模型请求、6 次工具调用、120 秒；图片流程最多 1 次规划请求、1 次 Codex 生图、配置的 Codex 超时加 45 秒，总并发最多 2 个会话，同一会话只允许 1 条处理中消息。第 4 轮请求禁止再调用工具；若 provider 不遵守，服务器拒绝执行。停止按钮断开流并中止上游 fetch；已经完成的文件写入和已经发生的 API 用量不会回滚。进程重启不自动重放消息/任务，运行状态变为失败；QQ 的恢复不会释放 WebUI 活跃 Codex 预留。
 
 Ctrl+C 或 `npm run cli -- web-stop` 停止服务。项目运行数据、缓存、配置与截图均在 runtime；系统浏览器自身的配置/缓存仍由浏览器正常管理，这是用户要求打开默认浏览器的正常行为。
 
 ## 验证范围
 
-2026-10-27：36 项自动化测试通过，新增 WebUI 测试覆盖官方请求格式/工具回传、每轮 usage、会话隔离、文件限额/链接/路径、未开启工具拒绝、循环上限、取消、全局预算、本机鉴权与 bootstrap 重放拒绝、下载安全头及 Codex 待审。
+2026-10-27：46 项自动化测试通过，新增 WebUI 测试覆盖官方请求格式/工具回传、每轮 usage、会话隔离、文件限额/链接/路径、未开启工具拒绝、循环上限、取消、全局预算、本机鉴权与 bootstrap 重放拒绝、下载安全头及 Codex 待审；新增画图请求识别、结构化设计方案、单次代码 runner 调用、改写后角色参考传递、失败/取消不重试、预算原子预留、图片归属及哈希复核。
 
 Linux 根目录启动脚本已从项目外目录启动成功；默认浏览器调用使用项目内替身捕获并核对实际参数，一次性连接在真实浏览器验证成功。浏览器已验证新会话、Mock 文件创建及结果显示、工作区隔离、设置窗口、正式模式无 Key 也能启动。Windows BAT 提供源码与 Node 启动路径，尚未在 Windows 机器实跑；真实 DeepSeek 调用仍需用户填写 Key 后验收。
+
+新增 WebUI 画图链路通过离线测试与浏览器 Mock 验收，未新增真实生图调用；正式账本当天的一次图片额度已由早先 CLI 测试使用，未通过真实 DeepSeek 发起此次生图全链路验收。早先 CLI 的真实 Codex 生图成功不等于此次 DeepSeek → Codex 全链路已实测。

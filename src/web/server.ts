@@ -17,7 +17,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
   const origin=`http://127.0.0.1:${port}`;
   const server=createServer(async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
-    res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'");
+    res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'");
     try{
       if(!['127.0.0.1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress??'')||req.headers.host!==`127.0.0.1:${port}`||
         req.headers.origin&&req.headers.origin!==origin||req.headers['sec-fetch-site']==='cross-site'){
@@ -40,6 +40,11 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       if(req.method==='GET'&&url.pathname==='/api/status')value=app.status();
       else if(req.method==='GET'&&url.pathname==='/api/sessions')value=app.sessions();
       else if(req.method==='GET'&&url.pathname==='/api/session')value=app.detail(url.searchParams.get('id'));
+      else if(req.method==='GET'&&url.pathname==='/api/image'){
+        const image=app.image(url.searchParams.get('sessionId'),url.searchParams.get('id'));
+        res.setHeader('Content-Type','image/png');res.setHeader('Content-Disposition','inline; filename="image.png"');
+        res.setHeader('Content-Security-Policy',"default-src 'none'; sandbox");res.end(image);return;
+      }
       else if(req.method==='GET'&&url.pathname==='/api/file'){
         const workspace=app.workspace(url.searchParams.get('id')),name=url.searchParams.get('path')??'';
         const content=workspace.read(name);res.setHeader('Content-Type','text/plain; charset=utf-8');

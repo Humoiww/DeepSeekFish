@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { makeDir, safePath, writePrivate } from '../paths.js';
-import { loadConfig } from '../config.js';
+import { loadConfig,type Config } from '../config.js';
 import { FishError, codeOf } from '../types.js';
 import { Store } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
-import { AppServerRunner, type CodexImageItem } from '../codex/runner.js';
+import { AppServerRunner, type CodexImageItem,type CodexRunResult } from '../codex/runner.js';
 import { collectArtifacts, type Artifact } from '../codex/artifacts.js';
-import { verifyPng } from './provider.js';
+import { verifyPng,MockImageProvider } from './provider.js';
 import { prepareCharacterPortrait,verifyCharacterReference,type CharacterReference } from './character-reference.js';
 
 /** Accept only a native imageGeneration completion, never an agent's claimed path.
@@ -42,7 +42,7 @@ export function captureCodexImage(root:string,cwd:string,images:CodexImageItem[]
   }
 }
 
-export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server';error?:string;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number}
+export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server'|'mock';error?:string;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number}
 export function publishCodexImage(root:string,id:string,maxBytes:number):Artifact[]{
   if(!/^[a-z0-9-]{1,64}$/.test(id))throw new FishError('INVALID_TASK_ID');
   const cwd=safePath(root,'runtime/workspace/'+id);
@@ -52,48 +52,66 @@ export function publishCodexImage(root:string,id:string,maxBytes:number):Artifac
   // whole file set before publishing. image.png consumes the only file allowance.
   return collectArtifacts(root,id,1,maxBytes);
 }
+export interface ImageRunner {generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string):Promise<CodexRunResult>}
+export interface ImageJobOptions {cfg:Config;ledger:Ledger;group:string;signal:AbortSignal;mock?:boolean;character?:boolean;runner?:ImageRunner}
+
+/** Cheap preflight, repeated atomically at dispatch. Does not enable any global switch. */
+export function checkImageCapacity(root:string,cfg:Config,ledger:Ledger,mock=false):void{
+  if(ledger.store.getMeta('budgetFault'))throw new FishError('BUDGET_USAGE_FAULT');
+  if(!mock&&!fs.existsSync(safePath(root,'runtime/codex-home/auth.json')))throw new FishError('CODEX_PROJECT_LOGIN_REQUIRED');
+  if(ledger.value('image')>=cfg.imageDaily)throw new FishError('IMAGE_BUDGET_EXHAUSTED');
+  if(ledger.value('codex')>=cfg.codexDaily)throw new FishError('CODEX_BUDGET_EXHAUSTED');
+  if(ledger.value('codexMs')+cfg.codexTimeoutMs>cfg.codexDailyMs)throw new FishError('CODEX_TIME_BUDGET');
+  if(ledger.store.db.prepare("SELECT id FROM reservations WHERE kind='codex' AND state='held'").get())throw new FishError('CODEX_BUSY');
+}
+
+/** Trusted caller supplies a single human image request; never expose this as a
+ * general model tool. Same capture, isolation and live quota as the CLI. */
+export async function runCodexImage(root:string,prompt:string,options:ImageJobOptions):Promise<ImageSmokeReport>{
+  if(!prompt.trim()||prompt.length>7000)throw new FishError('CODEX_IMAGE_PROMPT_LIMIT');
+  const {cfg,ledger,group,mock=false}=options,id=randomUUID(),started=Date.now();
+  const report:ImageSmokeReport={ok:false,id,source:mock?'mock':'codex-app-server',elapsedMs:0};
+  let reservation:{codex:string;image:string}|undefined,stopUnconfirmed=false,reference:CharacterReference|undefined;
+  const signal=AbortSignal.any([options.signal,AbortSignal.timeout(cfg.codexTimeoutMs)]);
+  try{
+    signal.throwIfAborted();checkImageCapacity(root,cfg,ledger,mock);
+    const cwd=makeDir(root,'runtime/workspace/'+id);
+    const prepared=prepareCharacterPortrait(root,cwd,prompt,options.character);reference=prepared.reference;
+    reservation=ledger.reserveImageJob(group,'local-human',cfg.codexTimeoutMs);
+    if(mock){
+      await new MockImageProvider().generate('offline fixture only',cwd);
+      fs.renameSync(safePath(cwd,'mock.png'),safePath(cwd,'image.png'));
+    }else{
+      const result=await (options.runner??new AppServerRunner(root)).generateImage(cwd,prepared.prompt,signal,reference?.path);
+      signal.throwIfAborted();report.nativeImageCompletions=result.images.length;
+      if(reference)verifyCharacterReference(result.images,reference);
+      captureCodexImage(root,cwd,result.images,cfg.maxArtifactBytes);
+    }
+    signal.throwIfAborted();
+    if(reference){fs.rmSync(reference.path,{force:true});reference=undefined;}
+    report.manifest=publishCodexImage(root,id,cfg.maxArtifactBytes);
+    report.outputDir=safePath(root,'runtime/outputs/'+id);report.ok=true;
+  }catch(e){
+    stopUnconfirmed=codeOf(e)==='CODEX_PROCESS_NOT_TERMINATED';
+    report.error=signal.aborted?'CODEX_IMAGE_CANCELLED_OR_TIMED_OUT':codeOf(e);
+    if(reservation)ledger.error();
+  }finally{
+    if(reference&&!stopUnconfirmed)fs.rmSync(reference.path,{force:true});
+    if(reservation){
+      if(!stopUnconfirmed)ledger.settle(reservation.codex,undefined,Date.now()-started);
+      ledger.settle(reservation.image);
+    }
+    report.elapsedMs=Date.now()-started;
+  }
+  return report;
+}
 export async function codexImageSmoke(root:string,prompt:string,reviewed:boolean):Promise<ImageSmokeReport>{
   if(!reviewed)throw new FishError('CODEX_IMAGE_LOCAL_REVIEW_REQUIRED');
   if(!prompt.trim()||prompt.length>2000)throw new FishError('CODEX_IMAGE_PROMPT_LIMIT');
-  const id=randomUUID(),started=Date.now();
-  const report:ImageSmokeReport={ok:false,id,source:'codex-app-server',elapsedMs:0};
-  let store:Store|undefined,ledger:Ledger|undefined,codexReservation:string|undefined,imageReservation:string|undefined;
-  let stopUnconfirmed=false;
-  let reference:CharacterReference|undefined;
-  const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
-  const cancelled=()=>controller.abort();
-  process.once('SIGINT',cancelled);process.once('SIGTERM',cancelled);
+  const store=new Store(root),cfg=loadConfig(root),ledger=new Ledger(store,()=>cfg),controller=new AbortController();
+  const cancelled=()=>controller.abort();process.once('SIGINT',cancelled);process.once('SIGTERM',cancelled);
   try{
-    if(!fs.existsSync(safePath(root,'runtime/codex-home/auth.json')))throw new FishError('CODEX_PROJECT_LOGIN_REQUIRED');
-    const cfg=loadConfig(root),cwd=makeDir(root,'runtime/workspace/'+id);
-    const prepared=prepareCharacterPortrait(root,cwd,prompt);reference=prepared.reference;
-    store=new Store(root);ledger=new Ledger(store,()=>cfg);
-    // Same live ledger as QQ: no hidden second allowance for the smoke test.
-    codexReservation=ledger.reserve('codex','local-cli','local-human',0,0,cfg.codexTimeoutMs);
-    imageReservation=ledger.reserve('image','local-cli','local-human');
-    timer=setTimeout(cancelled,cfg.codexTimeoutMs);
-    const result=await new AppServerRunner(root).generateImage(cwd,prepared.prompt,controller.signal,reference?.path);
-    controller.signal.throwIfAborted();
-    report.nativeImageCompletions=result.images.length;
-    if(reference)verifyCharacterReference(result.images,reference);
-    captureCodexImage(root,cwd,result.images,cfg.maxArtifactBytes);
-    if(reference){fs.rmSync(reference.path,{force:true});reference=undefined;}
-    // App-server has already stopped. Publish precisely one verified image.
-    const manifest=publishCodexImage(root,id,cfg.maxArtifactBytes);
-    report.ok=true;report.manifest=manifest;report.outputDir=safePath(root,'runtime/outputs/'+id);
-  }catch(e){
-    stopUnconfirmed=codeOf(e)==='CODEX_PROCESS_NOT_TERMINATED';
-    report.error=controller.signal.aborted?'CODEX_IMAGE_CANCELLED_OR_TIMED_OUT':codeOf(e);
-    if(ledger)ledger.error();
-  }finally{
-    if(timer)clearTimeout(timer);
-    if(reference&&!stopUnconfirmed)fs.rmSync(reference.path,{force:true});
-    process.removeListener('SIGINT',cancelled);process.removeListener('SIGTERM',cancelled);
-    if(codexReservation&&!stopUnconfirmed)ledger!.settle(codexReservation,undefined,Date.now()-started);
-    if(imageReservation)ledger!.settle(imageReservation);
-    store?.close();report.elapsedMs=Date.now()-started;
-    // No prompt, account details, raw protocol, image base64 or credentials in logs.
-    writePrivate(root,'runtime/logs/codex-image-last.json',JSON.stringify(report,null,2)+'\n');
-  }
-  return report;
+    const report=await runCodexImage(root,prompt,{cfg,ledger,group:'local-cli',signal:controller.signal});
+    writePrivate(root,'runtime/logs/codex-image-last.json',JSON.stringify(report,null,2)+'\n');return report;
+  }finally{process.removeListener('SIGINT',cancelled);process.removeListener('SIGTERM',cancelled);store.close();}
 }

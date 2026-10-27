@@ -16,31 +16,37 @@ export class Ledger {
     this.store.db.prepare('INSERT INTO counters VALUES (?,?,?,?) ON CONFLICT(day,scope,metric) DO UPDATE SET value=value+excluded.value').run(day,scope,metric,value);
   }
   reserve(kind: Kind, group: string, user: string, input=0, output=0, ms=0): string {
+    return this.store.transaction(()=>this.charge(kind,group,user,input,output,ms));
+  }
+  /** One image attempt needs both allowances or neither; never charge a Codex task
+   * when the shared image allowance has already been spent. */
+  reserveImageJob(group:string,user:string,ms:number):{codex:string;image:string}{
+    return this.store.transaction(()=>({codex:this.charge('codex',group,user,0,0,ms),image:this.charge('image',group,user,0,0,0)}));
+  }
+  private charge(kind:Kind,group:string,user:string,input:number,output:number,ms:number):string{
     const cfg=this.config(); const id=randomUUID(), day=dayKey();
     if (![input,output,ms].every(n => Number.isSafeInteger(n) && n >= 0)) throw new FishError('INVALID_RESERVATION');
-    return this.store.transaction(() => {
-      if (this.store.getMeta('budgetFault')) throw new FishError('BUDGET_USAGE_FAULT');
-      const total=input+output;
-      if (kind === 'model') {
-        if (output > cfg.maxOutputTokens || this.value('tokens','*',day)+total > cfg.dailyTokens ||
-          this.value('tokens','g:'+group,day)+total > cfg.groupDailyTokens ||
-          this.value('requests','u:'+user,day) >= cfg.userDailyRequests) throw new FishError('TOKEN_BUDGET_EXHAUSTED');
-        for (const scope of ['*','g:'+group]) this.add('tokens',total,scope,day);
-        this.add('requests',1,'u:'+user,day);
-      } else {
-        const limits = { search:cfg.searchDaily, codex:cfg.codexDaily, image:cfg.imageDaily, interjection:cfg.dailyInterjections };
-        const scope=kind==='interjection'?'g:'+group:'*';
-        if (this.value(kind,scope,day)>=limits[kind]) throw new FishError(kind.toUpperCase()+'_BUDGET_EXHAUSTED');
-        if (kind==='codex') {
-          if (this.value('codexMs','*',day)+ms>cfg.codexDailyMs) throw new FishError('CODEX_TIME_BUDGET');
-          if (this.store.db.prepare("SELECT id FROM reservations WHERE kind='codex' AND state='held'").get()) throw new FishError('CODEX_BUSY');
-          this.add('codexMs',ms,'*',day);
-        }
-        this.add(kind,1,scope,day);
+    if (this.store.getMeta('budgetFault')) throw new FishError('BUDGET_USAGE_FAULT');
+    const total=input+output;
+    if (kind === 'model') {
+      if (output > cfg.maxOutputTokens || this.value('tokens','*',day)+total > cfg.dailyTokens ||
+        this.value('tokens','g:'+group,day)+total > cfg.groupDailyTokens ||
+        this.value('requests','u:'+user,day) >= cfg.userDailyRequests) throw new FishError('TOKEN_BUDGET_EXHAUSTED');
+      for (const scope of ['*','g:'+group]) this.add('tokens',total,scope,day);
+      this.add('requests',1,'u:'+user,day);
+    } else {
+      const limits = { search:cfg.searchDaily, codex:cfg.codexDaily, image:cfg.imageDaily, interjection:cfg.dailyInterjections };
+      const scope=kind==='interjection'?'g:'+group:'*';
+      if (this.value(kind,scope,day)>=limits[kind]) throw new FishError(kind.toUpperCase()+'_BUDGET_EXHAUSTED');
+      if (kind==='codex') {
+        if (this.value('codexMs','*',day)+ms>cfg.codexDailyMs) throw new FishError('CODEX_TIME_BUDGET');
+        if (this.store.db.prepare("SELECT id FROM reservations WHERE kind='codex' AND state='held'").get()) throw new FishError('CODEX_BUSY');
+        this.add('codexMs',ms,'*',day);
       }
-      this.store.db.prepare('INSERT INTO reservations VALUES (?,?,?,?,?,?,?,?,?)').run(id,day,group,user,kind,input,output,ms,'held');
-      return id;
-    });
+      this.add(kind,1,scope,day);
+    }
+    this.store.db.prepare('INSERT INTO reservations VALUES (?,?,?,?,?,?,?,?,?)').run(id,day,group,user,kind,input,output,ms,'held');
+    return id;
   }
   settle(id: string, usage?: Usage, elapsedMs?: number): void {
     this.store.transaction(() => {

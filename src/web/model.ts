@@ -20,7 +20,9 @@ export class WebModel {
       if(this.mock){
         const last=messages.at(-1)!;let result:WebCompletion;
         const call=(name:string,args:unknown)=>({content:'',tool_calls:[{id:'mock-'+messages.length,type:'function' as const,function:{name,arguments:JSON.stringify(args)}}]});
-        if(last.role==='tool'){
+        if(tools.some(t=>t.function.name==='generate_image')&&!final){
+          result=call('generate_image',{subject:/自己|鲸酱|自拍|自画像/.test(last.content)?'鲸酱，保持设定图中的蓝发、鲸鳍耳、女仆裙和鲸尾':'用户指定的主体，保留原始要求',scene:'清晨窗边，轻松自然的动作，简洁环境',style:'细腻可爱的插画，柔和笔触',composition:'1:1 方形画面，主体居中，四周适当留白',lighting:'温暖的侧逆光，柔和阴影',palette:'浅蓝、奶白与少量暖金色',details:'表情生动，轮廓清晰；无文字、水印和多余肢体'});
+        }else if(last.role==='tool'){
           const data=JSON.parse(last.content);
           result={content:data.error?'【离线演示】这项操作没有完成：'+data.error:
             data.name?'【离线演示】已保存 '+data.name+'。\n\n文件已放在本次会话的工作区，你可以在右侧下载，或继续让我调整内容。':
