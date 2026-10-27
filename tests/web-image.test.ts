@@ -11,18 +11,19 @@ import { createWebApp } from '../src/web/app.js';
 import { webServer } from '../src/web/server.js';
 import { requestsImage,validateImagePlan } from '../src/web/images.js';
 import { MockImageProvider } from '../src/image/provider.js';
+import { mockQuota } from '../src/codex/quota.js';
 import type { ImageRunner } from '../src/image/codex-smoke.js';
 
 const plan={subject:'蓝发少女',scene:'窗边喝茶',style:'水彩插画',composition:'方形，主体居中',lighting:'晨光',palette:'蓝白色',details:'无文字'};
 const call=(args:unknown=plan,name='generate_image')=>({id:'plan-1',type:'function',function:{name,arguments:JSON.stringify(args)}});
 const reply=(calls:any[])=>new Response(JSON.stringify({choices:[{message:{content:'',tool_calls:calls}}],usage:{prompt_tokens:20,completion_tokens:10}}));
 async function png(root:string){const dir=makeDir(root,'runtime/fixtures');await new MockImageProvider().generate('fixture',dir);return fs.readFileSync(path.join(dir,'mock.png'));}
-function web(mock=true,http?:typeof fetch,runner?:ImageRunner){const f=fixture();const app=createWebApp(f.root,mock,http,runner);if(!mock){app.configure({apiKey:'fixture-key'});fs.writeFileSync(path.join(f.root,'runtime/codex-home/auth.json'),'{}');}return {f,app,async close(){await app.close();f.cleanup();}};}
+function web(mock=true,http?:typeof fetch,runner?:ImageRunner){const f=fixture();const app=createWebApp(f.root,mock,http,runner,{async read(){return mockQuota();},async close(){}});if(!mock){app.configure({apiKey:'fixture-key'});fs.writeFileSync(path.join(f.root,'runtime/codex-home/auth.json'),'{}');}return {f,app,async close(){await app.close();f.cleanup();}};}
 const signal=()=>new AbortController().signal;
 
 test('image intent comes from explicit current requests; questions, code and negative requests remain chat',()=>{
-  for(const text of ['画一张你自己的图，场景你来设计','帮我生成一张猫猫图','来张图','给我一张图','我要一张图','generate an image of a cat'])assert.equal(requestsImage(text),true,text);
-  for(const text of ['不要生成图片','如何生成一张图？','帮我写生图接口代码','解释这个提示词','请查看文件','你会生成图片吗'])assert.equal(requestsImage(text),false,text);
+  for(const text of ['画一张你自己的图，场景你来设计','帮我生成一张猫猫图','来张图','给个自拍','给我个自拍','在你的小房间，给个自拍','给我一张图','我要一张图','generate an image of a cat'])assert.equal(requestsImage(text),true,text);
+  for(const text of ['不要生成图片','不要给个自拍','如果我说给个自拍会怎样','解释一下给个自拍这句话','如何生成一张图？','帮我写生图接口代码','解释这个提示词','请查看文件','你会生成图片吗'])assert.equal(requestsImage(text),false,text);
   assert.throws(()=>validateImagePlan({...plan,path:'/tmp/x'}),/INVALID_IMAGE_PLAN/);
   assert.throws(()=>validateImagePlan({...plan,subject:7}),/INVALID_IMAGE_PLAN/);
   assert.throws(()=>validateImagePlan({...plan,subject:'x'.repeat(301)}),/INVALID_IMAGE_PLAN/);
@@ -37,9 +38,11 @@ test('natural image request plans, generates one clearly labelled mock and persi
     const bytes=w.app.image(s.id,turn.images[0].id);assert.equal(bytes.readUInt32BE(16),1);
     assert.throws(()=>w.app.image(other.id,turn.images[0].id),/IMAGE_NOT_FOUND/);
     assert.deepEqual(w.app.workspace(s.id).list(),[]);assert.deepEqual(w.f.ledger.snapshot(),[]);
+    for(let i=1;i<20;i++)await w.app.chat(s.id,'画一张猫','chat',signal(),()=>{});
+    assert.equal(w.app.status().imageLimits.daily,20);assert.equal((w.app.status().budgets.usage as any[]).find(x=>x.metric==='image'&&x.scope==='*').value,20);
     const usage=JSON.stringify(w.app.status().budgets.usage);
     await w.app.chat(s.id,'画一张猫','chat',signal(),()=>{});
-    assert.equal(w.app.detail(s.id).turns[1].answer,'IMAGE_BUDGET_EXHAUSTED');assert.equal(JSON.stringify(w.app.status().budgets.usage),usage);
+    assert.equal(w.app.detail(s.id).turns[20].answer,'IMAGE_BUDGET_EXHAUSTED');assert.equal(JSON.stringify(w.app.status().budgets.usage),usage);
     const output=path.join(w.f.root,'runtime/outputs',turn.images[0].id,'image.png');fs.appendFileSync(output,'tamper');
     assert.throws(()=>w.app.image(s.id,turn.images[0].id),/ARTIFACT_CHANGED/);
   }finally{await w.close();}
@@ -85,7 +88,7 @@ test('failed/cancelled image jobs never publish or retry and keep attempts charg
   }
 });
 test('image and Codex reservations are atomic when allowance is exhausted',()=>{
-  const f=fixture();try{f.ledger.reserve('image','g','u');assert.throws(()=>f.ledger.reserveImageJob('web:fixture','u',1000),/IMAGE_BUDGET_EXHAUSTED/);assert.equal(f.ledger.value('codex'),0);assert.equal(f.ledger.value('codexMs'),0);}finally{f.cleanup();}
+  const f=fixture({imageDaily:1});try{f.ledger.reserve('image','g','u');assert.throws(()=>f.ledger.reserveImageJob('web:fixture','u',1000),/IMAGE_BUDGET_EXHAUSTED/);assert.equal(f.ledger.value('codex'),0);assert.equal(f.ledger.value('codexMs'),0);}finally{f.cleanup();}
 });
 test('self portrait without native reference-use evidence fails after dispatch and does not publish',async()=>{
   let bytes:Buffer,referencePath='';

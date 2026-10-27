@@ -16,10 +16,10 @@
 | userDailyRequests / maxOutputTokens | 50 / 256 | 每用户模型调用次数 / 每回合最大输出 |
 | search / searchDaily | false / 20 | Search 开关 / 每日出站搜索请求数 |
 | searchCount / searchTimeoutMs | 3 / 10000 | 结果数（最多 5）/ 超时 |
-| codex / codexDaily | false / 2 | 接受管理员任务 / 每日执行尝试数 |
-| codexTimeoutMs / codexDailyMs | 300000 / 600000 | 每任务执行超时 / 每日总执行时长上限 |
+| codex / codexDaily | false / 22 | 接受管理员任务 / 共享每日执行尝试数（为 20 次生图和其他任务保留空间） |
+| codexTimeoutMs / codexDailyMs | 300000 / 6600000 | 每任务执行超时 / 每日总执行时长上限 |
 | maxFiles / maxArtifactBytes | 20 / 10485760 | 产物数量与总大小 |
-| images / imageDaily | false / 1 | 生图实验入口 / 每日尝试数 |
+| images / imageDaily | false / 20 | 群聊生图实验入口 / 每日本地尝试数 |
 | port | 17861 | 管理 loopback 端口，修改后重启 |
 
 Codex 调用前预留 timeout+5 秒收尾时间，按实际耗时结算；剩余额度不足最坏时长则拒绝，所以两个接近超时的任务不保证都能获准。搜索/图片/任务的失败尝试保留次数，避免重试绕过预算。未知模型 usage 保留上界费用。`requests` 统计模型回合，因此一次任务的规划与摘要计两次。

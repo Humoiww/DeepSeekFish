@@ -5,6 +5,7 @@ import { RpcProcess } from './process.js';
 import { appServerSpec,executionFeatures,PERMISSION_PROFILE,taskDirectory } from './platform.js';
 import { initialize,probeIsolation } from './probe.js';
 import { verifyPng } from '../image/provider.js';
+import { rateLimitFailure } from './rate-limit.js';
 export { childEnvironment,codexEntry,permissionArgs,PERMISSION_PROFILE } from './platform.js';
 
 export interface TaskRunner { run(cwd:string,brief:string,signal:AbortSignal):Promise<string> }
@@ -45,6 +46,8 @@ export class AppServerRunner implements TaskRunner {
         rpc.on('failure',failure);
         rpc.on('notice',(method:string,p:any)=>{
           if(p?.threadId!==thread.id)return;
+          const limited=rateLimitFailure(p?.error??p?.turn?.error??p?.item?.failure);
+          if(limited){reject(limited);void rpc.stop().catch(()=>{});return;}
           if(method==='turn/started')turnId=p.turn?.id;
           if(imageGeneration&&['item/started','item/completed'].includes(method)&&p.item?.type==='imageGeneration'){
             seenImages.add(p.item.id);

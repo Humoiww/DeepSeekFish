@@ -21,10 +21,22 @@ export class Ledger {
   /** One image attempt needs both allowances or neither; never charge a Codex task
    * when the shared image allowance has already been spent. */
   reserveImageJob(group:string,user:string,ms:number):{codex:string;image:string}{
-    return this.store.transaction(()=>({codex:this.charge('codex',group,user,0,0,ms),image:this.charge('image',group,user,0,0,0)}));
+    return this.store.transaction(()=>{
+      const day=dayKey(),codex=this.charge('codex',group,user,0,0,ms,day),image=this.charge('image',group,user,0,0,0,day);
+      this.store.db.prepare('INSERT INTO image_jobs VALUES (?,?,?,?,0)').run(codex,image,day,ms);return {codex,image};
+    });
   }
-  private charge(kind:Kind,group:string,user:string,input:number,output:number,ms:number):string{
-    const cfg=this.config(); const id=randomUUID(), day=dayKey();
+  /** Human-only local reset. Reservations/audit and unrelated Codex/model usage stay intact. */
+  resetImages(){return this.store.transaction(()=>{
+    if(this.store.db.prepare("SELECT id FROM reservations WHERE kind IN ('codex','image') AND state IN ('held','unknown')").get())throw new FishError('IMAGE_RESET_BUSY_OR_UNCERTAIN');
+    const day=dayKey(),images=this.value('image','*',day);
+    const paired=this.store.db.prepare('SELECT count(*) AS count,coalesce(sum(spent_ms),0) AS ms FROM image_jobs WHERE day=? AND reset=0').get(day) as {count:number;ms:number};
+    this.add('image',-images,'*',day);this.add('codex',-Math.min(this.value('codex','*',day),paired.count),'*',day);this.add('codexMs',-Math.min(this.value('codexMs','*',day),paired.ms),'*',day);
+    this.store.db.prepare('UPDATE image_jobs SET reset=1 WHERE day=?').run(day);
+    this.store.audit('local-reset','web',JSON.stringify({images,pairedCodex:paired.count,pairedMs:paired.ms}));return {images,pairedCodex:paired.count};
+  });}
+  private charge(kind:Kind,group:string,user:string,input:number,output:number,ms:number,day=dayKey()):string{
+    const cfg=this.config(); const id=randomUUID();
     if (![input,output,ms].every(n => Number.isSafeInteger(n) && n >= 0)) throw new FishError('INVALID_RESERVATION');
     if (this.store.getMeta('budgetFault')) throw new FishError('BUDGET_USAGE_FAULT');
     const total=input+output;
@@ -44,6 +56,7 @@ export class Ledger {
         this.add('codexMs',ms,'*',day);
       }
       this.add(kind,1,scope,day);
+      if(kind==='image')this.add('imageAttempts',1,'*',day);
     }
     this.store.db.prepare('INSERT INTO reservations VALUES (?,?,?,?,?,?,?,?,?)').run(id,day,group,user,kind,input,output,ms,'held');
     return id;
@@ -62,7 +75,10 @@ export class Ledger {
           this.add('tokens',diff,scope,r.day);this.add('input',usage.input,scope,r.day);this.add('output',usage.output,scope,r.day);
         }
       }
-      if (r.kind==='codex' && elapsedMs !== undefined) this.add('codexMs',Math.min(r.ms,Math.max(0,Math.ceil(elapsedMs)))-r.ms,'*',r.day);
+      if (r.kind==='codex' && elapsedMs !== undefined){
+        const spent=Math.min(r.ms,Math.max(0,Math.ceil(elapsedMs)));this.add('codexMs',spent-r.ms,'*',r.day);
+        this.store.db.prepare('UPDATE image_jobs SET spent_ms=? WHERE codex_id=?').run(spent,id);
+      }
       // Unknown usage remains fully charged, including after network errors/restarts.
       this.store.db.prepare('UPDATE reservations SET state=? WHERE id=?').run(usage || r.kind!=='model' ? 'settled' : 'unknown',id);
     });

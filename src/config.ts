@@ -22,8 +22,8 @@ export const defaults: Config = {
   quietHours: [0, 7], interests: ['AI', '编程', '游戏'], bufferMs: 1200, historyHours: 24,
   dailyTokens: 120000, groupDailyTokens: 60000, userDailyRequests: 50, maxOutputTokens: 256,
   search: false, searchDaily: 20, searchCount: 3, searchTimeoutMs: 10000,
-  codex: false, codexDaily: 2, codexTimeoutMs: 300000, codexDailyMs: 600000,
-  maxFiles: 20, maxArtifactBytes: 10485760, images: false, imageDaily: 1,
+  codex: false, codexDaily: 22, codexTimeoutMs: 300000, codexDailyMs: 6600000,
+  maxFiles: 20, maxArtifactBytes: 10485760, images: false, imageDaily: 20,
   port: 17861, model: 'deepseek-v4-flash',
 };
 export function validateConfig(input: Record<string, unknown>): Config {

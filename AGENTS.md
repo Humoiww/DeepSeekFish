@@ -7,3 +7,5 @@
 - Keep API reservations atomic and persistent; unknown usage keeps the reservation charged.
 - Do not enable image generation or paid calls implicitly. Keep limitations documented.
 - WebUI model tools only access their generated session workspace; never expose shell, secrets, settings or approval tools.
+
+- User-authorized WebUI image limit is 20/day. Local human reset preserves reservation/audit history and cannot reset provider quota or clear unknown/active leases. Codex quota monitoring is account-only RPC; never create a model turn to inspect usage.

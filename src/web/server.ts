@@ -58,6 +58,8 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
           value={launchUrl:origin+'/#bootstrap='+bootstrap,mock:app.mock};
         }
         else if(url.pathname==='/api/settings')value=app.configure(b);
+        else if(url.pathname==='/api/codex-quota/refresh')value=await app.refreshQuota();
+        else if(url.pathname==='/api/images/reset')value=app.resetImages();
         else if(url.pathname==='/api/chat'){
           const abort=new AbortController();
           const disconnected=()=>{if(!res.writableEnded)abort.abort();};res.once('close',disconnected);
@@ -67,7 +69,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
               if(res.destroyed)return;
               if(!started){res.setHeader('Content-Type','application/x-ndjson; charset=utf-8');res.flushHeaders();started=true;}
               res.write(JSON.stringify(event)+'\n');
-            });res.end();return;
+            },b.imageConfirmed===true);res.end();return;
           }finally{res.removeListener('close',disconnected);}
         }else if(url.pathname==='/api/approve'){
           if(b.reviewed!==true||typeof b.id!=='string'||req.headers['x-fish-local-approval']!==b.id)throw new FishError('LOCAL_REVIEW_REQUIRED');

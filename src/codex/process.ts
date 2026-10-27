@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once, EventEmitter } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 import { FishError } from '../types.js';
+import { rateLimitFailure } from './rate-limit.js';
 
 export interface ProcessSpec { command:string; args:string[]; cwd:string; env:NodeJS.ProcessEnv }
 export class RpcProcess extends EventEmitter {
@@ -37,7 +38,7 @@ export class RpcProcess extends EventEmitter {
         const result=/requestApproval$/.test(msg.method)?{decision:'decline'}:undefined;
         this.write(result?{id:msg.id,result}:{id:msg.id,error:{code:-32601,message:'Client capability disabled'}});
       }else if(msg.id!==undefined){
-        const p=this.pending.get(msg.id);if(p){this.pending.delete(msg.id);msg.error?p.reject(new FishError('CODEX_RPC_REJECTED')):p.resolve(msg.result);}
+        const p=this.pending.get(msg.id);if(p){this.pending.delete(msg.id);msg.error?p.reject(rateLimitFailure(msg.error)??new FishError('CODEX_RPC_REJECTED')):p.resolve(msg.result);}
       }else if(msg.method)this.emit('notice',msg.method,msg.params);
     }
   }

@@ -10,6 +10,7 @@ import { AppServerRunner, type CodexImageItem,type CodexRunResult } from '../cod
 import { collectArtifacts, type Artifact } from '../codex/artifacts.js';
 import { verifyPng,MockImageProvider } from './provider.js';
 import { prepareCharacterPortrait,verifyCharacterReference,type CharacterReference } from './character-reference.js';
+import { CodexRateLimitError } from '../codex/rate-limit.js';
 
 /** Accept only a native imageGeneration completion, never an agent's claimed path.
  * CODEX_HOME/generated_images is a trusted harness output, not model filesystem access. */
@@ -42,7 +43,7 @@ export function captureCodexImage(root:string,cwd:string,images:CodexImageItem[]
   }
 }
 
-export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server'|'mock';error?:string;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number}
+export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server'|'mock';error?:string;retryAt?:number;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number}
 export function publishCodexImage(root:string,id:string,maxBytes:number):Artifact[]{
   if(!/^[a-z0-9-]{1,64}$/.test(id))throw new FishError('INVALID_TASK_ID');
   const cwd=safePath(root,'runtime/workspace/'+id);
@@ -94,6 +95,7 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
   }catch(e){
     stopUnconfirmed=codeOf(e)==='CODEX_PROCESS_NOT_TERMINATED';
     report.error=signal.aborted?'CODEX_IMAGE_CANCELLED_OR_TIMED_OUT':codeOf(e);
+    if(e instanceof CodexRateLimitError)report.retryAt=e.retryAt;
     if(reservation)ledger.error();
   }finally{
     if(reference&&!stopUnconfirmed)fs.rmSync(reference.path,{force:true});

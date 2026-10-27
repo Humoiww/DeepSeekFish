@@ -13,6 +13,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS seen(grp TEXT,id TEXT,at INTEGER,PRIMARY KEY(grp,id));
       CREATE TABLE IF NOT EXISTS replies(grp TEXT,id TEXT,count INTEGER,at INTEGER,PRIMARY KEY(grp,id));
       CREATE TABLE IF NOT EXISTS reservations(id TEXT PRIMARY KEY,day TEXT,grp TEXT,usr TEXT,kind TEXT,input INTEGER,output INTEGER,ms INTEGER,state TEXT);
+      CREATE TABLE IF NOT EXISTS image_jobs(codex_id TEXT PRIMARY KEY,image_id TEXT,day TEXT,spent_ms INTEGER,reset INTEGER);
       CREATE TABLE IF NOT EXISTS counters(day TEXT,scope TEXT,metric TEXT,value INTEGER,PRIMARY KEY(day,scope,metric));
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,at INTEGER,kind TEXT,grp TEXT,detail TEXT);
       CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,grp TEXT,usr TEXT,request TEXT,brief TEXT,state TEXT,created INTEGER,started INTEGER,result TEXT,manifest TEXT,reservation TEXT,source TEXT);

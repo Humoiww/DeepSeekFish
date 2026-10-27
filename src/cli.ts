@@ -46,7 +46,7 @@ async function main():Promise<void>{
       print('WebUI 已在运行（'+(data.mock?'离线演示':'正式模式')+'）：http://127.0.0.1:17862');
       if(!args.includes('--no-open'))openLocalBrowser(data.launchUrl);return;
     }
-    app.recover();process.once('SIGINT',stop);process.once('SIGTERM',stop);
+    app.recover();app.startQuota();process.once('SIGINT',stop);process.once('SIGTERM',stop);
     print(`DeepSeekFish WebUI ${app.mock?'离线演示':'DeepSeek API'}：${url}；Ctrl+C 停止。`);
     print('手动打开时，本机令牌位于 runtime/data/webui-admin-token。');
     if(!args.includes('--no-open')&&!openLocalBrowser(launchUrl))print('当前为无桌面环境，请手动打开链接；远程主机可用 SSH 转发 17862 端口。');
