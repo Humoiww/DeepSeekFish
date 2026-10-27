@@ -43,7 +43,7 @@ export function adminServer(app:App,onStop:()=>void){
           app.tasks.approve(b.id);value={ok:true,id:b.id};
         }else if(url.pathname==='/api/mock-message'&&app.mock){
           if(typeof b.text!=='string'||b.text.length>2000)throw new FishError('INVALID_MESSAGE');
-          await app.bot.receive({id:crypto.randomUUID(),group:b.group??'demo-group',user:b.user??'demo-admin',text:b.text,at:Date.now(),mentioned:b.mentioned!==false,event:'mention'});
+          await app.bot.receive({id:crypto.randomUUID(),group:b.group??app.cfg().groups[0],user:b.user??app.cfg().admins[0],text:b.text,at:Date.now(),mentioned:b.mentioned!==false,event:'mention'});
           await app.bot.flush();value={ok:true,sent:(app.transport as any).sent};
         }else if(url.pathname==='/api/stop'){value={ok:true};setImmediate(onStop);}
         else{res.statusCode=404;throw new FishError('NOT_FOUND');}

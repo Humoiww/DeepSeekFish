@@ -62,10 +62,14 @@ test('JSON-RPC approval is declined, cancellation kills actual process tree on P
     assert.throws(()=>process.kill(result.pid,0));
   }finally{await rpc.stop();f.cleanup();}
 });
-test('real runner fails closed on non-Windows; child env excludes ambient secrets',async()=>{
+test('real runner validates task cwd and requires project login; child env excludes ambient secrets',async()=>{
   const f=fixture();try{
     process.env.FISH_TEST_SECRET='secret';process.env.OPENAI_API_KEY='do-not-inherit';
     const env=childEnvironment(f.root);assert.equal(env.FISH_TEST_SECRET,undefined);assert.equal(env.OPENAI_API_KEY,undefined);assert.ok(env.CODEX_HOME!.startsWith(f.root));
-    if(process.platform!=='win32')await assert.rejects(new AppServerRunner(f.root).run(f.root,'task',new AbortController().signal),/CODEX_WINDOWS_REQUIRED/);
+    const cwd=makeDir(f.root,'runtime/workspace/login-test');
+    if(['linux','win32'].includes(process.platform)){
+      await assert.rejects(new AppServerRunner(f.root).run(f.root,'task',new AbortController().signal),/CODEX_INVALID_WORKDIR/);
+      await assert.rejects(new AppServerRunner(f.root).run(cwd,'task',new AbortController().signal),/CODEX_PROJECT_LOGIN_REQUIRED/);
+    }
   }finally{delete process.env.FISH_TEST_SECRET;delete process.env.OPENAI_API_KEY;f.cleanup();}
 });

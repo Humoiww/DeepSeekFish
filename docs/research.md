@@ -32,13 +32,13 @@
 
 所以没有将这个 provider 的“isolated thread”解读成私人文件隔离。项目专用 app-server 客户端补上本机审批、命名文件权限、OS 生命周期、时间预算与产物校验。没有修改全局 DSH，也没有重写 Codex Runtime。
 
-## Codex 实际协议与 Windows
+## Codex 实际协议与平台边界
 
 [官方 app-server 文档](https://learn.chatgpt.com/docs/app-server) 的 stdio 为 JSONL，使用 initialize → initialized → thread/start → turn/start，终态以 turn/completed.status 为准。取消会触发进程树终止；不开放任何客户端工具执行服务。
 
 实际安装 0.164.0 已无登录运行 `generate-json-schema --experimental`，并成功 initialize、account/read、permissionProfile/list，没有发起模型回合。生成的 **实际 schema** 中，旧 SandboxPolicy.workspaceWrite 没有 readOnlyAccess 字段；可用的是实验性 thread/turn `permissions` 和 command/exec `permissionProfile`。因此采用命名权限，而非向旧字段发送可能被忽略的值。此差异会影响未来升级，升级必须重新核对 schema。
 
-[官方权限文档](https://learn.chatgpt.com/docs/permissions) 与 [Windows 文档](https://learn.chatgpt.com/docs/windows/windows-sandbox) 描述 MXC、elevated 与 unelevated；后者不支持 denied read paths。单纯 workspace-write 并不表示默认禁止所有外部读取。本项目强制 MXC，选择只含 root deny、minimal read、绝对任务目录 write 的配置，不混用 legacy sandbox_mode。MXC 不可用、权限 profile 不可用、读写探针失败或生效 profile 不符时，在模型回合前拒绝任务。本环境是 Linux，**Windows MXC 和 Job Object 尚未现场验证**。
+[官方权限文档](https://learn.chatgpt.com/docs/permissions) 与 [Windows 文档](https://learn.chatgpt.com/docs/windows/windows-sandbox) 描述 MXC、elevated 与 unelevated；后者不支持 denied read paths。单纯 workspace-write 并不表示默认禁止所有外部读取。本项目强制 MXC，选择只含 root deny、minimal read、绝对任务目录 write 的配置，不混用 legacy sandbox_mode。MXC 不可用、权限 profile 不可用、读写探针失败或生效 profile 不符时，在模型回合前拒绝任务。本环境是 Linux，**Windows MXC 和 Job Object 尚未现场验证**。Linux 增补使用额外 bubblewrap mount/PID namespace 和原生命名权限：不挂载用户主目录或整个项目，取消时清理包括 setsid 后代在内的 namespace。无凭据正向、外部读取与宿主写入探针已通过，真实账号模型任务未验证。参考[官方 Linux 权限说明](https://learn.chatgpt.com/docs/permissions)与 [bubblewrap 手册](https://github.com/containers/bubblewrap/blob/main/bwrap.xml)。
 
 ## 搜索和生图
 

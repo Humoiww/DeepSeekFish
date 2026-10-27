@@ -9,6 +9,8 @@ import { FishError, codeOf } from './types.js';
 import { adminServer } from './admin/server.js';
 import { bind } from './qq/adapter.js';
 import { codexEntry, childEnvironment } from './codex/runner.js';
+import { boundaryStatus } from './codex/platform.js';
+import { checkSandbox } from './codex/probe.js';
 
 const root=projectRoot();prepare(root);loadSecrets(root);
 const [command='help',...args]=process.argv.slice(2);
@@ -48,10 +50,14 @@ async function main():Promise<void>{
   }else if(command==='stop')print(await api('stop',{}));
   else if(command==='say')print(await api('mock-message',{text:args.join(' ')}));
   else if(command==='bind')await bind(root);
+  else if(command==='sandbox-check'){
+    const result=await checkSandbox(root);print(result);if(!result.ok)process.exitCode=1;
+  }
   else if(command==='codex-login'){
     // A NEW project-owned login, initiated only by a local human command.
-    writePrivate(root,'runtime/codex-home/config.toml','cli_auth_credentials_store = "file"\n');
-    const proc=spawn(process.execPath,[codexEntry(root),'login'],{cwd:safePath(root,'runtime/workspace'),env:childEnvironment(root),stdio:'inherit',shell:false});
+    if(args.some(a=>a!=='--device-auth'))throw new FishError('USAGE_CODEX_LOGIN_DEVICE_AUTH');
+    if(!fs.existsSync(safePath(root,'runtime/codex-home/config.toml')))writePrivate(root,'runtime/codex-home/config.toml','cli_auth_credentials_store = "file"\n');
+    const proc=spawn(process.execPath,[codexEntry(root),'-c','cli_auth_credentials_store="file"','login',...args],{cwd:safePath(root,'runtime/workspace'),env:childEnvironment(root),stdio:'inherit',shell:false});
     const [exit]=await once(proc,'exit');if(exit!==0)throw new FishError('CODEX_LOGIN_FAILED');
   }else if(command==='doctor'){
     const versions:Record<string,string>={node:process.version};
@@ -60,11 +66,11 @@ async function main():Promise<void>{
     }
     print({versions,platform:process.platform,root,qqConfigured:fs.existsSync(safePath(root,'runtime/data/qq-credentials.json'))||!!process.env.QQBOT_APPID,
       deepseekKeyPresent:!!process.env.DEEPSEEK_API_KEY,codexProjectLogin:fs.existsSync(safePath(root,'runtime/codex-home/auth.json')),
-      unattendedCodex:false,windowsBoundary:process.platform==='win32'?'requires MXC and per-run canary; not certified':'not tested here; real execution refused',
+      unattendedCodex:false,codexBoundary:boundaryStatus(root),
       externalRuntimeWrites:'none requested by application; Node runtime itself is supplied externally read-only'});
   }else if(command==='demo'){
     const app=createApp(root,true,{codex:true,search:true,images:true},true);app.tasks.recover();
-    const m={id:randomUUID(),group:'demo-group',user:'demo-admin',at:Date.now(),mentioned:true,event:'mention' as const,text:'你好小鱼'};
+    const m={id:randomUUID(),group:app.cfg().groups[0],user:app.cfg().admins[0],at:Date.now(),mentioned:true,event:'mention' as const,text:'你好小鱼'};
     await app.bot.receive(m);await app.bot.flush();
     await app.bot.receive({...m,id:randomUUID(),text:'/fish codex 创建一个 hello 文件'});
     const task=app.tasks.list().find(t=>t.state==='waiting');if(!task)throw new FishError('DEMO_TASK_MISSING');
@@ -73,6 +79,6 @@ async function main():Promise<void>{
     await app.bot.receive({...m,id:randomUUID(),text:'/fish image 测试图片'});
     print({messages:(app.transport as any).sent,files:(app.transport as any).files,task:app.tasks.get(task.id),budget:app.ledger.snapshot()});
     await app.bot.stop();app.store.close();
-  }else print(`DeepSeekFish\n  npm run build / npm test\n  npm run mock / npm start / npm run demo\n  npm run cli -- status|tasks|history GROUP|clear GROUP|cancel ID|stop\n  npm run cli -- set autonomous false\n  npm run cli -- approve ID --reviewed\n  npm run cli -- say "你好小鱼"  (Mock only)\n  npm run bind / npm run cli -- codex-login / npm run doctor`);
+  }else print(`DeepSeekFish\n  npm run build / npm test\n  npm run mock / npm start / npm run demo\n  npm run cli -- status|tasks|history GROUP|clear GROUP|cancel ID|stop\n  npm run cli -- set autonomous false\n  npm run cli -- approve ID --reviewed\n  npm run cli -- say "你好小鱼"  (Mock only)\n  npm run bind / npm run cli -- codex-login [--device-auth]\n  npm run doctor / npm run cli -- sandbox-check (keyless, no model turn)`);
 }
 main().catch(e=>{console.error('DeepSeekFish: '+codeOf(e));process.exitCode=1;});

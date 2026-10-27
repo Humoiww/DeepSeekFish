@@ -12,6 +12,7 @@ import { MockImageProvider, CodexImageProvider } from './image/provider.js';
 import { Bot } from './agent/bot.js';
 import { credentials, MockTransport, QQTransport } from './qq/adapter.js';
 import { FishError } from './types.js';
+import { boundaryStatus } from './codex/platform.js';
 
 export function createApp(root:string,mock:boolean,override:Partial<Config>={},demo=false){
   prepare(root);loadSecrets(root);
@@ -43,7 +44,7 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
   const status=()=>({mode:mock?'mock':'live',enabled:config.enabled,qq:transport.status,
     deepseek:{provider:provider.kind,model:config.model,credentialPresent:!!process.env.DEEPSEEK_API_KEY,status:store.getMeta('modelStatus')??'not probed'},
     codex:{enabled:config.codex,provider:mock?'mock':'official-app-server',unattended:false,localApprovalRequired:true,
-      projectLoginPresent:fs.existsSync(safePath(root,'runtime/codex-home/auth.json')),isolation:mock?'mock only':'Windows MXC + per-run canary required; not certified on this host'},
+      projectLoginPresent:fs.existsSync(safePath(root,'runtime/codex-home/auth.json')),isolation:mock?'mock only':boundaryStatus(root)},
     features:{autonomous:config.autonomous,search:config.search,images:config.images},
     budgets:{dailyTokens:config.dailyTokens,maxOutputTokens:config.maxOutputTokens,usage:ledger.snapshot(),fault:store.getMeta('budgetFault')??null},
     groups:config.groups.map(group=>({group,ordinaryMessages:store.getMeta('qqOrdinary:'+group)?'observed':'unverified; mention-only capability assumed'})),

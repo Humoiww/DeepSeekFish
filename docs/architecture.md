@@ -15,7 +15,7 @@ flowchart TD
   Admin --> Plan[预算内 DeepSeek 独立任务说明]
   Plan --> Queue[持久待审任务]
   Queue --> Local[本机 CLI 审核与授权]
-  Local --> Native[官方 Codex app-server + OS 边界]
+  Local --> Native[官方 Codex app-server + Linux namespace 或 Windows MXC]
   Native --> Validate[退出后独立产物校验]
   Validate --> Synthesis[预算内结果摘要与文件回传]
 ```
@@ -27,6 +27,8 @@ flowchart TD
 SQLite 使用 WAL、busy_timeout、BEGIN IMMEDIATE。调用前先记录 reservation 和 counters。文本模型预留序列化 UTF-8 字节数加 4096 framing 余量及最大输出 token，调用结束使用实际 usage 结算；不确定的错误和崩溃保留预留费用，不自动退款。如果服务端 usage 超出保守上界，会记录实际数并锁住后续请求，需要本机检查。该防御依赖 DeepSeek 文本 BPE 与没有隐藏工具上下文的调用协议，不是提供商收费的数学证明。
 
 每日使用北京时间自然日；reservation 记录自己的日期，跨午夜仍在原日结算。全局 token、每群 token、每用户模型调用次数独立计数。搜索不占文本模型 token，但有预留请求数。Codex 使用任务数、最坏执行时长预留和全局并发 1，不制造订阅 token 数字。图片也有单独计数。
+
+Linux 通过外层 bubblewrap 空挂载视图 / PID namespace 与内层原生 profile 组合；Windows 保持 MXC / Job Object。`sandbox-check` 是显式无模型诊断，实际每次执行仍重复探针。
 
 任务状态：waiting → running → succeeded / failed / cancelled / timed_out。群命令只能创建 waiting；本地 API 认证且明确 reviewed 后才能运行。关闭/崩溃不自动重放任务。超时与取消先终止实际进程，再允许收集产物；中断任务没有成功产物。
 

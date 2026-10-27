@@ -1,8 +1,78 @@
 # DeepSeekFish
 
-运行在本地的 QQ 群 DeepSeek 机器人 MVP。普通聊天先在本地归并和判断；模型、搜索、任务均经过 SQLite 额度检查。管理员群命令可以提出 Codex 任务，但真实执行必须由本机逐次审核。
+运行在 Linux / Windows 本机的 QQ 群 DeepSeek 机器人 MVP。普通聊天先在本地归并和判断；模型、搜索、任务均经过 SQLite 额度检查。管理员群命令可以提出 Codex 任务，但真实执行必须由本机逐次审核。
 
-**当前交付状态：离线闭环可运行；真实 QQ / DeepSeek 未登录冒烟；Windows 原生 Codex 隔离未在本机验证。真实 Codex 默认关闭，自动插话、搜索、生图也默认关闭。**
+**当前状态：Linux 和 Windows 均可部署 QQ / DeepSeek / Mock；Linux 无凭据隔离探针与进程取消已实测，真实 QQ / 模型调用仍需你配置账号后验证。Windows MXC 尚未现场验证。Codex、自动插话、搜索、生图默认关闭，Codex 每任务必须本机审核。**
+
+## Linux 快速部署
+
+需要 Bash、Node.js **24.9+** 和 npm；支持 npm 官方 Codex payload 提供的 Linux x64 / arm64。普通聊天、搜索和 Mock 不需要 Docker、systemd 或 bubblewrap，也不需要 sudo。可使用已有 Node，或者把[官方 Node 便携发行包](https://nodejs.org/en/download)解压到 `runtime/tools/node/`，让 `runtime/tools/node/bin/node` 存在。
+
+```bash
+git clone https://github.com/Humoiww/DeepSeekFish.git
+cd DeepSeekFish
+bash scripts/install.sh
+bash scripts/manage.sh demo
+bash scripts/start.sh --mock
+```
+
+这些脚本从自身位置定位项目，临时设置本进程 PATH、TEMP 和 npm 缓存，不改 shell 配置或全局包。已有 Node/npm 也可以直接运行 `npm ci --ignore-scripts && npm run build`、`npm run demo`、`npm run mock`。`install.sh` 不覆盖你已有的 `.env` 或配置。
+
+Mock 启动后，在第二个终端：
+
+```bash
+bash scripts/manage.sh say '你好小鱼'
+bash scripts/manage.sh status
+bash scripts/manage.sh stop
+```
+
+正式部署先保留本地配置，再绑定 QQ：
+
+```bash
+# 文件已存在时不要覆盖；填写 API Key、群与管理员 openid。
+cp -n .env.example .env
+cp -n config/example.json config/local.json
+chmod 600 .env config/local.json
+# 用自己的编辑器填写这两个文件，再扫码。
+bash scripts/manage.sh bind
+bash scripts/manage.sh doctor
+bash scripts/start.sh
+```
+
+`bind` 的二维码可在 SSH 终端扫描。无浏览器的 Linux 如需 Codex 账号，使用 `bash scripts/manage.sh codex-login --device-auth`；账号可能需要先允许设备码登录。不复制现有 `~/.codex/auth.json`。
+
+前台用 Ctrl+C；在另一个终端执行 `bash scripts/manage.sh stop` 也能关闭。需要退出 SSH 后继续运行时，可在安装完成后手动启动：
+
+```bash
+nohup bash scripts/start.sh > runtime/logs/console.log 2>&1 &
+# 查看状态 / 关闭 / 再次运行上面一行以重启
+bash scripts/manage.sh status
+bash scripts/manage.sh stop
+```
+
+管理服务始终只绑定 `127.0.0.1:17861`。如果部署在远程 Linux，请在自己电脑执行 `ssh -N -L 17861:127.0.0.1:17861 用户@服务器`，然后访问本机 `http://127.0.0.1:17861`，不需要对外放行管理端口。
+
+### Linux 的真实 Codex（可选）
+
+聊天功能不依赖这一节。真实 Codex 额外要求 bubblewrap 和允许创建 user / mount / PID namespace 的内核/主机策略。程序优先使用已有 `/usr/bin/bwrap`，否则尝试项目内官方 Codex payload 附带的 helper；不会自动安装系统包或修改 AppArmor、sysctl。
+
+```bash
+# 不需要任何 API Key，也不启动模型，先验证当前机器的隔离边界。
+bash scripts/manage.sh sandbox-check
+# 仅当结果 ok:true 后，再由你手动完成项目专用 ChatGPT 登录。
+bash scripts/manage.sh codex-login --device-auth
+# 先保持正式机器人运行；下面在第二个终端操作。
+bash scripts/manage.sh set codex true
+bash scripts/manage.sh tasks
+# 核对群管理员提出的 request 和 DeepSeek 整理的 brief 后逐次授权。
+bash scripts/manage.sh approve 任务UUID --reviewed
+```
+
+Linux launcher 为整个 app-server 创建空的挂载视图和独立 PID 命名空间，只挂载系统运行文件、官方依赖、项目 Codex 状态、临时目录和本次任务目录。不会把整个项目、用户主目录或其他项目挂进去；Codex 原生命令沙箱再限制凭据目录和命令网络。每次任务都重跑正向读写及越界探针，取消/超时会销毁命名空间，包含另起 session 的子进程。
+
+`sandbox-check` 失败时，仍可用聊天、搜索和 Mock，真实任务会失败关闭。在限制 user namespace 的容器、某些 AppArmor/主机策略下需要管理员另行提供受支持环境；不要用 sudo 运行机器人、全盘挂载、危险模式或关闭系统安全策略来绕过。探针是当前机器的局部证据，不是所有工具/内核路径的安全证明。
+
+详细排错、目录边界和无头登录说明见 [Linux 部署](docs/linux.md)。
 
 ## Windows 快速开始
 
@@ -91,9 +161,9 @@ npm run cli -- tasks
 npm run cli -- approve 任务UUID --reviewed
 ```
 
-`codex-login` 使用官方 ChatGPT 登录流程，新登录数据写入 `runtime/codex-home/`，不复用现有用户目录。只接受 ChatGPT 账号类型，不用 OpenAI API Key 代替订阅额度。已有项目登录后不要重复登录。项目 CLI 不会自动启用/安装 MXC 或修改系统权限。
+`codex-login` 使用官方 ChatGPT 登录流程，新登录数据写入 `runtime/codex-home/`，不复用现有用户目录。只接受 ChatGPT 账号类型，不用 OpenAI API Key 代替订阅额度。已有项目登录后不要重复登录。项目 CLI 不会自动安装 Linux 系统依赖、启用 MXC 或修改系统权限。无浏览器时可追加 `--device-auth`；此参数会传给官方登录程序。
 
-真实 runner 仅在 Windows 尝试启动；使用强制 MXC、命名文件权限配置、无命令网络、禁用提权与外部 MCP，并在模型回合前测试工作区外读写是否被拒绝。Windows Job Object 负责进程树终止。任何必要能力缺失都失败关闭，**本交付不能宣称已证明 Windows 私人文件隔离，也不提供无人值守开启开关**。Linux 上返回 `CODEX_WINDOWS_REQUIRED`。
+真实 runner 支持 Linux 和 Windows。Linux 使用 bubblewrap 挂载/PID 命名空间，Windows 强制 MXC 与 Job Object；两者都采用命名权限配置、禁用提权/外部 MCP，并在模型回合前运行隔离探针。可先执行 `npm run cli -- sandbox-check` 做不计费检查。必要能力缺失时失败关闭，**不提供无人值守开启开关，Windows 原生隔离仍待现场验证**。
 
 任务在 `runtime/workspace/UUID/` 执行，校验后的产物复制到 `runtime/outputs/UUID/`，附文件大小和 SHA-256 清单。QQ 一次最多发送摘要及 3 个文件，更多文件在本地查看。任务/结果失败会明确报告；原触发消息过期时结果保留，需 `/fish result UUID` 重新领取。
 
@@ -102,7 +172,7 @@ npm run cli -- approve 任务UUID --reviewed
 ```text
 src/qq, social, agent, budget, storage, codex, search, image, admin
 config/             默认配置示例；local.json 被忽略
-scripts/            Windows 启动、进程树 owner、无凭据协议检查
+scripts/            Linux / Windows 安装启动、进程边界、无凭据协议检查
 tests/             离线验收、并发预算与实际子进程测试
 docs/              架构、官方接口、权限、配置、验收状态
 runtime/workspace/  每任务工作区
@@ -116,4 +186,4 @@ runtime/research/   本次官方接口调查和生成的协议 schema（不提�
 
 最近错误、触发原因、用量、队列由 `status` 展示，持久日志在 SQLite `audit` 表（最近 200 条），控制台仅输出固定状态。`runtime/logs/` 预留，不额外复制原始聊天到日志文件。消息默认只保留每群 20 条且最多 24 小时，每分钟清理；任务请求/说明在终态超过 24 小时后清空，任务结果与产物需按本地需要清理。原始消息不会作为 Codex 上下文传递。
 
-详细说明：[架构](docs/architecture.md)、[官方接口调查](docs/research.md)、[安全边界](docs/security.md)、[配置](docs/configuration.md)、[验收和已知限制](docs/status.md)。
+详细说明：[Linux 部署](docs/linux.md)、[架构](docs/architecture.md)、[官方接口调查](docs/research.md)、[安全边界](docs/security.md)、[配置](docs/configuration.md)、[验收和已知限制](docs/status.md)。
