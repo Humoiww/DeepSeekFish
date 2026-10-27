@@ -1,0 +1,11 @@
+node_modules/
+dist/
+runtime/**
+!runtime/.gitkeep
+.env
+.env.*
+!.env.example
+config/local.json
+*.key
+*.pem
+*.log

@@ -1,0 +1,66 @@
+import { randomUUID } from 'node:crypto';
+import type { Config } from '../config.js';
+import { Store } from '../storage/db.js';
+import { FishError, type Usage } from '../types.js';
+
+export const dayKey = (at = Date.now()): string => new Date(at + 8 * 3600000).toISOString().slice(0, 10);
+type Kind = 'model' | 'search' | 'codex' | 'image' | 'interjection';
+interface Reservation { id:string; day:string; grp:string; usr:string; kind:Kind; input:number; output:number; ms:number; state:string }
+/** Every allowance is charged before dispatch under one SQLite write transaction. */
+export class Ledger {
+  constructor(public store: Store, private config: () => Config) {}
+  value(metric: string, scope = '*', day = dayKey()): number {
+    return Number((this.store.db.prepare('SELECT value FROM counters WHERE day=? AND scope=? AND metric=?').get(day,scope,metric) as any)?.value ?? 0);
+  }
+  add(metric: string, value: number, scope='*', day=dayKey()): void {
+    this.store.db.prepare('INSERT INTO counters VALUES (?,?,?,?) ON CONFLICT(day,scope,metric) DO UPDATE SET value=value+excluded.value').run(day,scope,metric,value);
+  }
+  reserve(kind: Kind, group: string, user: string, input=0, output=0, ms=0): string {
+    const cfg=this.config(); const id=randomUUID(), day=dayKey();
+    if (![input,output,ms].every(n => Number.isSafeInteger(n) && n >= 0)) throw new FishError('INVALID_RESERVATION');
+    return this.store.transaction(() => {
+      if (this.store.getMeta('budgetFault')) throw new FishError('BUDGET_USAGE_FAULT');
+      const total=input+output;
+      if (kind === 'model') {
+        if (output > cfg.maxOutputTokens || this.value('tokens','*',day)+total > cfg.dailyTokens ||
+          this.value('tokens','g:'+group,day)+total > cfg.groupDailyTokens ||
+          this.value('requests','u:'+user,day) >= cfg.userDailyRequests) throw new FishError('TOKEN_BUDGET_EXHAUSTED');
+        for (const scope of ['*','g:'+group]) this.add('tokens',total,scope,day);
+        this.add('requests',1,'u:'+user,day);
+      } else {
+        const limits = { search:cfg.searchDaily, codex:cfg.codexDaily, image:cfg.imageDaily, interjection:cfg.dailyInterjections };
+        const scope=kind==='interjection'?'g:'+group:'*';
+        if (this.value(kind,scope,day)>=limits[kind]) throw new FishError(kind.toUpperCase()+'_BUDGET_EXHAUSTED');
+        if (kind==='codex') {
+          if (this.value('codexMs','*',day)+ms>cfg.codexDailyMs) throw new FishError('CODEX_TIME_BUDGET');
+          if (this.store.db.prepare("SELECT id FROM reservations WHERE kind='codex' AND state='held'").get()) throw new FishError('CODEX_BUSY');
+          this.add('codexMs',ms,'*',day);
+        }
+        this.add(kind,1,scope,day);
+      }
+      this.store.db.prepare('INSERT INTO reservations VALUES (?,?,?,?,?,?,?,?,?)').run(id,day,group,user,kind,input,output,ms,'held');
+      return id;
+    });
+  }
+  settle(id: string, usage?: Usage, elapsedMs?: number): void {
+    this.store.transaction(() => {
+      const r=this.store.db.prepare('SELECT * FROM reservations WHERE id=?').get(id) as unknown as Reservation;
+      if (!r || r.state !== 'held') return;
+      if (r.kind==='model' && usage && [usage.input,usage.output].every(n=>Number.isSafeInteger(n)&&n>=0)) {
+        if (usage.input>r.input || usage.output>r.output) {
+          this.store.setMeta('budgetFault','Provider usage exceeded conservative reservation; review locally.');
+          this.store.audit('error',r.grp,'USAGE_BOUND_EXCEEDED');
+        }
+        const diff=usage.input+usage.output-r.input-r.output;
+        for (const scope of ['*','g:'+r.grp]) {
+          this.add('tokens',diff,scope,r.day);this.add('input',usage.input,scope,r.day);this.add('output',usage.output,scope,r.day);
+        }
+      }
+      if (r.kind==='codex' && elapsedMs !== undefined) this.add('codexMs',Math.min(r.ms,Math.max(0,Math.ceil(elapsedMs)))-r.ms,'*',r.day);
+      // Unknown usage remains fully charged, including after network errors/restarts.
+      this.store.db.prepare('UPDATE reservations SET state=? WHERE id=?').run(usage || r.kind!=='model' ? 'settled' : 'unknown',id);
+    });
+  }
+  error(): void { this.add('apiErrors',1); }
+  snapshot(): unknown { return this.store.db.prepare('SELECT scope,metric,value FROM counters WHERE day=? ORDER BY scope,metric').all(dayKey()); }
+}

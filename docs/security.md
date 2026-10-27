@@ -1,0 +1,39 @@
+# 权限与信任边界
+
+## 本次能承诺的范围
+
+所有应用创建的代码、数据库、缓存、日志、依赖、研究资料和产物位于 DeepSeekFish。当前运行环境为 Linux，**不能宣称已经具备经 Windows 实测的私人文件隔离**。真实 Codex 默认关闭，且没有无人值守模式；每个真实任务需要本机人审。Linux 真实执行直接拒绝。
+
+在 Windows 上，本机授权只是启动受限实验的必要条件，不意味着允许访问私人文件或解除沙箱。runner 强制 MXC，无危险降级路径；若权限配置/进程边界不能建立，返回失败。系统若要求管理员开通 MXC，必须由用户自行处理，本程序不会修改系统策略、用户 ACL、防火墙或沙箱配置。
+
+## 固定执行边界
+
+- cwd 只能是程序生成的 `runtime/workspace/UUID`，任何群消息和模型输出都不能指定 cwd。
+- 权限 profile 显式 root deny、minimal read、绝对任务目录 write、命令网络关闭；不混用旧 sandbox_mode。OS 最小路径是为了程序运行，不包含额外授权的私人项目。
+- app-server 与执行命令的信任边界不同：app-server 自身需要账号通信和项目 CODEX_HOME，不能把 shell 网络限制当成宿主进程网络隔离的证明。
+- 项目 CODEX_HOME 使用独立本机登录；现有用户 Codex auth/config 没有被复制、修改或重置。仅允许 ChatGPT 账号类型，不让环境 API Key 变成独立付费模式。
+- 子进程环境按白名单重建，不继承 DeepSeek、QQ、SSH agent、OpenAI API Key 等凭据。显式关闭外部 MCP、hooks、apps、plugins、multi_agent、内置生图、搜索与依赖自动安装。管理工具不作为模型工具暴露。
+- 每次启动先做真实 OS 外部读写 canary，随后校验线程返回的 activePermissionProfile。探针只用项目内、任务目录外的无秘密哨兵，不读取用户私人文件。canary 通过是局部证据，不是对所有系统/工具路径的安全证明。
+- Windows launcher 使用 CreateProcess suspended → AssignProcessToJobObject → ResumeThread，job 启用 kill-on-close 且不允许 breakaway。它监控 bot owner 进程，owner 退出时关闭 job；取消、超时、正常结束均收尾进程树。不能确认进程终止时保留并发 reservation。Windows 原生效果仍需现场测试。
+
+## 路径和产物
+
+`safePath` 同时检查规范路径、realpath、逐级 lstat，拒绝绝对路径、驱动器/UNC、反斜杠、../、ADS、Windows 设备名、尾随点/空格，以及任一祖先 symlink/junction。任务产物拒绝硬链接、特殊文件、秘密配置文件、不允许的扩展名；限制深度、目录项数量、文件数、总字节。
+
+独立校验程序在子进程完全结束后扫描整个产物集合，通过后复制到独立 outputs；记录 SHA-256、大小、相对路径。发送前重新检查路径、类型、大小、链接数与哈希。网页、SVG、脚本不会在管理页面执行。路径校验不等于进程沙箱；不承诺防御拥有同等本机用户权限、能同时替换文件的恶意本机进程。
+
+## 输入与管理
+
+群消息、工具结果、网页摘要、模型输出、生成文件都是不可信数据。只有固定命令 parser 和事件 openid 白名单能提出任务。普通模型只返回文字，没有 shell/授权工具；Codex 只收到管理员本条请求整理的独立 brief，不接收整段群聊。
+
+管理 API 只监听 127.0.0.1，要求本机随机令牌并检查 Host、Origin、跨站请求。审批要求 reviewed 标记与对应任务 ID。拥有本机用户文件权限的人可取得此令牌，因此它不用于防御恶意本机用户。不要把管理令牌发到群里，也不要对外映射端口。
+
+SQLite 用量/身份计数为成本管理所需持久数据；原始聊天按窗口和 TTL 清理，最近日志只保留固定错误码/触发原因。秘密环境变量不进入日志。提示词能减少误用，但不用于授予权限。
+
+## 外部目录审计
+
+没有进行全局依赖安装、GitHub 推送、远程仓库创建或现有凭据修改。Node 可执行文件来自 Codex 已提供的只读运行时，路径在仓库外，这是执行工具依赖，不是项目运行数据。
+
+首次诊断 `codex --version` 时未重定向 CODEX_HOME，官方 CLI 尝试创建默认 PATH aliases，执行沙箱以只读文件系统拒绝；未成功写入外部目录。随后所有 Codex 协议检查/运行都通过项目 CODEX_HOME、TEMP/TMP/XDG_CACHE_HOME 重定向。首次 snap curl 也因无法创建外部运行目录失败，后续下载改用 Python，下载和 npm 缓存均写在仓库内。这里记录失败尝试，避免隐瞒依赖副作用。
+
+本报告只覆盖本项目主动发起的程序；不声称能审计桌面宿主自身的内部遥测或运行数据。
