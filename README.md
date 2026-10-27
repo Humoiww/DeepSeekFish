@@ -1,0 +1,119 @@
+# DeepSeekFish
+
+运行在本地的 QQ 群 DeepSeek 机器人 MVP。普通聊天先在本地归并和判断；模型、搜索、任务均经过 SQLite 额度检查。管理员群命令可以提出 Codex 任务，但真实执行必须由本机逐次审核。
+
+**当前交付状态：离线闭环可运行；真实 QQ / DeepSeek 未登录冒烟；Windows 原生 Codex 隔离未在本机验证。真实 Codex 默认关闭，自动插话、搜索、生图也默认关闭。**
+
+## Windows 快速开始
+
+需要 Node.js **24.9+** 和 npm（建议现有 Node 24 LTS），Git 仅用于仓库管理。可将官方便携 Node 解压到 `runtime/tools/node/` 后在当前 PowerShell 会话加入 PATH；本项目不安装系统软件或全局包。真实 Codex 实验模式还需要支持 MXC 的 Windows 11，参见[权限边界](docs/security.md)。
+
+```powershell
+cd 路径\DeepSeekFish
+npm ci --ignore-scripts
+npm run build
+npm test
+npm run demo
+npm run mock
+```
+
+或者在允许本地脚本的 PowerShell 会话中执行 `./scripts/install.ps1`、`./scripts/start.ps1 -Mock`。不需要更改全局 ExecutionPolicy。`.npmrc` 把 npm 缓存写入 `runtime/cache/npm/`。
+
+`demo` 会运行一次聊天→任务规划→模拟本机审批→Mock Codex→产物校验→结果回复，再演示 Mock 搜索和 PNG。它不会使用 QQ、模型或图像服务。`Mock` 使用 `demo-group` / `demo-admin`（配置非空时使用你的白名单）。Demo、Mock、Live 分别使用不同 SQLite 文件；三者预算互不污染。
+
+Mock 保持运行时，在第二个终端操作：
+
+```powershell
+npm run cli -- say "你好小鱼"
+npm run cli -- status
+npm run cli -- set codex true
+npm run cli -- say "/fish codex 创建 hello.txt"
+npm run cli -- tasks
+# 先核对 request 和 brief，再把下面 ID 换成实际任务 UUID
+npm run cli -- approve 任务UUID --reviewed
+npm run cli -- tasks
+npm run cli -- stop
+```
+
+本机状态页为 <http://127.0.0.1:17861>。它只监听 IPv4 loopback；页面输入 `runtime/data/admin-token` 中的本机令牌。管理 API 也需要令牌，并检查 Host / Origin；不开放公网。授权任务只能用本地 CLI，没有群聊审批按钮。
+
+## 配置真实机器人
+
+1. 复制 `.env.example` 为 `.env`，填入自己的 `DEEPSEEK_API_KEY`。模型默认 `deepseek-v4-flash`，可在本地配置中改为账号实际可用模型。
+2. 执行 `npm run bind`，用 QQ 扫终端二维码，选择一个机器人。腾讯官方 connector 负责扫码，凭据仅保存到被忽略的 `runtime/data/qq-credentials.json`。已有开放平台机器人也可在 `.env` 填入 `QQBOT_APPID` / `QQBOT_SECRET`。
+3. 复制 `config/example.json` 为 `config/local.json`，填入群 `group_openid`、管理员 `member_openid`。**它们不是 QQ 号。** 可从 QQ 开放平台调试事件取得；本程序不向未列入白名单的群回复或保存内容。
+4. 在开放平台/机器人管理中把机器人加入授权群，核实事件权限。仅收到 `GROUP_AT_MESSAGE_CREATE` 时就按 @ 模式使用；收到该群的 `GROUP_MESSAGE_CREATE` 后，状态才显示普通消息已观察到。这不证明有全部历史或全部消息权限。
+5. 执行 `npm run doctor`、`npm start`，用白名单群中的一次 @ 做最小验证。此步骤会使用你配置的 API 额度，由你手动发起。
+
+没有凭据时请用 Mock。程序不会自动创建账号、付费资源或发起模型健康检查。
+
+## 群命令
+
+| 命令 | 权限与行为 |
+| --- | --- |
+| `@小鱼 你好` / 呼唤“小鱼” | 已授权消息中的常规聊天，归并后回复 |
+| `/fish search 查询` | 群白名单内可用；需本机开启搜索；返回来源链接 |
+| `/fish codex 具体任务` | 仅管理员；DeepSeek 整理独立任务说明，排入本机待审队列 |
+| `/fish cancel UUID` | 仅管理员；只取消本群任务，运行中任务会触发真实进程终止 |
+| `/fish result UUID` | 只读取本群任务；超出被动回复窗口后用新命令领取 |
+| `/fish image 描述` | 仅管理员且需开启；Mock 返回测试 PNG，真实提供者返回 unsupported |
+
+默认只响应 @ 和直接呼唤；`autoReply` 开启后每个归并窗口自动回复。`autonomous` 开启后，兴趣话题、补充机会和低概率随机插话还要满足活跃度、话题延续、冷却、夜间安静与每日限额。不会每条消息都调用模型。平台没给普通消息时，任何开关都不能补出消息权限。
+
+## 本机管理
+
+```powershell
+npm run cli -- set enabled false
+npm run cli -- set autonomous true
+npm run cli -- set search true
+npm run cli -- set codex true
+npm run cli -- set dailyTokens 120000
+npm run cli -- history 群OPENID
+npm run cli -- clear 群OPENID
+npm run cli -- cancel 任务UUID
+npm run cli -- status
+npm run cli -- stop
+```
+
+关闭机器人或 Codex 会同时请求停止当前任务。Ctrl+C 也会优雅关闭；再次运行相同启动命令即可重启。正常模式需先启动进程，管理 CLI 通过本机认证 API 操作。群/管理员白名单在 `config/local.json` 中修改后重启。管理开关持久化到各模式 SQLite，优先于 JSON 中同名设置。
+
+## Codex 本机授权实验
+
+项目内安装官方 `@openai/codex@0.164.0`。**不读取、复制或更改你原有的 Codex 登录数据。** 若要尝试真实执行，先在本机运行：
+
+```powershell
+npm run cli -- codex-login
+npm run doctor
+npm start
+# 第二个终端，或启动前在 config/local.json 开启 codex
+npm run cli -- set codex true
+npm run cli -- tasks
+npm run cli -- approve 任务UUID --reviewed
+```
+
+`codex-login` 使用官方 ChatGPT 登录流程，新登录数据写入 `runtime/codex-home/`，不复用现有用户目录。只接受 ChatGPT 账号类型，不用 OpenAI API Key 代替订阅额度。已有项目登录后不要重复登录。项目 CLI 不会自动启用/安装 MXC 或修改系统权限。
+
+真实 runner 仅在 Windows 尝试启动；使用强制 MXC、命名文件权限配置、无命令网络、禁用提权与外部 MCP，并在模型回合前测试工作区外读写是否被拒绝。Windows Job Object 负责进程树终止。任何必要能力缺失都失败关闭，**本交付不能宣称已证明 Windows 私人文件隔离，也不提供无人值守开启开关**。Linux 上返回 `CODEX_WINDOWS_REQUIRED`。
+
+任务在 `runtime/workspace/UUID/` 执行，校验后的产物复制到 `runtime/outputs/UUID/`，附文件大小和 SHA-256 清单。QQ 一次最多发送摘要及 3 个文件，更多文件在本地查看。任务/结果失败会明确报告；原触发消息过期时结果保留，需 `/fish result UUID` 重新领取。
+
+## 数据、日志与目录
+
+```text
+src/qq, social, agent, budget, storage, codex, search, image, admin
+config/             默认配置示例；local.json 被忽略
+scripts/            Windows 启动、进程树 owner、无凭据协议检查
+tests/             离线验收、并发预算与实际子进程测试
+docs/              架构、官方接口、权限、配置、验收状态
+runtime/workspace/  每任务工作区
+runtime/outputs/    校验产物
+runtime/data/       Live/Mock/Demo SQLite、QQ 密钥、本机令牌
+runtime/codex-home/ 项目专用 Codex 状态/新登录
+runtime/cache/      npm、搜索缓存的本机目录
+runtime/tmp/        临时文件
+runtime/research/   本次官方接口调查和生成的协议 schema（不提交）
+```
+
+最近错误、触发原因、用量、队列由 `status` 展示，持久日志在 SQLite `audit` 表（最近 200 条），控制台仅输出固定状态。`runtime/logs/` 预留，不额外复制原始聊天到日志文件。消息默认只保留每群 20 条且最多 24 小时，每分钟清理；任务请求/说明在终态超过 24 小时后清空，任务结果与产物需按本地需要清理。原始消息不会作为 Codex 上下文传递。
+
+详细说明：[架构](docs/architecture.md)、[官方接口调查](docs/research.md)、[安全边界](docs/security.md)、[配置](docs/configuration.md)、[验收和已知限制](docs/status.md)。
