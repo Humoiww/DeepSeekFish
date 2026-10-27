@@ -2,7 +2,7 @@
 
 ## 本次能承诺的范围
 
-所有应用创建的代码、数据库、缓存、日志、依赖、研究资料和产物位于 DeepSeekFish。当前运行环境为 Linux，**不能宣称已经具备经 Windows 实测的私人文件隔离**。真实 Codex 默认关闭，且没有无人值守模式；每个真实任务需要本机人审。Linux 现已提供独立挂载/PID 命名空间加原生权限 profile 的实现，无凭据探针通过后仍需每任务本机审批；真实账号任务未现场验证。
+所有应用创建的代码、数据库、缓存、日志、依赖、研究资料和产物位于 DeepSeekFish。当前运行环境为 Linux，**不能宣称已经具备经 Windows 实测的私人文件隔离**。真实 Codex 默认关闭，且没有无人值守模式；每个真实任务需要本机人审。Linux 现已提供独立挂载/PID 命名空间加原生权限 profile 的实现，无凭据探针通过后仍需每任务本机审批；已额外验证一次真实 ChatGPT 项目账号的命令行内置生图，其他真实链路尚未验证。
 
 在 Windows 上，本机授权只是启动受限实验的必要条件，不意味着允许访问私人文件或解除沙箱。runner 强制 MXC，无危险降级路径；若权限配置/进程边界不能建立，返回失败。系统若要求管理员开通 MXC，必须由用户自行处理，本程序不会修改系统策略、用户 ACL、防火墙或沙箱配置。
 
@@ -13,7 +13,7 @@
 - 权限 profile 显式 root deny、minimal read、绝对任务目录 write、命令网络关闭；Linux 为原生 sandbox 启动器另加 vendor / arg0-linux 的只读权限，不授权 auth.json；不混用旧 sandbox_mode。OS 最小路径是为了程序运行，不包含额外授权的私人项目。
 - app-server 与执行命令的信任边界不同：app-server 自身需要账号通信和项目 CODEX_HOME，不能把 shell 网络限制当成宿主进程网络隔离的证明。
 - 项目 CODEX_HOME 使用独立本机登录；现有用户 Codex auth/config 没有被复制、修改或重置。仅允许 ChatGPT 账号类型，不让环境 API Key 变成独立付费模式。
-- 子进程环境按白名单重建，不继承 DeepSeek、QQ、SSH agent、OpenAI API Key 等凭据。显式关闭外部 MCP、hooks、apps、plugins、multi_agent、内置生图、搜索与依赖自动安装。管理工具不作为模型工具暴露。
+- 子进程环境按白名单重建，不继承 DeepSeek、QQ、SSH agent、OpenAI API Key 等凭据。显式关闭外部 MCP、hooks、apps、plugins、multi_agent、搜索与依赖自动安装。普通任务关闭内置生图；只有本机显式授权的 `codex-image --reviewed` 为当前回合启用内置生图，同时关闭 shell，不启用群聊生图。管理工具不作为模型工具暴露。
 - 每次启动先做真实 OS 外部读写 canary，还要通过任务目录正向读写控制，并检查宿主越界写入没有落盘，随后校验线程返回的 activePermissionProfile。探针只用项目内、任务目录外的无秘密哨兵，不读取用户私人文件。canary 通过是局部证据，不是对所有系统/工具路径的安全证明。
 - Windows launcher 使用 CreateProcess suspended → AssignProcessToJobObject → ResumeThread，job 启用 kill-on-close 且不允许 breakaway。它监控 bot owner 进程，owner 退出时关闭 job；取消、超时、正常结束均收尾进程树。不能确认进程终止时保留并发 reservation。Windows 原生效果仍需现场测试。
 

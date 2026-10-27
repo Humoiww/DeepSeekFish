@@ -2,7 +2,7 @@
 
 运行在 Linux / Windows 本机的 QQ 群 DeepSeek 机器人 MVP。普通聊天先在本地归并和判断；模型、搜索、任务均经过 SQLite 额度检查。管理员群命令可以提出 Codex 任务，但真实执行必须由本机逐次审核。
 
-**当前状态：Linux 和 Windows 均可部署 QQ / DeepSeek / Mock；Linux 无凭据隔离探针与进程取消已实测，真实 QQ / 模型调用仍需你配置账号后验证。Windows MXC 尚未现场验证。Codex、自动插话、搜索、生图默认关闭，Codex 每任务必须本机审核。**
+**当前状态：Linux 和 Windows 均可部署 QQ / DeepSeek / Mock；Linux 隔离探针、进程取消及一次命令行 Codex 内置生图已实测。真实 QQ / DeepSeek 仍需配置账号后验证，Windows MXC 尚未现场验证。Codex、自动插话、搜索、群聊生图默认关闭，Codex 每任务必须本机审核。**
 
 ## Linux 快速部署
 
@@ -166,6 +166,22 @@ npm run cli -- approve 任务UUID --reviewed
 真实 runner 支持 Linux 和 Windows。Linux 使用 bubblewrap 挂载/PID 命名空间，Windows 强制 MXC 与 Job Object；两者都采用命名权限配置、禁用提权/外部 MCP，并在模型回合前运行隔离探针。可先执行 `npm run cli -- sandbox-check` 做不计费检查。必要能力缺失时失败关闭，**不提供无人值守开启开关，Windows 原生隔离仍待现场验证**。
 
 任务在 `runtime/workspace/UUID/` 执行，校验后的产物复制到 `runtime/outputs/UUID/`，附文件大小和 SHA-256 清单。QQ 一次最多发送摘要及 3 个文件，更多文件在本地查看。任务/结果失败会明确报告；原触发消息过期时结果保留，需 `/fish result UUID` 重新领取。
+
+### 命令行调用 Codex 生图（实验）
+
+本机可以单独发起一次 Codex 内置生图测试。先构建、完成项目专用 ChatGPT 登录并通过 `sandbox-check`：
+
+```bash
+bash scripts/manage.sh codex-login --device-auth
+bash scripts/manage.sh sandbox-check
+bash scripts/manage.sh codex-image --reviewed '生成一张戴耳机的蓝色小鱼吉祥物，简洁插画，浅色背景，无文字，只生成一张 PNG'
+```
+
+Windows 对应命令为 `npm run cli -- codex-image --reviewed "图片描述"`。`--reviewed` 表示本机明确授权这一张图；不需要启动 QQ，也不改变群聊的 Codex/生图开关。代码启动项目内的官方 Codex app-server，仅为本次调用打开内置 `image_generation`，禁用 shell、外部 MCP 和插件，保留原有文件/网络隔离与逐次探针。不会调用当前聊天助手的生图工具，也不使用单独计费的 Image API。
+
+只有收到 Codex 原生 `imageGeneration` 完成事件，并校验实际 PNG 的路径、大小和 CRC 后，才发布到 `runtime/outputs/UUID/image.png`，输出 SHA-256 清单。支持收集项目 `CODEX_HOME/generated_images/` 中的实际图片或协议内联 PNG；只有远程 fileId 而无本地文件/内联数据时明确失败。不接受模型文字声称的成功、任意路径或代码绘制的替代图。诊断结果保存在 `runtime/logs/codex-image-last.json`，不保存原始协议、图片 base64 或登录信息。
+
+这会使用你的 Codex 订阅额度，并在调用前占用正式 SQLite 中的一个 Codex 任务及一次生图次数；失败不会自动重试或退回次数。普通 Codex 任务仍关闭生图，QQ 的实验性 ImageProvider 仍返回 `unsupported`；此命令不代表 QQ 生图链路已验证。内置生图能力及额度参见[官方文档](https://learn.chatgpt.com/docs/image-generation)。
 
 ## 数据、日志与目录
 

@@ -36,12 +36,18 @@
 
 [官方 app-server 文档](https://learn.chatgpt.com/docs/app-server) 的 stdio 为 JSONL，使用 initialize → initialized → thread/start → turn/start，终态以 turn/completed.status 为准。取消会触发进程树终止；不开放任何客户端工具执行服务。
 
-实际安装 0.164.0 已无登录运行 `generate-json-schema --experimental`，并成功 initialize、account/read、permissionProfile/list，没有发起模型回合。生成的 **实际 schema** 中，旧 SandboxPolicy.workspaceWrite 没有 readOnlyAccess 字段；可用的是实验性 thread/turn `permissions` 和 command/exec `permissionProfile`。因此采用命名权限，而非向旧字段发送可能被忽略的值。此差异会影响未来升级，升级必须重新核对 schema。
+初始调查时，实际安装 0.164.0 已无登录运行 `generate-json-schema --experimental`，并成功 initialize、account/read、permissionProfile/list，没有发起模型回合。生成的 **实际 schema** 中，旧 SandboxPolicy.workspaceWrite 没有 readOnlyAccess 字段；可用的是实验性 thread/turn `permissions` 和 command/exec `permissionProfile`。因此采用命名权限，而非向旧字段发送可能被忽略的值。此差异会影响未来升级，升级必须重新核对 schema。
 
-[官方权限文档](https://learn.chatgpt.com/docs/permissions) 与 [Windows 文档](https://learn.chatgpt.com/docs/windows/windows-sandbox) 描述 MXC、elevated 与 unelevated；后者不支持 denied read paths。单纯 workspace-write 并不表示默认禁止所有外部读取。本项目强制 MXC，选择只含 root deny、minimal read、绝对任务目录 write 的配置，不混用 legacy sandbox_mode。MXC 不可用、权限 profile 不可用、读写探针失败或生效 profile 不符时，在模型回合前拒绝任务。本环境是 Linux，**Windows MXC 和 Job Object 尚未现场验证**。Linux 增补使用额外 bubblewrap mount/PID namespace 和原生命名权限：不挂载用户主目录或整个项目，取消时清理包括 setsid 后代在内的 namespace。无凭据正向、外部读取与宿主写入探针已通过，真实账号模型任务未验证。参考[官方 Linux 权限说明](https://learn.chatgpt.com/docs/permissions)与 [bubblewrap 手册](https://github.com/containers/bubblewrap/blob/main/bwrap.xml)。
+[官方权限文档](https://learn.chatgpt.com/docs/permissions) 与 [Windows 文档](https://learn.chatgpt.com/docs/windows/windows-sandbox) 描述 MXC、elevated 与 unelevated；后者不支持 denied read paths。单纯 workspace-write 并不表示默认禁止所有外部读取。本项目强制 MXC，选择只含 root deny、minimal read、绝对任务目录 write 的配置，不混用 legacy sandbox_mode。MXC 不可用、权限 profile 不可用、读写探针失败或生效 profile 不符时，在模型回合前拒绝任务。本环境是 Linux，**Windows MXC 和 Job Object 尚未现场验证**。Linux 增补使用额外 bubblewrap mount/PID namespace 和原生命名权限：不挂载用户主目录或整个项目，取消时清理包括 setsid 后代在内的 namespace。无凭据正向、外部读取与宿主写入探针已通过；后来一次真实项目账号的内置生图也已通过，见下节。参考[官方 Linux 权限说明](https://learn.chatgpt.com/docs/permissions)与 [bubblewrap 手册](https://github.com/containers/bubblewrap/blob/main/bwrap.xml)。
 
 ## 搜索和生图
 
 [DeepSeek 官方 Search/Fetch](https://api-docs.deepseek.com/guides/search/) 已有独立 `/v1/tools/search` 和 `/v1/tools/fetch`。本 MVP 实现 Search；固定官方 HTTPS endpoint、128 字符 query、最多 5 条结果、need_content=false，不包含任意网页 Fetch。Search/Fetch 按请求计费，不当作文本 token；文档宣布 2026-11-01 北京时间起开始计费。本项目默认关闭，未做付费验证。
 
-Codex 0.164.0 schema 有 `imageGeneration` 事件、savedPath 和 provider 能力查询，但不能据此认定当前账号、DSH 文本 provider 或受限任务已具备生图授权。[官方 feature 定义](https://github.com/openai/codex/blob/main/codex-rs/features/src/lib.rs) 和[工具选择条件](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/spec_plan.rs) 表明 availability 还受 feature、账号和 provider 影响。真实 Codex 代码任务显式关闭 image_generation；独立 CodexImageProvider 返回 unsupported。Mock 只输出固定测试 PNG，不冒充模型生图，也未使用 OpenAI Image API。将来需要先验证账号实际工具和项目内输出路径，再实现单图交付。
+Codex 0.164.0 schema 有 `imageGeneration` 事件、savedPath 和 provider 能力查询，但不能据此认定当前账号、DSH 文本 provider 或受限任务已具备生图授权。[官方 feature 定义](https://github.com/openai/codex/blob/main/codex-rs/features/src/lib.rs) 和[工具选择条件](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/spec_plan.rs) 表明 availability 还受 feature、账号和 provider 影响。真实 Codex 代码任务显式关闭 image_generation；QQ 的 CodexImageProvider 返回 unsupported。Mock 只输出固定测试 PNG，不冒充模型生图，也未使用 OpenAI Image API。随后新增的本机命令行实际验证见下节，QQ 自动交付仍待集成。
+
+## 命令行内置生图补充（2026-10-27）
+
+[官方生图文档](https://learn.chatgpt.com/docs/image-generation)说明 CLI 可描述图片或显式使用 imagegen skill，内置生图使用 Codex 通用额度。本地固定版本 0.164.0 的 `features list` 列出 stable `image_generation`；官方生成的 app-server schema 包含 `imageGeneration` 的 `status`、`savedPath`、`result`/`fileId` 字段。因此新增仅本机明确授权的 `codex-image` 验证命令，普通代码任务仍关闭此能力。
+
+真实 Linux 调用已验证原生事件和项目 CODEX_HOME/generated_images 下的 PNG；详见 [验收](status.md)。本集成只支持本地 PNG 或内联 PNG，不根据模型声称的链接下载文件，不使用单独计费的 Image API。只有远程 fileId 而没有可校验本地数据时仍失败关闭。QQ ImageProvider 暂不自动开启该路径。

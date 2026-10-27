@@ -26,7 +26,7 @@
 
 独立执行 `sandbox-check` 不创建 thread、不运行模型。它验证命令能在任务目录读写、不能读取任务目录外和 Codex 状态目录的哨兵，并检查越界写入没有出现在宿主文件系统。bubblewrap 的私有 tmpfs 可能允许创建同名的合成文件，这种文件不在宿主落盘，随 namespace 销毁，不能当作任务产物；探针区分这种情况与实际宿主写越界。
 
-每个真实任务仍要重新运行探针，并要求本机 `approve UUID --reviewed`。通过探针不等于证明所有工具和内核路径安全；没有无人值守执行开关。生图仍返回 unsupported。
+每个真实任务仍要重新运行探针，并要求本机 `approve UUID --reviewed`。通过探针不等于证明所有工具和内核路径安全；没有无人值守执行开关。QQ 生图 provider 仍返回 unsupported；本机可单独使用 `bash scripts/manage.sh codex-image --reviewed '图片描述'` 测试一次 Codex 内置生图。此命令已在当前 Linux 主机完成一张真实 PNG 的生成、校验和发布；会占用正式 Codex/图片额度，详见 [验收](status.md)。
 
 ## 常见失败
 

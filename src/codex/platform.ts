@@ -7,6 +7,9 @@ import type { ProcessSpec } from './process.js';
 export const PERMISSION_PROFILE='deepseekfish-restricted-v1';
 export const disabledFeatures={multi_agent:false,apps:false,hooks:false,image_generation:false,plugins:false,remote_plugin:false,
   computer_use:false,browser_use:false,skill_mcp_dependency_install:false,workspace_dependencies:false,use_legacy_landlock:false};
+export function executionFeatures(imageGeneration=false):Record<string,boolean>{
+  return {...disabledFeatures,image_generation:imageGeneration,...(imageGeneration?{shell_tool:false}: {})};
+}
 export function childEnvironment(root:string):NodeJS.ProcessEnv {
   const env:NodeJS.ProcessEnv={};
   for(const k of ['PATH','SystemRoot','WINDIR','COMSPEC','PATHEXT','LANG','LC_ALL'])if(process.env[k])env[k]=process.env[k];
@@ -68,12 +71,12 @@ export function linuxSpec(root:string,cwd:string,args:string[]):ProcessSpec {
     '--bind',temp,'/tmp','--remount-ro','/','--chdir',cwd,'--',linuxExecutable(root),...args);
   return {command:binary,args:mounts,cwd,env};
 }
-export function appServerSpec(root:string,cwd:string,platform=process.platform):ProcessSpec {
+export function appServerSpec(root:string,cwd:string,platform=process.platform,imageGeneration=false):ProcessSpec {
   cwd=taskDirectory(root,cwd);
   if(!['linux','win32'].includes(platform))throw new FishError('CODEX_PLATFORM_UNSUPPORTED');
   const args=['app-server','--listen','stdio://','-c','approval_policy="never"',...permissionArgs(cwd,root,platform),
     '-c','cli_auth_credentials_store="file"','-c','web_search="disabled"','-c','mcp_servers={}',
-    ...Object.entries(disabledFeatures).flatMap(([key,value])=>['-c',`features.${key}=${value}`])];
+    ...Object.entries(executionFeatures(imageGeneration)).flatMap(([key,value])=>['-c',`features.${key}=${value}`])];
   if(platform==='linux')return linuxSpec(root,cwd,args);
   const command=[process.execPath,codexEntry(root),...args,'-c','windows.sandbox="mxc"'];
   const quote=(s:string)=>'"'+s.replace(/(\\*)"/g,'$1$1\\"').replace(/(\\+)$/,'$1$1')+'"';

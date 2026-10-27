@@ -11,6 +11,7 @@ import { bind } from './qq/adapter.js';
 import { codexEntry, childEnvironment } from './codex/runner.js';
 import { boundaryStatus } from './codex/platform.js';
 import { checkSandbox } from './codex/probe.js';
+import { codexImageSmoke } from './image/codex-smoke.js';
 
 const root=projectRoot();prepare(root);loadSecrets(root);
 const [command='help',...args]=process.argv.slice(2);
@@ -53,6 +54,10 @@ async function main():Promise<void>{
   else if(command==='sandbox-check'){
     const result=await checkSandbox(root);print(result);if(!result.ok)process.exitCode=1;
   }
+  else if(command==='codex-image'){
+    const reviewed=args.includes('--reviewed'),prompt=args.filter(arg=>arg!=='--reviewed').join(' ');
+    const result=await codexImageSmoke(root,prompt,reviewed);print(result);if(!result.ok)process.exitCode=1;
+  }
   else if(command==='codex-login'){
     // A NEW project-owned login, initiated only by a local human command.
     if(args.some(a=>a!=='--device-auth'))throw new FishError('USAGE_CODEX_LOGIN_DEVICE_AUTH');
@@ -79,6 +84,6 @@ async function main():Promise<void>{
     await app.bot.receive({...m,id:randomUUID(),text:'/fish image 测试图片'});
     print({messages:(app.transport as any).sent,files:(app.transport as any).files,task:app.tasks.get(task.id),budget:app.ledger.snapshot()});
     await app.bot.stop();app.store.close();
-  }else print(`DeepSeekFish\n  npm run build / npm test\n  npm run mock / npm start / npm run demo\n  npm run cli -- status|tasks|history GROUP|clear GROUP|cancel ID|stop\n  npm run cli -- set autonomous false\n  npm run cli -- approve ID --reviewed\n  npm run cli -- say "你好小鱼"  (Mock only)\n  npm run bind / npm run cli -- codex-login [--device-auth]\n  npm run doctor / npm run cli -- sandbox-check (keyless, no model turn)`);
+  }else print(`DeepSeekFish\n  npm run build / npm test\n  npm run mock / npm start / npm run demo\n  npm run cli -- status|tasks|history GROUP|clear GROUP|cancel ID|stop\n  npm run cli -- set autonomous false\n  npm run cli -- approve ID --reviewed\n  npm run cli -- say "你好小鱼"  (Mock only)\n  npm run bind / npm run cli -- codex-login [--device-auth]\n  npm run doctor / npm run cli -- sandbox-check (keyless, no model turn)\n  npm run cli -- codex-image --reviewed "one-image prompt" (real Codex subscription smoke test)`);
 }
 main().catch(e=>{console.error('DeepSeekFish: '+codeOf(e));process.exitCode=1;});
