@@ -26,7 +26,7 @@ const spec=appServerSpec(root,cwd),separator=spec.args.indexOf('--');
 const mounts=spec.args.slice(0,separator+1),nativeArgs=spec.args.slice(separator+2);
 try {
   report.tests.outer=run(spec.command,[...mounts,'/bin/sh','-c',
-    'cat /proc/self/attr/current; id; test ! -e /home/fishops/.codex; test ! -e /home/fishops/.ssh'],spec.env);
+    'cat /proc/self/attr/current; id; test ! -e /home; test ! -e /root'],spec.env);
   report.tests.nested=run(spec.command,[...mounts,'/usr/bin/bwrap','--unshare-user','--ro-bind','/','/','/bin/true'],spec.env);
   report.tests.innerPayload=run(spec.command,[...mounts,'/usr/bin/bwrap','--unshare-user','--unshare-pid','--ro-bind','/','/','--proc','/proc','/bin/sh','-c',
     'cat /proc/self/attr/current; grep CapEff /proc/self/status; python3 -c \'import os\ntry:\n os.unshare(os.CLONE_NEWUSER|os.CLONE_NEWNS)\nexcept PermissionError:\n print("combined namespace setup denied")\nelse:\n raise SystemExit("unexpected namespace capability")\''],spec.env);
@@ -66,7 +66,7 @@ try {
   report.tests.sameUid=run('/usr/bin/python3',['-c',
     'import os,subprocess,sys; p=subprocess.Popen(["/bin/sleep","10"],env={"FISH_CANARY":"dummy-not-a-credential"}); '+
     '\ntry:\n print("file-readable:",open(sys.argv[1]).read()=="dummy-not-a-credential"); print("child-environ-readable:",b"FISH_CANARY=" in open("/proc/%d/environ"%p.pid,"rb").read())\nfinally:\n p.terminate();p.wait()',canary]);
-  const forbidden=['OPENAI_API_KEY','DEEPSEEK_API_KEY','QQBOT_SECRET','SSH_AUTH_SOCK','HOME','NODE_OPTIONS'];
+  const forbidden=['OPENAI_API_KEY','DEEPSEEK_API_KEY','QQBOT_SECRET','ONEBOT_ACCESS_TOKEN','SSH_AUTH_SOCK','HOME','NODE_OPTIONS'];
   const original=Object.fromEntries(forbidden.map(k=>[k,process.env[k]]));
   try {
     for(const k of forbidden)process.env[k]='dummy';

@@ -2,6 +2,8 @@
 
 服务器和手机部署、完整迁移及生产服务脚本见 [部署与迁移](docs/migration.md)。
 
+作为普通 QQ 群成员接收普通群消息，使用 [NapCat / OneBot v11 接入](docs/qq-onebot.md)，复用本项目 DeepSeek、人设、上下文与预算；不需要再安装另一套机器人框架。
+
 运行在 Linux / Windows 本机的 QQ 群 DeepSeek 机器人 MVP。普通聊天先在本地归并和判断；模型、搜索、任务均经过 SQLite 额度检查。管理员群命令可以提出 Codex 任务，但真实执行必须由本机逐次审核。
 
 **当前状态：Linux 和 Windows 均可部署 QQ / DeepSeek / Mock；Linux 隔离探针、进程取消及一次命令行 Codex 内置生图已实测。真实 QQ / DeepSeek 仍需配置账号后验证，Windows MXC 尚未现场验证。Codex、自动插话、搜索、群聊生图默认关闭，普通 Codex 任务必须本机审核；WebUI 明确画图请求可自动设计并生成一张。**

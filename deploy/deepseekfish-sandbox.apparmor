@@ -18,8 +18,7 @@ profile deepseekfish-outer /srv/deepseekfish/app/runtime/tools/bwrap flags=(atta
   allow umount,
   allow pivot_root,
   # Trusted app-server and the official host dispatching built-in image tools.
-  allow ix /srv/deepseekfish/app/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex,
-  allow ix /srv/deepseekfish/app/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex-code-mode-host,
+  allow ix /srv/deepseekfish/app/node_modules/@openai/{codex-linux-arm64/vendor/aarch64-unknown-linux-musl,codex-linux-x64/vendor/x86_64-unknown-linux-musl}/bin/{codex,codex-code-mode-host},
   allow ix /srv/deepseekfish/app/runtime/codex-home/tmp/arg0-linux/**,
   # NNP-compatible stacking: inner bwrap and its capability-denying payload
   # profile remain in force, rather than inheriting a capability grant alone.

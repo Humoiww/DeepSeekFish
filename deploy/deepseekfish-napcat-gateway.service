@@ -1,0 +1,38 @@
+[Unit]
+Description=Private Tailscale QQ login gateway
+After=deepseekfish-napcat.service
+Wants=deepseekfish-napcat.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+Environment=FISH_NAPCAT_HOST=@TAILNET_IP@:17864
+Environment=FISH_TAILNET_OWNER=@TAILNET_OWNER@
+LoadCredential=napcat-webui-token:/srv/deepseekfish/napcat/state/webui-token
+ExecStart=/srv/deepseekfish/app/runtime/tools/node/bin/node --max-old-space-size=32 /srv/deepseekfish/app/dist/src/qq/napcat-gateway-main.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+InaccessiblePaths=/srv/deepseekfish/app/runtime/data /srv/deepseekfish/app/runtime/codex-home /srv/deepseekfish/napcat/state
+SocketBindDeny=any
+MemoryMax=96M
+CPUQuota=25%
+TasksMax=24
+LimitNOFILE=512
+
+[Install]
+WantedBy=multi-user.target

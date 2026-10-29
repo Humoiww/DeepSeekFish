@@ -45,6 +45,9 @@ apparmor_parser -r /etc/apparmor.d/deepseekfish-sandbox
 install -o root -g root -m 0644 "$target/deploy/server-config.json" "$target/config/local.json"
 install -o root -g root -m 0644 "$target/deploy/deepseekfish-web.service" /etc/systemd/system/deepseekfish-web.service
 install -o root -g root -m 0644 "$target/deploy/deepseekfish-sandbox-check.service" /etc/systemd/system/deepseekfish-sandbox-check.service
+install -o root -g root -m 0644 "$target/deploy/deepseekfish-qq.service" /etc/systemd/system/deepseekfish-qq.service
+install -o root -g root -m 0644 "$target/deploy/deepseekfish-qq.path" /etc/systemd/system/deepseekfish-qq.path
 systemd-analyze verify /etc/systemd/system/deepseekfish-web.service /etc/systemd/system/deepseekfish-sandbox-check.service
 systemctl daemon-reload
+systemctl enable --now deepseekfish-qq.path
 echo 'Staged, not started. Stop the old Mock with its CLI, then systemctl enable --now deepseekfish-web.service.'

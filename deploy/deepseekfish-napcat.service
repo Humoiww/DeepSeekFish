@@ -1,0 +1,53 @@
+[Unit]
+Description=NapCat QQ login and OneBot protocol endpoint
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=4
+
+[Service]
+Type=simple
+User=napcat
+Group=napcat
+WorkingDirectory=/srv/deepseekfish/napcat/state
+Environment=HOME=/srv/deepseekfish/napcat/state
+Environment=XDG_CONFIG_HOME=/srv/deepseekfish/napcat/state/config-home
+Environment=XDG_CACHE_HOME=/srv/deepseekfish/napcat/state/cache
+Environment=NAPCAT_BOOTMAIN=/srv/deepseekfish/napcat/vendor
+Environment=NAPCAT_WORKDIR=/srv/deepseekfish/napcat/state
+UnsetEnvironment=OPENAI_API_KEY DEEPSEEK_API_KEY QQBOT_SECRET ONEBOT_ACCESS_TOKEN SSH_AUTH_SOCK SSH_AGENT_PID CODEX_HOME
+# Community NapCat Shell headless entrypoint, running without root in this
+# dedicated systemd filesystem/account boundary. No Codex sandbox is changed.
+ExecStart=/usr/bin/xvfb-run -a /usr/bin/env LD_PRELOAD=/srv/deepseekfish/napcat/vendor/libnapcat_launcher.so /srv/deepseekfish/napcat/vendor/qq/opt/QQ/qq --no-sandbox --disable-gpu
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=/srv/deepseekfish/napcat/state
+InaccessiblePaths=/srv/deepseekfish/app
+MemoryHigh=512M
+MemoryMax=768M
+TasksMax=192
+LimitNOFILE=8192
+CPUQuota=100%
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

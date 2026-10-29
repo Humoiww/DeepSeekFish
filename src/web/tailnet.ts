@@ -1,7 +1,7 @@
 import { createServer, request, type IncomingMessage } from 'node:http';
 
-const reads=new Set(['/','/web.css','/web.js','/fish.svg','/api/status','/api/sessions','/api/session','/api/file','/api/image']);
-const writes=new Set(['/api/bootstrap','/api/sessions','/api/chat','/api/settings','/api/codex-quota/refresh','/api/images/reset','/api/cancel']);
+const reads=new Set(['/','/web.css','/web.js','/fish.svg','/api/status','/api/sessions','/api/session','/api/file','/api/image','/api/qq']);
+const writes=new Set(['/api/bootstrap','/api/sessions','/api/chat','/api/settings','/api/codex-quota/refresh','/api/images/reset','/api/cancel','/api/qq']);
 
 export type TailnetAccess={owner:(address:string,port:number)=>Promise<boolean>;token:string};
 /** Fixed-target gateway. Owner devices use Tailscale identity, with the local

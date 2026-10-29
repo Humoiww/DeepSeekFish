@@ -1,0 +1,14 @@
+{
+  "qqTransport": "onebot",
+  "onebotUrl": "ws://127.0.0.1:3001",
+  "model": "deepseek-flash",
+  "groups": ["替换成普通QQ数字群号"],
+  "admins": ["替换成你的QQ数字账号"],
+  "privateUsers": ["替换成你的QQ数字账号"],
+  "names": ["鲸酱", "小鱼", "DeepSeekFish"],
+  "autonomous": false,
+  "autoReply": false,
+  "codex": false,
+  "images": false,
+  "search": false
+}

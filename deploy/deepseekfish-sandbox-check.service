@@ -30,6 +30,6 @@ ReadWritePaths=/srv/deepseekfish/app/runtime/data /srv/deepseekfish/app/runtime/
 InaccessiblePaths=-/srv/deepseekfish/app/.env -/srv/deepseekfish/app/runtime/data/webui-secrets.json
 MemoryMax=768M
 CPUQuota=100%
-TasksMax=64
+TasksMax=512
 TimeoutStartSec=45
 KillMode=control-group

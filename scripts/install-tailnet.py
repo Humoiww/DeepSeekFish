@@ -22,7 +22,10 @@ if len(addresses) != 1 or ipaddress.ip_address(addresses[0]) not in ipaddress.ip
 owner = str(self['UserID'])
 if not owner.isdecimal():
     raise SystemExit('Tailscale owner ID missing.')
-for name in ['deepseekfish-tailnet.service', 'deepseekfish-tailnet.socket']:
+units = ['deepseekfish-tailnet.service', 'deepseekfish-tailnet.socket']
+if Path('/srv/deepseekfish/napcat/state/webui-token').is_file():
+    units += ['deepseekfish-napcat-gateway.service', 'deepseekfish-napcat-gateway.socket']
+for name in units:
     text = (source / 'deploy' / name).read_text()
     text = text.replace('@TAILNET_IP@', addresses[0]).replace('@TAILNET_OWNER@', owner)
     p = Path('/etc/systemd/system') / name
@@ -32,3 +35,7 @@ subprocess.run(['systemctl', 'daemon-reload'], check=True)
 subprocess.run(['systemctl', 'enable', '--now', 'deepseekfish-tailnet.socket'], check=True)
 subprocess.run(['systemctl', 'restart', 'deepseekfish-tailnet.service'], check=True)
 print(f'Permanent private URL: http://{addresses[0]}:17863/')
+if 'deepseekfish-napcat-gateway.socket' in units:
+    subprocess.run(['systemctl', 'enable', '--now', 'deepseekfish-napcat-gateway.socket'], check=True)
+    subprocess.run(['systemctl', 'restart', 'deepseekfish-napcat-gateway.service'], check=True)
+    print(f'Permanent private QQ login URL: http://{addresses[0]}:17864/')

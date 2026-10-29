@@ -8,6 +8,8 @@ import { safePath, writePrivate } from './paths.js';
 import { FishError, codeOf } from './types.js';
 import { adminServer } from './admin/server.js';
 import { bind } from './qq/adapter.js';
+import { OneBotTransport,onebotCredential } from './qq/onebot.js';
+import { Store } from './storage/db.js';
 import { codexEntry, childEnvironment } from './codex/runner.js';
 import { boundaryStatus } from './codex/platform.js';
 import { checkSandbox } from './codex/probe.js';
@@ -85,6 +87,12 @@ async function main():Promise<void>{
   }else if(command==='stop')print(await api('stop',{}));
   else if(command==='say')print(await api('mock-message',{text:args.join(' ')}));
   else if(command==='bind')await bind(root);
+  else if(command==='qq-check'){
+    const config=loadConfig(root),token=onebotCredential(root),store=new Store(root);
+    const transport=new OneBotTransport(root,config.onebotUrl,token,store,async()=>{},()=>false);
+    try{print({transport:'onebot',...await transport.inspect(),configuredGroups:config.groups});}
+    finally{transport.stop();store.close();}
+  }
   else if(command==='sandbox-check'){
     const result=await checkSandbox(root);print(result);if(!result.ok)process.exitCode=1;
   }

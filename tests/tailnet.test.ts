@@ -23,6 +23,8 @@ test('tailnet gateway validates origin, preserves auth/stream, strips approval a
     assert.equal((await call('/api/status',{'sec-fetch-site':'cross-site'})).status,403);
     assert.equal(count,1);
     assert.equal((await call('/api/bootstrap',{},'POST')).status,200);
+    assert.equal((await call('/api/qq')).status,200);
+    assert.equal((await call('/api/qq',{},'POST')).status,200);
   }finally{gateway.closeAllConnections();upstream.closeAllConnections();await Promise.all([new Promise<void>(r=>gateway.close(()=>r())),new Promise<void>(r=>upstream.close(()=>r()))]);}
 });
 

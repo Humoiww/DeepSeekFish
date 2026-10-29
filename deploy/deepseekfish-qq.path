@@ -1,0 +1,9 @@
+[Unit]
+Description=Start QQ chat after the owner enables it in the WebUI
+
+[Path]
+PathExists=/srv/deepseekfish/app/runtime/data/qq-enabled
+Unit=deepseekfish-qq.service
+
+[Install]
+WantedBy=multi-user.target

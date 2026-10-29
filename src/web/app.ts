@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { configureQQ,qqStatus } from '../qq/settings.js';
 import { randomBytes,randomUUID } from 'node:crypto';
 import { defaults,prepare,loadSecrets,loadConfig,validateConfig,type Config } from '../config.js';
 import { safePath,writePrivate } from '../paths.js';
@@ -178,6 +179,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   async function close(){accepting=false;for(const c of active.values())c.abort();await tasks.stop();
     while(active.size)await new Promise(resolve=>setTimeout(resolve,10));await quota.close();store.close();budgetStore.close();}
   return {root,mock,token,sessions,session,createSession,detail,configure,status,chat,tasks,recover,close,
+    configureQQ:(input:Record<string,unknown>)=>{if(input.enabled&&!key())throw new FishError('DEEPSEEK_KEY_MISSING');return configureQQ(root,input,settings.model);},qqStatus:()=>qqStatus(root,budgetStore),
     startQuota:()=>quota.start(),refreshQuota:async()=>{await quota.refresh(true);return status();},
     resetImages:()=>{if(active.size)throw new FishError('IMAGE_RESET_BUSY_OR_UNCERTAIN');ledger.resetImages();return status();},
     image:(sid:unknown,id:unknown)=>images.read(session(sid).id,id),workspace:(id:unknown)=>new SessionWorkspace(root,session(id).id)};

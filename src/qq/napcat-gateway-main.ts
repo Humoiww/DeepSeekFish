@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { napcatGateway } from './napcat-gateway.js';
+import { isTailnetOwner } from '../web/tailnet-identity.js';
+const host=process.env.FISH_NAPCAT_HOST??'',owner=process.env.FISH_TAILNET_OWNER??'';
+const match=/^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3}):17864$/.exec(host);
+if(!match||Number(match[1])<64||Number(match[1])>127||Number(match[2])>255||Number(match[3])>255||!/^\d+$/.test(owner)||!process.env.CREDENTIALS_DIRECTORY)throw Error('NAPCAT_PRIVATE_GATEWAY_CONFIG_REQUIRED');
+if(process.env.LISTEN_PID!==String(process.pid)||process.env.LISTEN_FDS!=='1')throw Error('NAPCAT_SOCKET_REQUIRED');
+const token=fs.readFileSync(path.join(process.env.CREDENTIALS_DIRECTORY,'napcat-webui-token'),'utf8').trim();
+if(!/^[a-f0-9]{64}$/.test(token))throw Error('NAPCAT_GATEWAY_CREDENTIAL_REQUIRED');
+const server=napcatGateway(host,token,(address,port)=>isTailnetOwner(address,port,owner));
+server.listen({fd:3},()=>console.log('Private QQ login gateway ready.'));
+process.on('SIGTERM',()=>{server.close();server.closeIdleConnections();setTimeout(()=>server.closeAllConnections(),5000).unref();});

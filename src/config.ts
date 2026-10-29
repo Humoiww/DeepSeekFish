@@ -13,7 +13,7 @@ export interface Config {
   search: boolean; searchDaily: number; searchCount: number; searchTimeoutMs: number;
   codex: boolean; codexDaily: number; codexTimeoutMs: number; codexDailyMs: number;
   maxFiles: number; maxArtifactBytes: number; images: boolean; imageDaily: number;
-  port: number; model: string;
+  port: number; model: string; qqTransport:'official'|'onebot'; onebotUrl:string; privateUsers:string[];
 }
 export const defaults: Config = {
   enabled: true, groups: [], admins: [], names: ['小鱼', 'DeepSeekFish'],
@@ -24,7 +24,7 @@ export const defaults: Config = {
   search: false, searchDaily: 20, searchCount: 3, searchTimeoutMs: 10000,
   codex: false, codexDaily: 22, codexTimeoutMs: 300000, codexDailyMs: 6600000,
   maxFiles: 20, maxArtifactBytes: 10485760, images: false, imageDaily: 20,
-  port: 17861, model: 'deepseek-v4-flash',
+  port: 17861, model: 'deepseek-v4-flash', qqTransport:'official', onebotUrl:'ws://127.0.0.1:3001', privateUsers:[],
 };
 export function validateConfig(input: Record<string, unknown>): Config {
   const c = { ...defaults, ...input } as Config;
@@ -35,7 +35,7 @@ export function validateConfig(input: Record<string, unknown>): Config {
     if (typeof v === 'number' && (!Number.isFinite(v) || v < 0 ||
       (!['probability', 'activity'].includes(k) && !Number.isInteger(v)))) throw new FishError('INVALID_CONFIG_' + k);
   }
-  for (const key of ['groups', 'admins', 'names', 'interests'] as const) {
+  for (const key of ['groups', 'admins', 'names', 'interests', 'privateUsers'] as const) {
     if (!Array.isArray(c[key]) || !c[key].every(v => typeof v === 'string' && v.length > 0 && v.length <= 256)) throw new FishError('INVALID_CONFIG_' + key);
   }
   if (!Array.isArray(c.quietHours) || c.quietHours.length !== 2 || !c.quietHours.every(v => Number.isInteger(v) && v >= 0 && v < 24) ||
@@ -44,7 +44,30 @@ export function validateConfig(input: Record<string, unknown>): Config {
     c.searchCount < 1 || c.searchCount > 5 || c.codexTimeoutMs < 10 || c.codexTimeoutMs > 1800000 ||
     c.port < 1024 || c.port > 65535 || c.historyHours < 1 || c.historyHours > 168 || c.bufferMs > 10000 ||
     !/^[a-zA-Z0-9._-]{1,80}$/.test(c.model)) throw new FishError('INVALID_CONFIG');
+  if(!['official','onebot'].includes(c.qqTransport))throw new FishError('INVALID_QQ_TRANSPORT');
+  if(c.privateUsers.length>50||c.privateUsers.some(id=>!/^[1-9]\d{0,19}$/.test(id)))throw new FishError('INVALID_PRIVATE_USERS');
+  validateOneBotUrl(c.onebotUrl);
   return c;
+}
+export function validateOneBotUrl(value:string):URL{
+  let url:URL;try{url=new URL(value);}catch{throw new FishError('INVALID_ONEBOT_URL');}
+  const host=url.hostname.replace(/^\[|\]$/g,'');
+  const tailnet=/^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  const privateHost=['localhost','127.0.0.1','::1'].includes(host)||!!(tailnet&&Number(tailnet[1])>=64&&Number(tailnet[1])<=127&&Number(tailnet[2])<=255&&Number(tailnet[3])<=255);
+  if(value.length>512||!['ws:','wss:'].includes(url.protocol)||url.username||url.password||url.search||url.hash||url.protocol==='ws:'&&!privateHost)throw new FishError('INVALID_ONEBOT_URL');
+  return url;
+}
+export function conversationAllowed(config:Config,conversation:string):boolean{
+  return config.groups.includes(conversation)||config.qqTransport==='onebot'&&conversation.startsWith('private:')&&config.privateUsers.includes(conversation.slice(8));
+}
+/** Reuse the key entered in this project's WebUI; never copy it to config. */
+export function deepseekCredential(root:string):string{
+  const p=safePath(root,'runtime/data/webui-secrets.json');
+  if(fs.existsSync(p)){
+    const value=JSON.parse(fs.readFileSync(p,'utf8')).deepseekKey;
+    if(typeof value==='string'&&value)return value;
+  }
+  return process.env.DEEPSEEK_API_KEY??'';
 }
 export function projectRoot(): string {
   let dir = path.dirname(fileURLToPath(import.meta.url));

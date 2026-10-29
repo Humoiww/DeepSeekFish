@@ -1,0 +1,11 @@
+{
+  "napcatVersion": "v4.18.41",
+  "napcatUrl": "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.41/NapCat.Shell.zip",
+  "launcherCommit": "557b5ea2de8867ae8d72f5054ab0cdd96c0aa9c7",
+  "launcherUrl": "https://raw.githubusercontent.com/NapNeko/napcat-linux-launcher/557b5ea2de8867ae8d72f5054ab0cdd96c0aa9c7/launcher.cpp",
+  "qqVersion": "3.2.34-53644",
+  "qqUrls": {
+    "aarch64": "https://qqdl.gtimg.cn/qqfile/QQNT/9.9.36/beta/9ee04bef/linuxqq_3.2.34-53644_arm64.deb",
+    "x86_64": "https://qqdl.gtimg.cn/qqfile/QQNT/9.9.36/beta/9ee04bef/linuxqq_3.2.34-53644_amd64.deb"
+  }
+}

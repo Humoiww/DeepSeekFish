@@ -139,3 +139,13 @@ Tailscale 仍 Running/Online 并提供 Exit Node，SSH active，SSH 主配置校
 **验收通过：** 2026-10-29 11:47 UTC，任务 `fb35bc8b-0d18-47e7-9b87-47f879a91009` 返回一项原生 imageGeneration 完成事件。项目 PNG/CRC、产物收集及参考图 inputImages 路径与 SHA-256 校验均通过，报告 `ok=true`、`source=codex-app-server`、`nativeImageCompletions=1`。实际生成「鲸酱在家用服务器旁喝奶茶」1448×1086 PNG，2,357,736 字节，用时 56,676 ms，位于 `runtime/outputs/fb35bc8b-0d18-47e7-9b87-47f879a91009/image.png`。诊断记录为同 ID 的 runtime/logs/codex JSON，CLI 报告为 runtime/logs/codex-image-last.json。临时测试 unit 已删除；正式 WebUI 继续 active，TasksMax=512、NRestarts=0。
 
 这是生产账户与正式服务相同权限条件下的真实 CLI→Codex→参考图→PNG 验收；这次没有另行调用 DeepSeek 设计步骤，也没有代替用户执行手机浏览器操作。AppArmor 保持启用，普通自主 Codex 执行仍关闭，SSH、Tailscale Exit Node 和防火墙未修改。
+
+## QQ 直聊入口与可迁移部署（2026-10-29）
+
+手机工作台新增「QQ 对话」：打开独立 QQ 登录页，填写操作者日常 QQ 号后保存启用，群号可留空。OneBot 接收 QQ 私聊和群聊；私聊不需要 @，保存双方最近消息供连续对话，按联系人/群隔离。使用网页现有 DeepSeek Key 与选定模型；普通 Codex、自主执行和群生图没有因此开放。网页只写非秘密 QQ 设置及启用标记，固定 systemd path 激活 deepseekfish-qq.service；聊天暂停/恢复及账号列表修改即时生效，不授予网页 sudo。
+
+NapCat v4.18.41 与 Linux QQ 3.2.34-53644 已按固定来源部署，服务使用 napcat 独立 UID，不能读取 deepseekfish 的 Key、Codex auth 或管理账户 home。WebUI 后端仅 127.0.0.1:6099，固定私网入口为 http://100.123.219.112:17864/，依旧按实际 Tailscale 对端账户验证并自动带入网页登录。主工作台仍是 17863；没有公网监听或 SSH/Tailscale/防火墙改动。
+
+原生 loopback WebSocket 的群收发、私聊回复、历史隔离，以及网页 QQ 配置/暂停恢复、两个网关的边界检查已通过。NapCat 页面和二维码已实际就绪，但截至部署验收 QQ 仍未登录；真实 QQ→DeepSeek→QQ 回复需要用户扫码、填写自己的日常 QQ 号并完成好友聊天，不能把本地协议测试说成已在 QQ 上回复。
+
+全部安装器、服务/网关模板、ARM64/x64 的 Codex 规则和非秘密默认配置随 Git 提交；Tailscale 地址与 owner 安装时自动生成。私有运行状态可用 migrate-state.py 导出/恢复，数据库使用 SQLite backup，包含生成图片/聊天/日志，排除 Key、Codex/QQ 登录及 Token。新机重新登录，步骤见 migration.md 与 qq-onebot.md。

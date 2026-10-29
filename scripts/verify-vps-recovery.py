@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""One credential-free production API check and controlled crash/recovery."""
+"""Readiness check; opt-in --crash-test verifies restart without model calls."""
+import argparse
 import json
 import os
 import pathlib
@@ -7,6 +8,10 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--crash-test', action='store_true')
+args = parser.parse_args()
 
 if os.geteuid() != 0:
     raise SystemExit('Run as root to test recovery of the installed service')
@@ -28,14 +33,16 @@ def request(route, data=None, authenticated=True, extra=None):
         return error.code, json.load(error)
 
 _, status = request('/api/status')
-assert status['mock'] is False and status['credentialPresent'] is False
-assert status['settings']['codexQueue'] is False and status['settings']['search'] is False
+assert status['mock'] is False
+assert status['settings']['codexQueue'] is False
 assert request('/api/status', authenticated=False)[0] == 401
 assert request('/api/status', extra={'Origin': 'https://example.invalid'})[0] == 403
 assert request('/api/status', extra={'Host': 'example.invalid'})[0] == 403
+if not args.crash_test:
+    print('PASS: real WebUI and auth/Host/Origin checks; no model calls or restart. Use --crash-test for an explicit crash/recovery check.')
+    raise SystemExit(0)
+assert status.get('active') == 0, 'Wait for active work to finish before crash testing'
 _, session = request('/api/sessions', {})
-code, result = request('/api/chat', {'sessionId': session['id'], 'text': 'deployment readiness', 'mode': 'chat'})
-assert code == 400 and result['error'] == 'DEEPSEEK_KEY_MISSING'
 restarts_before = int(subprocess.check_output(['systemctl', 'show', 'deepseekfish-web.service', '-p', 'NRestarts', '--value']))
 subprocess.run(['systemctl', 'kill', '--kill-whom=main', '--signal=SIGKILL', 'deepseekfish-web.service'], check=True)
 for _ in range(60):
@@ -50,7 +57,7 @@ for _ in range(60):
 else:
     raise SystemExit('Automatic crash recovery failed')
 assert token_path.read_text().strip() == token
-assert status['mock'] is False and status['credentialPresent'] is False
+assert status['mock'] is False
 restarts_after = int(subprocess.check_output(['systemctl', 'show', 'deepseekfish-web.service', '-p', 'NRestarts', '--value']))
 assert restarts_after == restarts_before + 1
-print('PASS: real WebUI, auth/Host/Origin checks, missing key fails closed without API call, automatic crash restart, session/token persistence')
+print('PASS: real WebUI, auth/Host/Origin checks, automatic crash restart and session/token persistence; no model call')

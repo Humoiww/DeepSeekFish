@@ -27,8 +27,33 @@ sudo -u deepseekfish bash /srv/deepseekfish/app/scripts/manage.sh codex-login --
 
 DeepSeek Key 在网页手动重新填写；不要复制管理账户的 `.codex`、`.ssh` 或环境变量。`config/local.json` 保存非秘密部署选项，`config/example.json` 和 `deploy/server-config.json` 提供默认模板。QQ 接入说明见后续 QQ 文档。
 
+## 一条命令导出运行状态
+
+```bash
+sudo python3 scripts/migrate-state.py export --root /srv/deepseekfish/app
+```
+
+私有归档生成在 `runtime/deployment/state-时间.tar.gz`（0600），包含 SQLite 的在线一致备份、非秘密配置、网页聊天、任务工作区、生成图片、角色覆盖图与诊断日志。它不进入 Git；把它作为私有文件迁移到新服务器。跨多个数据库需要同一时刻的快照时，先停止本项目 WebUI/QQ，导出后再启动；不会停止 SSH 或 Tailscale。
+
+新机器安装完成，停止本项目服务后导入：
+
+```bash
+sudo systemctl stop deepseekfish-web.service deepseekfish-qq.service deepseekfish-qq.path
+sudo python3 scripts/migrate-state.py import \
+  --root /srv/deepseekfish/app --archive /私有归档路径/state-时间.tar.gz --replace
+sudo systemctl start deepseekfish-web.service
+```
+
+导入不会覆盖凭据，自动恢复服务账户的文件归属；旧 WAL/SHM 会在停止服务后随数据库恢复清理。随后重新填 Key、登录 Codex/QQ，按需启用 QQ service，并在新机重新运行 `install-tailnet.py`。`node_modules`/Node 用新机器相同架构的现有安装脚本准备，不把 ARM64 二进制复制去 x64。
+
+凭据准备好后运行 `sudo systemctl start deepseekfish-qq.path` 恢复网页启用/重启后的 QQ 自动启动。
+
 ## 哪些内容不进 Git
 
 API Key、QQ 登录状态、OneBot Token、Codex 登录、管理会话令牌、SSH 密钥只留私有运行目录。`node_modules`、`dist` 和便携 Node 由锁文件及现有安装脚本恢复，无须向 Git 上传数百 MB 的可再生成文件。聊天、数据库和生成图片属于运行状态，迁移时使用私有状态归档，不发布到公开仓库；角色原始设定集已在 `assets/character/` 跟踪。
 
 本机部署过程与真实验收证据见 [VPS 部署](vps-deployment.md)。旧文档中的初始未登录状态由该文档后续更新取代。
+
+普通 QQ 成员接入见 [NapCat / OneBot v11](qq-onebot.md)。
+
+需要同时迁移 QQ 登录端时，在新机执行 `sudo python3 scripts/install-napcat.py`，再运行 `install-tailnet.py` 生成该机的 QQ 私网入口；NapCat 使用独立账户，登录凭据重新扫码建立。二进制版本和社区 launcher 来源固定在 `deploy/napcat-versions.json`，不依赖旧机手工安装。

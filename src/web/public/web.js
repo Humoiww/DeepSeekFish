@@ -71,6 +71,20 @@ $('reset-images-form').onsubmit=async e=>{e.preventDefault();e.submitter.disable
 $('confirm-image-once').onclick=()=>{const request=pendingImageConfirmation;pendingImageConfirmation=null;$('image-confirm-dialog').close();if(!request||request.sessionId!==currentId||busy)return;confirmedImageRequest=request;$('prompt').value=request.text;setMode(request.mode);$('chat-form').requestSubmit();};
 $('image-confirm-dialog').addEventListener('close',()=>{pendingImageConfirmation=null;});
 $('settings-button').onclick=settings;$('setup-button').onclick=settings;
+$('qq-button').onclick=async()=>{closeDrawers(false);$('qq-error').textContent='';$('qq-dialog').showModal();await refreshQQ(true);};
+async function refreshQQ(fill=false){
+  $('qq-login-link').href='http://'+(location.hostname==='127.0.0.1'||location.hostname==='localhost'?'127.0.0.1:6099/webui':location.hostname+':17864/');
+  try{const qq=await api('qq');$('qq-status').textContent=qq.connected?'大肥鱼 QQ：'+qq.self+' · 已登录'+(qq.enabled?' · 对话已启用':' · 等待启用对话'):'QQ 尚未登录，请先打开扫码登录页。';
+    if(fill){$('qq-admins').value=qq.admins.join(',');$('qq-groups').value=qq.configuredGroups.join(',');$('qq-enabled').checked=qq.enabled||!qq.admins.length;}
+  }catch(e){$('qq-status').textContent='读取 QQ 状态失败：'+explain(e.message);}
+}
+$('qq-refresh').onclick=()=>refreshQQ();
+$('qq-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;$('qq-error').textContent='';
+  const ids=value=>value.split(/[,，\s]+/).map(x=>x.trim()).filter(Boolean);
+  try{await api('qq',{enabled:$('qq-enabled').checked,admins:ids($('qq-admins').value),groups:ids($('qq-groups').value)});await refreshQQ();toast($('qq-enabled').checked?'QQ 对话已启用。用你的 QQ 加大肥鱼为好友后，直接发一句“你好”。':'QQ 对话已暂停。');}
+  catch(err){$('qq-error').textContent=({QQ_ADMIN_REQUIRED:'请填写你的日常 QQ 号。',INVALID_QQ_IDS:'QQ 号和群号只能填写数字，多个用逗号分隔。',ONEBOT_TOKEN_MISSING:'服务器尚未准备 QQ 登录端。'})[err.message]||explain(err.message);}
+  finally{button.disabled=false;}
+};
 for(const b of document.querySelectorAll('[data-close]'))b.onclick=()=>$(b.dataset.close).close();
 $('settings-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;try{renderStatus(await api('settings',{apiKey:$('api-key').value.trim(),model:$('model').value.trim(),maxOutputTokens:Number($('max-output').value),dailyTokens:Number($('daily-tokens').value),search:$('search-enabled').checked,codexQueue:$('codex-enabled').checked}));$('api-key').value='';$('settings-dialog').close();toast('连接设置已保存，尚未发起模型请求。');}catch(err){$('settings-error').textContent=explain(err.message);}finally{button.disabled=false;}};
 $('auth-form').onsubmit=async e=>{e.preventDefault();token=$('auth-token').value.trim();try{await initialize();sessionStorage.setItem('fish-token',token);$('auth-token').value='';$('auth-dialog').close();}catch(err){$('auth-error').textContent=explain(err.message);}};
