@@ -5,5 +5,6 @@
   "path": "SKILL.md",
   "section": "雌小鬼模式（メスガキ / Mesugaki）",
   "license": "MIT",
-  "import": "Verbatim section; no rewritten or generated personality text."
+  "import": "Original upstream excerpt is preserved verbatim in upstream.md. The active prompt is a compact Whale-chan adaptation explicitly requested by the user.",
+  "upstreamStoredIn": "upstream.md"
 }

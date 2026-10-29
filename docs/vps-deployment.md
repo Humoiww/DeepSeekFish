@@ -161,3 +161,15 @@ QQ 已由用户完成扫码并实际收到 DeepSeek 回复，取代上节尚未�
 新增 fishview 独立账户和 Chromium 原生沙箱截图 worker，经私有 Unix socket 调用，没有新 TCP 监听。使用固定版本 Chrome for Testing Linux ARM64，未安装自动化测试框架。截图账户实测不能读 DeepSeek Key、Codex auth、管理用户 SSH 目录和 NapCat 登录目录；QQ 服务挂载中仍看不到 Codex auth、管理 home 和网页会话数据库。AppArmor 保持启用，全局 Namespace 设置未变；WebUI 重启时原有完整 sandbox-check 再次通过。修正只读 QQ 状态接口在凭据目录被隐藏时抛出 EACCES 的问题，未放开目录权限。
 
 代码、服务 unit、浏览器安装器、每日记忆迁移规则均纳入仓库；私有状态归档包含新记忆与截图，排除登录凭据。详细机制和可复用部署命令见 [记忆与人格](memory-persona.md)。SSH 和 tailscaled 仍为原进程，没有修改防火墙或 Tailscale Exit Node。
+
+## QQ 自然接话、精力与生图工具（2026-10-30 北京时间）
+
+用户本轮明确授权精简人格适配。active prompt 只保留鲸酱身份与日常性格，上游原文另存 upstream.md。QQ 不再写死“我先看看……”过渡语，也移除了点评动态时附加的审核式指令；双方对话使用原生 user/assistant 消息，功能提示只交代资料和工具位置。第一轮明确查看/额度/画图请求选择相应函数，动态接话、画面方案和最终表述均由 DeepSeek 生成。
+
+已启用私有 QQ image broker，QQ 仍看不到 Codex auth、payload、管理 home 和网页登录令牌，普通 Codex 依旧关闭。现有 WebUI image-only 服务负责原生生图，QQ 仅通过 0700 目录内的 0600 Unix socket 提交当前消息的单张计划；图片与网页共享原子账本，并按消息 ID 去重。工具中称 token 为精力值，画图协作者为 GPT小姐；没有固定额度答复模板。
+
+真实验证已完成 DeepSeek 自主设计 → broker → Codex 原生 imageGeneration → 参考图证据 → PNG 校验。任务 c30614d1-f198-44aa-846b-76f3adeb8ab1 返回 ok=true、nativeImageCompletions=1，生成机房鲸酱自拍。后续真实额度回答报告剩余 19 张、已用 1 张。检查使用记录型发送器，没有向 QQ 发测试消息；调用记录在私有 runtime/logs/qq-natural-live-check.json，原生记录在 logs/codex/同任务ID.json。
+
+期间 NapCat 原生日志在 16:14 UTC 记录网络服务崩溃，随后 QQ 返回扫码登录；未发现内核 OOM，不能将其等同于本次工具或权限拒绝。已尝试重启与官方客户端已有的缓存快登，腾讯返回“你的用户身份已失效”。当前已回到二维码登录，需用户重新扫码；不能把服务 active 说成 QQ 账号已在线。缓存账号选择可由 scripts/remember-qq-login.py 保存，但它不能绕过身份失效。当前阶段是否在线应以实际 /api/qq 或 QQ transport 状态为准。
+
+详见 [QQ 人格、精力与生图](qq-personality-tools.md)。每日精力和图片限额未增加，输出预算从 256 调整到 768 以容纳结构化画面方案。SSH、Tailscale Exit Node、防火墙、AppArmor 与原生沙箱保持。

@@ -16,6 +16,7 @@ import { WebImages,requestsImage } from './images.js';
 import type { ImageRunner } from '../image/codex-smoke.js';
 import { AppServerQuotaReader,CodexQuotaMonitor,type QuotaReader } from '../codex/quota.js';
 import { MemoryJournal,dayStart } from '../memory/journal.js';
+import { startQQImageBroker } from '../qq/image-broker.js';
 
 type Settings={model:string;maxOutputTokens:number;dailyTokens:number;search:boolean;codexQueue:boolean};
 type Session={id:string;title:string;created:number;updated:number};
@@ -57,6 +58,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   const tasks=new Tasks(root,store,ledger,cfg,mock?new MockTaskRunner():new AppServerRunner(root));
   const quota=new CodexQuotaMonitor(store,mock,quotaReader??new AppServerQuotaReader(root));
   const images=new WebImages(root,store,ledger,cfg,mock,quota,imageRunner);
+  let qqBroker:Awaited<ReturnType<typeof startQQImageBroker>>|undefined;
   const tokenFile=safePath(root,'runtime/data/webui-admin-token');
   if(!fs.existsSync(tokenFile))writePrivate(root,'runtime/data/webui-admin-token',randomBytes(32).toString('hex'));
   const token=fs.readFileSync(tokenFile,'utf8').trim();
@@ -188,9 +190,10 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     // Only this UI's reservations; never clear a QQ or standalone Codex lease.
     budgetStore.db.exec("UPDATE reservations SET state='unknown' WHERE state='held' AND grp LIKE 'web:%'");
   }
-  async function close(){accepting=false;for(const c of active.values())c.abort();await tasks.stop();
+  async function close(){accepting=false;await qqBroker?.close();for(const c of active.values())c.abort();await tasks.stop();
     while(active.size)await new Promise(resolve=>setTimeout(resolve,10));await quota.close();store.close();budgetStore.close();}
   return {root,mock,token,sessions,session,createSession,detail,configure,status,chat,tasks,recover,close,
+    startQQBroker:async()=>{if(!qqBroker)qqBroker=await startQQImageBroker(root,budgetStore,quota,mock,imageRunner);},
     configureQQ:(input:Record<string,unknown>)=>{if(input.enabled&&!key())throw new FishError('DEEPSEEK_KEY_MISSING');return configureQQ(root,input,settings.model);},qqStatus:()=>qqStatus(root,budgetStore),
     startQuota:()=>quota.start(),refreshQuota:async()=>{await quota.refresh(true);return status();},
     resetImages:()=>{if(active.size)throw new FishError('IMAGE_RESET_BUSY_OR_UNCERTAIN');ledger.resetImages();return status();},

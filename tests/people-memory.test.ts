@@ -21,7 +21,7 @@ test('profile observations retain verified media, keep cookies transient and iso
     }) as typeof fetch;
     const capture=async(_uin:string,cookie:string)=>{assert.ok(cookie.includes('never-store-this-secret'));return {png:png.toString('base64'),page:{title:'测试空间',text:'今天去海边摄影'}};};
     const people=new PersonMemory(f.root,f.store,qq,f.cfg,http,capture),snapshot=await people.refresh('20002','private:20002');
-    assert.ok(snapshot.avatar&&snapshot.screenshot);assert.equal(snapshot.posts[0].id,'post-one');assert.equal(people.images(snapshot,true).length,3);
+    assert.ok(snapshot.avatar&&snapshot.screenshot);assert.equal(snapshot.posts[0].id,'post-one');assert.equal(people.images(snapshot,true).length,2);
     const file=f.root+'/'+snapshot.screenshot!.replace(/qzone\.png$/,'observation.json'),saved=fs.readFileSync(file,'utf8');
     assert.ok(!saved.includes('never-store-this-secret'));assert.ok(!saved.includes('not-retained'));
     assert.equal((await people.refresh('20002','private:20002')).id,snapshot.id);assert.equal(reads,1);

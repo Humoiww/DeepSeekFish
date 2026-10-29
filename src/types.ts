@@ -4,13 +4,16 @@ export interface Message {
 }
 export type Reason = 'mention' | 'name' | 'auto' | 'interest' | 'opportunity' | 'random';
 export interface Usage { input: number; output: number }
-export interface ModelResult { text: string; usage: Usage }
+export interface ToolCall {id:string;type:'function';function:{name:string;arguments:string}}
+export interface ModelTool {type:'function';function:{name:string;description:string;parameters:Record<string,unknown>}}
+export interface CompletionOptions {tools?:ModelTool[];toolChoice?:string;final?:boolean;signal?:AbortSignal}
+export interface ModelResult { text: string; usage: Usage; tool_calls?:ToolCall[] }
 export interface Model {
   readonly kind: string;
-  complete(messages: ChatMessage[], maxTokens: number): Promise<ModelResult>;
+  complete(messages: ChatMessage[], maxTokens: number,options?:CompletionOptions): Promise<ModelResult>;
 }
 export type ChatPart={type:'text';text:string}|{type:'image_url';image_url:{url:string;detail?:'low'|'high'|'auto'}};
-export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string|ChatPart[] }
+export interface ChatMessage { role: 'system' | 'user' | 'assistant'|'tool'; content: string|ChatPart[];tool_calls?:ToolCall[];tool_call_id?:string }
 export interface Transport {
   status: string;
   send(message: Message, text: string): Promise<void>;

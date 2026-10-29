@@ -109,7 +109,7 @@ export class PersonMemory {
     return snapshot;
   }
   images(snapshot:PersonSnapshot,posts=false):ChatPart[]{
-    const files=[snapshot.avatar,...(posts?[snapshot.screenshot,...snapshot.postImages]:[])].filter((p):p is string=>!!p).slice(0,3),parts:ChatPart[]=[];
+    const files=[snapshot.avatar,...(posts?(snapshot.postImages.length?snapshot.postImages:[snapshot.screenshot]):[])].filter((p):p is string=>!!p).slice(0,3),parts:ChatPart[]=[];
     for(const file of files){
       if(!file.startsWith('runtime/memory/people/'+snapshot.person+'/'))continue;
       try{

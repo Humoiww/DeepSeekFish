@@ -12,7 +12,7 @@ WebUI 的用户消息和实际回答也归档，使用 web:会话ID 的独立范
 
 ## 人格
 
-`personas/active.json` 当前选择 mesugaki。`personas/mesugaki/prompt.md` 原文提取自 [ififi2017/hybrid-catgirl-skill](https://github.com/ififi2017/hybrid-catgirl-skill/blob/d7d0f7036d13e8fcc01dfc81df8b82da4336d93e/SKILL.md) 的「雌小鬼模式」完整段落，没有自行生成或改写人格 prompt。固定版本、提取位置和 MIT 许可证在同目录。
+`personas/active.json` 当前选择 mesugaki。原始人格段落完整保存在 `personas/mesugaki/upstream.md`，原文提取自 [ififi2017/hybrid-catgirl-skill](https://github.com/ififi2017/hybrid-catgirl-skill/blob/d7d0f7036d13e8fcc01dfc81df8b82da4336d93e/SKILL.md) 的「雌小鬼模式」完整原文段落。固定版本、提取位置和 MIT 许可证在同目录。后续按用户明确授权，将 active prompt.md 精简为鲸酱人格，移除猫娘触发词与台词范例；它不再标为未改写的导入。
 
 鲸酱既有外观原文单独放在 appearance.txt，改变性格不更换用户设定图。旧 whalechan-rp.txt 不再作为当前人格加载。人格不授予工具、凭据或执行权限。
 

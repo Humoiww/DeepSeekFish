@@ -242,3 +242,5 @@ runtime/research/   本次官方接口调查和生成的协议 schema（不提�
 最近错误、触发原因、用量、队列由 `status` 展示，持久日志在 SQLite `audit` 表（最近 200 条），控制台仅输出固定状态。`runtime/logs/` 预留，不额外复制原始聊天到日志文件。消息默认只保留每群 20 条且最多 24 小时，每分钟清理；任务请求/说明在终态超过 24 小时后清空，任务结果与产物需按本地需要清理。原始消息不会作为 Codex 上下文传递。
 
 详细说明：[Linux 部署](docs/linux.md)、[架构](docs/architecture.md)、[官方接口调查](docs/research.md)、[安全边界](docs/security.md)、[配置](docs/configuration.md)、[验收和已知限制](docs/status.md)。
+
+QQ 的精简人格、精力查询和自然语言生图见 [QQ 人格与工具](docs/qq-personality-tools.md)。

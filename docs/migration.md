@@ -59,3 +59,5 @@ API Key、QQ 登录状态、OneBot Token、Codex 登录、管理会话令牌、S
 需要同时迁移 QQ 登录端时，在新机执行 `sudo python3 scripts/install-napcat.py`，再运行 `install-tailnet.py` 生成该机的 QQ 私网入口；NapCat 使用独立账户，登录凭据重新扫码建立。二进制版本和社区 launcher 来源固定在 `deploy/napcat-versions.json`，不依赖旧机手工安装。
 
 空间截图能力另执行 `sudo python3 scripts/install-capture.py`，安装独立 fishview 账户和固定版本的 ARM64/x64 浏览器；登录态仍由已登录的 NapCat 瞬时提供，不迁移浏览器 profile。`personas/` 的原文人格及许可证随 Git/发布包迁移，详细规则见 [记忆与人格](memory-persona.md)。
+
+需要恢复 QQ 中的自然语言生图时，在 QQ 服务和 Codex 生图均可用后运行 `sudo bash scripts/enable-qq-images.sh`。broker socket 在新机重建，登录凭据不随归档迁移，额度和去重记录仍在原有 SQLite 中。

@@ -75,7 +75,7 @@ test('QQ archives full accepted text and excludes old rolling history unless exp
     const old=message('三天前的海边露营',{at:Date.now()-3*86400000});
     f.store.observe(old,168,20);f.bot.memory.record({id:old.id,conversation:old.group,actor:old.user,role:'user',text:old.text,at:old.at});
     const complete=f.provider.complete.bind(f.provider);
-    f.provider.complete=async(messages,max)=>{payload=JSON.parse(messageText(messages.at(-1)!));return complete(messages,max);};
+    f.provider.complete=async(messages,max)=>{payload={...JSON.parse(messageText(messages[1])),messages:messages.slice(2).map(m=>({text:messageText(m)}))};return complete(messages,max);};
     await f.bot.receive(message('长消息'+ '甲'.repeat(3000)));await f.bot.flush();
     assert.ok(payload.messages.every((m:any)=>!m.text.includes('三天前')));
     assert.equal(payload.memory.events.length,0);

@@ -17,6 +17,8 @@ import { CodexRateLimitError } from '../codex/rate-limit.js';
 // Only the current human message can select this flow. Tool results/history cannot.
 export function requestsImage(text:string):boolean{
   if(/(?:不要|别|无需|不用|不需要).{0,12}(?:画|生成|生图|自拍|自画像|头像|立绘)|(?:怎么|如何|教程|提示词|prompt|代码|接口|流程|解释|意思|这句话|引用)/i.test(text))return false;
+  if(/^(?:我)?想要(?:一)?张(?:图|图片|画)(?:[吧呀哦，,。.!！?？\s]|$)/.test(text.trim()))return true;
+  if(/^(?:来|给我)?随便画(?:一)?张(?:图|画)/.test(text.trim()))return true;
   if(/(?:^|[，,。:：])\s*(?:小鱼|鲸酱)?(?:请|麻烦)?(?:给(?:我)?|来|拍|发|要|想看).{0,12}(?:自拍|自画像|头像|立绘)(?:[吧呀哦图，,。.!！?？\s]|$)/.test(text.trim()))return true;
   return /^(?:给我|来|我想要|我要|要)(?:一)?(?:张|幅)(?:图|图片|画)/.test(text.trim())||/^(?:小鱼[，,：:]?|鲸酱[，,：:]?)?\s*(?:(?:请|麻烦|能不能|可以|我想要?|我要|给我|帮我|来)[，,：:\s]*){0,4}(?:画(?:一|个|张|幅|只|出|下)|绘制|生图|生成.{0,30}(?:图|画|立绘|头像|海报)|做.{0,10}(?:图片|插画|头像|海报)|要(?:一|张|个|幅).{0,15}(?:图|画|立绘|头像)|看看?你(?:自己|的样子))/i.test(text.trim())||/^(?:请|帮我|给我)?\s*(?:generate|draw|paint|create)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|portrait|illustration|poster)\b/i.test(text.trim());
 }
