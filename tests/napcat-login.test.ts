@@ -30,6 +30,21 @@ test('bad passwords are not saved; challenges pause retries and successful compl
     await f.auth.wrap(async()=>({result:true}))(account,md5);assert.equal(f.auth.status().saved,true);assert.equal(f.auth.status().humanRequired,false);assert.equal(f.auth.status().paused,false);
   }finally{f.close();}
 });
+test('native checkbox controls persistence and keeps the choice through a challenge',async()=>{
+  const f=fixture();try{
+    f.auth.choose(account,false);
+    await f.auth.wrap(async()=>({result:false,needCaptcha:true}))(account,md5);
+    await f.auth.wrap(async()=>({result:true}))(account,md5);
+    assert.equal(f.auth.status().saved,false);
+    assert.equal(f.auth.status().humanRequired,false);
+    f.auth.choose(account,true);
+    await f.auth.wrap(async()=>({result:true}))(account,md5);
+    assert.equal(f.auth.status().saved,true);
+    f.auth.choose(account,false);
+    await f.auth.wrap(async()=>({result:true}))(account,md5);
+    assert.equal(f.auth.status().saved,false);
+  }finally{f.close();}
+});
 test('offline recovery uses native fallback once per backoff window and never logs out an online account',async()=>{
   const f=fixture();try{
     await f.auth.save(account,md5);let calls=0,online=true;

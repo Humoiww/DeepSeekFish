@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 export function createLoginMemory(root,env=process.env){
   const file=path.join(root,'login-secrets.json');
+  const preferences=new Map();
   let api,saveAccount,busy=0,humanRequired=false,failed=false,nextAttempt=0,timer;
   const valid=(uin,md5)=>typeof uin==='string'&&/^[1-9]\d{4,19}$/.test(uin)&&typeof md5==='string'&&/^[a-f0-9]{32}$/i.test(md5);
   function read(){
@@ -33,9 +34,15 @@ export function createLoginMemory(root,env=process.env){
   }
   function wrap(fn){
     return async(uin,passwordMd5,...rest)=>{
+      const remember=preferences.get(String(uin))!==false;
       busy++;try{
         const result=await fn(uin,passwordMd5,...rest);
-        if(result?.result===true){await save(String(uin),passwordMd5,true);}
+        if(result?.result===true){
+          if(remember)await save(String(uin),passwordMd5,true);
+          else if(read()?.uin===String(uin))forget();
+          humanRequired=false;failed=false;nextAttempt=0;
+          preferences.delete(String(uin));
+        }
         else if(result?.needCaptcha||result?.needNewDevice){humanRequired=true;}
         else {failed=true;}
         return result;
@@ -60,6 +67,6 @@ export function createLoginMemory(root,env=process.env){
     humanRequired=false;failed=false;
   }
   load();
-  return {save,status,wrap,guard,attach,recover,forget,close(){clearInterval(timer);}};
+  return {save,status,wrap,guard,attach,recover,forget,choose(uin,enabled){preferences.set(String(uin),enabled===true);},close(){clearInterval(timer);}};
 }
 export const fishLogin=createLoginMemory(process.env.NAPCAT_WORKDIR||process.cwd());
