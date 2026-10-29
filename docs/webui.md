@@ -12,7 +12,7 @@
 
 模型默认 `deepseek-flash`。采用[官方非思考模式 Function Calling](https://api-docs.deepseek.com/guides/tool_calls/)的 assistant.tool_calls → tool.tool_call_id → assistant 循环；请求固定发往 `https://api.deepseek.com/chat/completions`，禁止重定向和自定义内网 endpoint。不依赖 OpenAI SDK，不额外引入前端构建链。主模型每轮非流式返回；浏览器通过 NDJSON 实时显示请求阶段、工具结果和最终文字，**不是 token 级输出流**。
 
-默认人设是鲸酱，昵称“小鱼”，共用 `prompts/whalechan-rp.txt` 的简短 RP。服务器把固定外观文字加入 system prompt；不会把设定图的像素逐轮发给 DeepSeek，也不声称纯文本对话已经看过图片。用户原图保存在本机 runtime/character；Codex CLI 或本机 WebUI 的明确自画像请求才附上真实参考图，缺图或原生事件未记录使用该图时失败。人设本身不增加工具或审批权限。来源与许可见 [人设说明](../prompts/README.md)。
+默认人设是鲸酱，昵称“小鱼”，共用 `prompts/whalechan-rp.txt` 的简短 RP。服务器把固定外观文字加入 system prompt；不会把设定图的像素逐轮发给 DeepSeek，也不声称纯文本对话已经看过图片。默认使用仓库内 `assets/character/whalechan-reference.png` 原始设定集，可选本机 `runtime/character/whalechan-reference.png` 覆盖；Codex CLI 或本机 WebUI 的明确自画像请求才附上真实参考图，缺图或原生事件未记录使用该图时失败。人设本身不增加工具或审批权限。来源与许可见 [人设说明](../prompts/README.md)。
 
 每个会话有独立服务器端上下文，只发送最近 3 个完整成功回合、合计约 24 KiB 的历史；不接受浏览器提交伪造 system/tool 历史。失败或取消的未完成工具链不加入后续上下文。最多 50 个会话、每会话 100 条用户消息；达到上限时需要本机维护数据库。当前未提供永久删除/重命名会话界面，历史与文件不会自动长期归档。
 
@@ -51,7 +51,7 @@ npm run cli -- web-approve 任务UUID --reviewed
 
 正式生图同时占用共享 `fish.sqlite` 的一个 Codex 任务、一次生图及最长执行时长，两项次数原子预留，默认每日 20 张；共享 Codex 任务上限配套为每日 22 次、总时长 6600000 ms，仍保持单个真实任务并发。失败/取消不自动重试，已经预留的次数保留。单次 Codex 默认 300 秒，连同规划有界等待；可用停止按钮取消。普通 Codex 排队仍需要原有 CLI 审核，不因画图请求获得权限。`--mock` 使用固定 1×1 PNG 测试占位，页面明确标记离线演示，不是 AI 作品，不消费正式预算。
 
-项目未登录时运行 `bash scripts/manage.sh codex-login --device-auth`；Windows 对应 `npm run cli -- codex-login --device-auth`。使用项目自己的 ChatGPT 登录，不复制系统现有 Codex 凭据。设定图仍需本机 `runtime/character/whalechan-reference.png`，不会公开到 GitHub。
+项目未登录时运行 `bash scripts/manage.sh codex-login --device-auth`；Windows 对应 `npm run cli -- codex-login --device-auth`。使用项目自己的 ChatGPT 登录，不复制系统现有 Codex 凭据。默认设定集已包含在仓库的 `assets/character/whalechan-reference.png` 中，克隆后直接可用；可选本机覆盖路径为 `runtime/character/whalechan-reference.png`。
 
 ## Codex 额度监视与本地 Reset
 
@@ -84,3 +84,5 @@ Ctrl+C 或 `npm run cli -- web-stop` 停止服务。项目运行数据、缓存�
 Linux 根目录启动脚本已从项目外目录启动成功；默认浏览器调用使用项目内替身捕获并核对实际参数，一次性连接在真实浏览器验证成功。浏览器已验证新会话、Mock 文件创建及结果显示、工作区隔离、设置窗口、正式模式无 Key 也能启动。Windows BAT 提供源码与 Node 启动路径，尚未在 Windows 机器实跑；真实 DeepSeek 调用仍需用户填写 Key 后验收。
 
 新增 WebUI 画图链路通过离线测试与浏览器验收，未在此次功能更新中追加真实生图。Codex 额度已用项目账号调用官方 `account/rateLimits/read` 实测，实际账号只返回一个 10080 分钟周窗口；不假设周额度一定在 secondary 字段。真实 DeepSeek → Codex 生图仍需实际请求验收。
+
+2026-10-29：原始设定集纳入仓库，53 项离线测试通过。新增覆盖无本机图时使用仓库默认图、本机覆盖优先以及无效覆盖拒绝；WebUI 与 CLI 共用同一参考图解析逻辑。

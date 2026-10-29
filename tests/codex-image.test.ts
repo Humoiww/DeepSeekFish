@@ -2,13 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { projectRoot } from '../src/config.js';
 import { fixture } from './helpers.js';
 import { makeDir } from '../src/paths.js';
 import { MockImageProvider } from '../src/image/provider.js';
 import { captureCodexImage,codexImageSmoke,publishCodexImage } from '../src/image/codex-smoke.js';
 import { executionFeatures } from '../src/codex/platform.js';
-import { CHARACTER_REFERENCE,characterPrompt } from '../src/character.js';
-import { isCharacterPortrait,prepareCharacterPortrait,verifyCharacterReference } from '../src/image/character-reference.js';
+import { CHARACTER_REFERENCE,BUNDLED_CHARACTER_REFERENCE,characterPrompt } from '../src/character.js';
+import { isCharacterPortrait,prepareCharacterPortrait,verifyCharacterReference,resolveCharacterReference } from '../src/image/character-reference.js';
 
 test('image smoke requires native completion and valid PNG, never an assistant claim or fileId alone',async()=>{
   const f=fixture();try{
@@ -87,4 +88,25 @@ test('self portraits stage the fixed character PNG, ordinary images do not read 
 test('shared character prompt keeps the requested appearance and roleplay within existing tool permissions',()=>{
   const prompt=characterPrompt();
   for(const part of ['鲸酱','白米饭','鲸鳍耳','女仆裙','鲸尾','不改变工具权限','不能声称已经生成'])assert.ok(prompt.includes(part));
+});
+test('bundled original reference works and is staged without private runtime data',()=>{
+  const f=fixture();try{
+    makeDir(f.root,'assets/character');
+    fs.copyFileSync(path.join(projectRoot(),BUNDLED_CHARACTER_REFERENCE),path.join(f.root,BUNDLED_CHARACTER_REFERENCE));
+    assert.equal(fs.existsSync(path.join(f.root,CHARACTER_REFERENCE)),false);
+    assert.equal(resolveCharacterReference(f.root),path.join(f.root,BUNDLED_CHARACTER_REFERENCE));
+    const prepared=prepareCharacterPortrait(f.root,makeDir(f.root,'runtime/workspace/bundled-portrait'),'给个自拍');
+    assert.ok(prepared.reference?.path.startsWith(path.join(f.root,'runtime/workspace/bundled-portrait')+path.sep));
+    assert.ok(fs.existsSync(prepared.reference!.path));
+  }finally{f.cleanup();}
+});
+test('local reference overrides the bundled default, and an invalid override never silently falls back',async()=>{
+  const f=fixture();try{
+    makeDir(f.root,'assets/character');fs.copyFileSync(path.join(projectRoot(),BUNDLED_CHARACTER_REFERENCE),path.join(f.root,BUNDLED_CHARACTER_REFERENCE));
+    const dir=makeDir(f.root,'runtime/character');await new MockImageProvider().generate('fixture',dir);
+    fs.renameSync(path.join(dir,'mock.png'),path.join(f.root,CHARACTER_REFERENCE));
+    assert.equal(resolveCharacterReference(f.root),path.join(f.root,CHARACTER_REFERENCE));
+    fs.writeFileSync(path.join(f.root,CHARACTER_REFERENCE),'invalid override');
+    assert.throws(()=>resolveCharacterReference(f.root),/INVALID_PNG/);
+  }finally{f.cleanup();}
 });

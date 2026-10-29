@@ -9,3 +9,4 @@
 - WebUI model tools only access their generated session workspace; never expose shell, secrets, settings or approval tools.
 
 - User-authorized WebUI image limit is 20/day. Local human reset preserves reservation/audit history and cannot reset provider quota or clear unknown/active leases. Codex quota monitoring is account-only RPC; never create a model turn to inspect usage.
+- For straightforward copy, paste or upload requests, do not perform extra hash/checksum verification unless the user explicitly asks.

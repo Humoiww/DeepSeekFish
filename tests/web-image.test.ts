@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { fixture } from './helpers.js';
 import { makeDir } from '../src/paths.js';
-import { CHARACTER_REFERENCE } from '../src/character.js';
+import { CHARACTER_REFERENCE,BUNDLED_CHARACTER_REFERENCE } from '../src/character.js';
 import { createWebApp } from '../src/web/app.js';
 import { webServer } from '../src/web/server.js';
 import { requestsImage,validateImagePlan } from '../src/web/images.js';
@@ -94,7 +94,7 @@ test('self portrait without native reference-use evidence fails after dispatch a
   let bytes:Buffer,referencePath='';
   const runner:ImageRunner={async generateImage(_cwd,_prompt,_signal,reference){referencePath=reference??'';return {text:'used the reference',images:[{id:'native',type:'imageGeneration',status:'completed',result:bytes.toString('base64')}]};}};
   const w=web(false,(async()=>reply([call()])) as typeof fetch,runner);try{
-    bytes=await png(w.f.root);const dir=makeDir(w.f.root,'runtime/character');fs.writeFileSync(path.join(dir,'whalechan-reference.png'),bytes);
+    bytes=await png(w.f.root);const dir=makeDir(w.f.root,'assets/character');fs.writeFileSync(path.join(w.f.root,BUNDLED_CHARACTER_REFERENCE),bytes);
     const s=w.app.createSession();await w.app.chat(s.id,'画一张你的图','chat',signal(),()=>{});
     const turn=w.app.detail(s.id).turns[0];assert.equal(turn.answer,'CHARACTER_REFERENCE_NOT_USED');assert.deepEqual(turn.images,[]);
     assert.equal(fs.existsSync(referencePath),false);assert.equal(w.f.ledger.value('image'),1);assert.deepEqual(fs.readdirSync(path.join(w.f.root,'runtime/outputs')),[]);

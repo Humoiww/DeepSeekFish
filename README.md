@@ -6,7 +6,7 @@
 
 ## 本地 WebUI：独立对话与受限助手
 
-默认角色为鲸酱（Whale-chan，昵称“小鱼”）。简短 RP 在 [prompts/whalechan-rp.txt](prompts/whalechan-rp.txt)，QQ 与 WebUI 共用；外观按用户提供的蓝发鲸鳍耳女仆设定图固定。原图只存本机 `runtime/character/whalechan-reference.png`，不上传 Git。人设来源和文本许可见 [prompts/README.md](prompts/README.md)。
+默认角色为鲸酱（Whale-chan，昵称“小鱼”）。简短 RP 在 [prompts/whalechan-rp.txt](prompts/whalechan-rp.txt)，QQ 与 WebUI 共用；外观按用户提供的蓝发鲸鳍耳女仆设定图固定。原始设定集已随仓库提供于 [assets/character/whalechan-reference.png](assets/character/whalechan-reference.png)，新克隆即可使用。`runtime/character/whalechan-reference.png` 是可选的本机覆盖图，存在时优先。人设来源和文本许可见 [prompts/README.md](prompts/README.md)。
 
 不需要 QQ 账号。在仓库根目录运行即可。Linux 已有 Node.js **24.9+** 时直接使用；缺少或版本过旧时，脚本会用 Python 3 + tar 从 Node.js 官网下载已固定 SHA-256 的便携版 Node/npm，安装到 `runtime/tools/node/`。首次准备需要联网，不需要 sudo，不修改系统 Node、Conda 或 shell 配置。Windows 目前仍需已有 Node.js **24.9+**（含 npm），或手动放置官方便携版。
 
@@ -214,7 +214,7 @@ Windows 对应命令为 `npm run cli -- codex-image --reviewed "图片描述"`�
 
 这会使用你的 Codex 订阅额度，并在调用前占用正式 SQLite 中的一个 Codex 任务及一次生图次数；失败不会自动重试或退回次数。普通 Codex 任务仍关闭生图，QQ 的实验性 ImageProvider 仍返回 `unsupported`；此命令不代表 QQ 生图链路已验证。内置生图能力及额度参见[官方文档](https://learn.chatgpt.com/docs/image-generation)。
 
-提示词出现“你自己 / 自画像 / 自拍 / 鲸酱”时，CLI 会把本机角色参考图复制到该次独立任务目录，并以 `localImage` 附给 Codex，要求内置生图工具实际使用该图。原生完成事件的 inputImages 路径和 SHA-256 必须匹配，否则拒绝发布；缺图时明确返回 `CHARACTER_REFERENCE_MISSING`。其他机器需自行把有权使用的设定 PNG 放到上述本机路径。普通猫、风景等生图不会附加角色参考。此新增路径已离线验证，没有额外消耗真实生图额度。
+提示词出现“你自己 / 自画像 / 自拍 / 鲸酱”时，CLI 会把本机角色参考图复制到该次独立任务目录，并以 `localImage` 附给 Codex，要求内置生图工具实际使用该图。原生完成事件的 inputImages 路径和 SHA-256 必须匹配，否则拒绝发布；缺图时明确返回 `CHARACTER_REFERENCE_MISSING`。默认使用仓库自带的设定集，不需要额外下载或复制；需要自定义时才放入上述本机覆盖路径。普通猫、风景等生图不会附加角色参考。此新增路径已离线验证，没有额外消耗真实生图额度。
 
 ## 数据、日志与目录
 

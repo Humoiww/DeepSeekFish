@@ -4,8 +4,8 @@ import type { Config } from '../config.js';
 import { Store,redact } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
 import { FishError } from '../types.js';
-import { CHARACTER_REFERENCE,characterPrompt } from '../character.js';
-import { isCharacterPortrait } from '../image/character-reference.js';
+import { characterPrompt } from '../character.js';
+import { isCharacterPortrait,resolveCharacterReference } from '../image/character-reference.js';
 import { verifyPng } from '../image/provider.js';
 import { checkImageCapacity,runCodexImage,type ImageRunner } from '../image/codex-smoke.js';
 import { verifyArtifact } from '../codex/verify.js';
@@ -49,10 +49,7 @@ export class WebImages{
   async generate(sid:string,turnId:string,request:string,history:WireMessage[],model:WebModel,signal:AbortSignal,emit:(e:any)=>void,confirmed=false){
     const cfg=this.cfg(),character=isCharacterPortrait(request);
     checkImageCapacity(this.root,cfg,this.ledger,this.mock);
-    if(character){
-      if(!fs.existsSync(safePath(this.root,CHARACTER_REFERENCE)))throw new FishError('CHARACTER_REFERENCE_MISSING');
-      verifyPng(this.root,CHARACTER_REFERENCE,10485760);
-    }
+    if(character)resolveCharacterReference(this.root);
     await this.quota.beforeImage(confirmed);signal.throwIfAborted();
     emit({type:'thinking',stage:'planning',round:1});
     const system=characterPrompt()+'\n当前用户已明确授权你设计并生成一张图。你是画面设计师：先理解用户要求，自主补齐主体、场景、画风、构图、光线、配色和细节；未指定时选择协调的默认方案，不追问。只调用 generate_image 一次，把方案写在结构化参数中，不调用其他工具。不要写 shell、路径、API、审批指令或声称已出图。普通题材不要擅自换成鲸酱。'+(character?'本次是鲸酱本人，必须保持既定外观，代码会附上设定图。':'');

@@ -1,21 +1,27 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { CHARACTER_APPEARANCE,CHARACTER_REFERENCE } from '../character.js';
+import { CHARACTER_APPEARANCE,CHARACTER_REFERENCE,BUNDLED_CHARACTER_REFERENCE } from '../character.js';
 import { safePath } from '../paths.js';
 import { FishError } from '../types.js';
 import { taskDirectory } from '../codex/platform.js';
 import { verifyPng } from './provider.js';
 
 export interface CharacterReference {path:string;sha256:string}
+/** Local customization wins; a fresh clone uses the versioned reference sheet. */
+export function resolveCharacterReference(root:string):string{
+  for(const relative of [CHARACTER_REFERENCE,BUNDLED_CHARACTER_REFERENCE]){
+    const source=safePath(root,relative);
+    if(fs.existsSync(source))return verifyPng(root,relative,10485760);
+  }
+  throw new FishError('CHARACTER_REFERENCE_MISSING');
+}
 export function isCharacterPortrait(prompt:string):boolean{
   return /(?:[你她](?:自己|本人)|你的(?:照片|图片|图|画像|立绘|形象|样子)|自画像|自拍|鲸酱|whale[- ]?chan|self[- ]?portrait|portrait of yourself|your (?:own )?(?:portrait|selfie))/i.test(prompt);
 }
 export function prepareCharacterPortrait(root:string,cwd:string,prompt:string,character=isCharacterPortrait(prompt)):{prompt:string;reference?:CharacterReference}{
   if(!character)return {prompt};
   cwd=taskDirectory(root,cwd);
-  const source=safePath(root,CHARACTER_REFERENCE);
-  if(!fs.existsSync(source))throw new FishError('CHARACTER_REFERENCE_MISSING');
-  verifyPng(root,CHARACTER_REFERENCE,10485760);
+  const source=resolveCharacterReference(root);
   const target=safePath(cwd,'character-reference.png');
   fs.copyFileSync(source,target,fs.constants.COPYFILE_EXCL);
   const sha256=createHash('sha256').update(fs.readFileSync(target)).digest('hex');
