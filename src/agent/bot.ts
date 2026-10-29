@@ -27,7 +27,10 @@ export class Bot {
     const c=this.cfg();
     if(!this.accepting||!c.enabled||!conversationAllowed(c,m.group)||m.bot||!m.text.trim()||!m.id||!m.user||
       !Number.isFinite(m.at)||Math.abs(Date.now()-m.at)>240000)return;
-    m={...m,text:redact(m.text).slice(0,2000)};
+    // OneBot timestamps have second precision; private replies use local
+    // milliseconds. Order private context by reception so rapid follow-ups
+    // cannot sort before the assistant's preceding reply.
+    m={...m,at:c.qqTransport==='onebot'&&m.group.startsWith('private:')?Date.now():m.at,text:redact(m.text).slice(0,2000)};
     if(this.store.db.prepare('SELECT key FROM cache WHERE key=? AND expires>?').get(echoKey(m.group,m.text),Date.now()))return;
     if(!this.store.observe(m,c.historyHours,c.windowSize))return;
     if(m.text.startsWith('/fish ')){

@@ -57,6 +57,9 @@ test('real local WebSocket carries ordinary context into an @ reply using existi
     await deliver(event('私聊不需要at',{message_type:'private',message_id:3}));
     assert.equal(provider.calls,2);assert.equal(sent[1].action,'send_private_msg');assert.equal(sent[1].user_id,'20002');
     assert.equal(f.store.history('private:20002',20).length,2);assert.equal(f.store.history('private:20002',20)[1].user,'DeepSeekFish');assert.equal(f.store.history('123456',20).length,2);
+    await deliver(event('接着聊上一句',{message_type:'private',message_id:4}));
+    assert.equal(provider.calls,3);assert.match(sent[2].message[0].data.text,/接着聊上一句/);
+    assert.deepEqual(f.store.history('private:20002',20).map(m=>m.user),['20002','DeepSeekFish','20002','DeepSeekFish']);
     await assert.rejects(transport.send({id:'3',group:'999',user:'20002',text:'',at:Date.now(),mentioned:true,event:'mention'},'blocked'),/ONEBOT_GROUP_NOT_ALLOWED/);
   }finally{await bot.stop();for(const client of server.clients)client.terminate();await new Promise<void>(resolve=>server.close(()=>resolve()));f.cleanup();}
 });
