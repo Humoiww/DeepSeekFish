@@ -14,7 +14,8 @@ export class RpcProcess extends EventEmitter {
     super();signal.throwIfAborted();
     this.child=spawn(spec.command,spec.args,{cwd:spec.cwd,env:spec.env,stdio:['pipe','pipe','pipe'],shell:false,windowsHide:true,detached:process.platform!=='win32'});
     this.child.stdout.on('data',(chunk:Buffer)=>this.consume(chunk));
-    this.child.stderr.on('data',()=>{}); // Never persist raw stderr/protocol/credentials.
+    // Only the diagnostic consumer may persist bounded, redacted error text.
+    this.child.stderr.on('data',(chunk:Buffer)=>this.emit('stderr',String(chunk)));
     this.child.stdin.on('error',()=>this.fail(new FishError('CODEX_PIPE_CLOSED')));
     this.child.on('error',()=>this.fail(new FishError('CODEX_SPAWN_FAILED')));
     this.child.on('close',()=>{this.closed=true;this.fail(new FishError('CODEX_PROCESS_EXIT'));});
@@ -36,8 +37,10 @@ export class RpcProcess extends EventEmitter {
         // No server request can acquire more authority. Known approvals are
         // denied; all other interactive/tool requests are explicitly unsupported.
         const result=/requestApproval$/.test(msg.method)?{decision:'decline'}:undefined;
+        this.emit('serverRequest',{id:msg.id,method:msg.method,decision:result?'decline':'unsupported'});
         this.write(result?{id:msg.id,result}:{id:msg.id,error:{code:-32601,message:'Client capability disabled'}});
       }else if(msg.id!==undefined){
+        if(msg.error)this.emit('rpcError',{id:msg.id,error:msg.error});
         const p=this.pending.get(msg.id);if(p){this.pending.delete(msg.id);msg.error?p.reject(rateLimitFailure(msg.error)??new FishError('CODEX_RPC_REJECTED')):p.resolve(msg.result);}
       }else if(msg.method)this.emit('notice',msg.method,msg.params);
     }

@@ -1,0 +1,40 @@
+[Unit]
+Description=DeepSeekFish Tailscale WebUI gateway
+After=deepseekfish-web.service
+Wants=deepseekfish-web.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/srv/deepseekfish/app
+Environment=FISH_TAILNET_HOST=@TAILNET_IP@:17863
+Environment=FISH_TAILNET_OWNER=@TAILNET_OWNER@
+LoadCredential=webui-admin-token:/srv/deepseekfish/app/runtime/data/webui-admin-token
+ExecStart=/srv/deepseekfish/app/runtime/tools/node/bin/node --max-old-space-size=32 /srv/deepseekfish/app/dist/src/web/tailnet-main.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+InaccessiblePaths=/srv/deepseekfish/app/runtime/data /srv/deepseekfish/app/runtime/codex-home /srv/deepseekfish/app/runtime/probe-codex-home /srv/deepseekfish/app/runtime/workspace /srv/deepseekfish/app/runtime/outputs
+NoExecPaths=/
+ExecPaths=/srv/deepseekfish/app/runtime/tools/node/bin/node /usr/lib /lib
+SocketBindDeny=any
+MemoryHigh=64M
+MemoryMax=96M
+CPUQuota=25%
+TasksMax=24
+LimitNOFILE=512
+TimeoutStopSec=15

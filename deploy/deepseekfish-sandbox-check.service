@@ -1,0 +1,35 @@
+[Unit]
+Description=DeepSeekFish keyless sandbox compatibility check
+
+[Service]
+Type=oneshot
+User=deepseekfish
+Group=deepseekfish
+WorkingDirectory=/srv/deepseekfish/app
+Environment=HOME=/srv/deepseekfish
+Environment=PATH=/srv/deepseekfish/app/runtime/tools/node/bin:/usr/bin:/bin
+UnsetEnvironment=DEEPSEEK_API_KEY OPENAI_API_KEY QQBOT_SECRET SSH_AUTH_SOCK CODEX_HOME NODE_OPTIONS
+ExecStart=/srv/deepseekfish/app/runtime/tools/node/bin/node /srv/deepseekfish/app/dist/src/cli.js sandbox-check
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# The launcher creates its own PID namespace/proc. Host hidepid would prevent
+# an unprivileged process from mounting that fresh proc on this kernel.
+# Do not mask individual host /proc entries in this diagnostic unit: Linux
+# rejects a new unprivileged proc mount if it would reveal masked entries.
+# Actual commands see only the launcher's private PID namespace and proc.
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=user mnt pid ipc uts net
+# A disposable, credential-free home, separate from the service's locked home.
+BindPaths=/srv/deepseekfish/app/runtime/probe-codex-home:/srv/deepseekfish/app/runtime/codex-home
+ReadWritePaths=/srv/deepseekfish/app/runtime/data /srv/deepseekfish/app/runtime/logs /srv/deepseekfish/app/runtime/cache /srv/deepseekfish/app/runtime/tmp /srv/deepseekfish/app/runtime/workspace /srv/deepseekfish/app/runtime/outputs /srv/deepseekfish/app/runtime/probe-codex-home /srv/deepseekfish/app/runtime/codex-home
+InaccessiblePaths=-/srv/deepseekfish/app/.env -/srv/deepseekfish/app/runtime/data/webui-secrets.json
+MemoryMax=768M
+CPUQuota=100%
+TasksMax=64
+TimeoutStartSec=45
+KillMode=control-group

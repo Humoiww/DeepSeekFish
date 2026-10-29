@@ -13,6 +13,7 @@ import { requestsImage,validateImagePlan } from '../src/web/images.js';
 import { MockImageProvider } from '../src/image/provider.js';
 import { mockQuota } from '../src/codex/quota.js';
 import type { ImageRunner } from '../src/image/codex-smoke.js';
+import { CodexDiagnostics } from '../src/codex/diagnostics.js';
 
 const plan={subject:'蓝发少女',scene:'窗边喝茶',style:'水彩插画',composition:'方形，主体居中',lighting:'晨光',palette:'蓝白色',details:'无文字'};
 const call=(args:unknown=plan,name='generate_image')=>({id:'plan-1',type:'function',function:{name,arguments:JSON.stringify(args)}});
@@ -98,6 +99,24 @@ test('self portrait without native reference-use evidence fails after dispatch a
     const s=w.app.createSession();await w.app.chat(s.id,'画一张你的图','chat',signal(),()=>{});
     const turn=w.app.detail(s.id).turns[0];assert.equal(turn.answer,'CHARACTER_REFERENCE_NOT_USED');assert.deepEqual(turn.images,[]);
     assert.equal(fs.existsSync(referencePath),false);assert.equal(w.f.ledger.value('image'),1);assert.deepEqual(fs.readdirSync(path.join(w.f.root,'runtime/outputs')),[]);
+  }finally{await w.close();}
+});
+test('self portrait with no native image shows the actual Codex reply in a persistent call record',async()=>{
+  let root='';
+  const runner:ImageRunner={async generateImage(cwd,prompt,_signal,reference){
+    const record=new CodexDiagnostics(root,path.basename(cwd),prompt,true,reference);
+    record.notice('item/completed',{item:{type:'agentMessage',id:'message',phase:'final_answer',text:'The image tool returned no image.'}});
+    record.finish('The image tool returned no image.');return {text:'The image tool returned no image.',images:[]};
+  }};
+  const w=web(false,(async()=>reply([call()])) as typeof fetch,runner);root=w.f.root;
+  try{
+    const dir=makeDir(root,'assets/character');fs.writeFileSync(path.join(dir,'whalechan-reference.png'),await png(root));
+    const s=w.app.createSession();await w.app.chat(s.id,'画一张你自己','chat',signal(),()=>{});
+    const turn=w.app.detail(s.id).turns[0];assert.equal(turn.answer,'CODEX_IMAGE_UNSUPPORTED_OR_MISSING');
+    const trace=turn.trace.find((e:any)=>e.name==='codex_record');assert.ok(trace);
+    const record=JSON.parse(trace.result);assert.equal(record.finalText,'The image tool returned no image.');
+    assert.equal(record.delivery.error,'CODEX_IMAGE_UNSUPPORTED_OR_MISSING');assert.equal(record.delivery.nativeImageCompletions,0);
+    assert.deepEqual(turn.images,[]);
   }finally{await w.close();}
 });
 test('PNG endpoint needs local auth and session ownership, and rechecks the file hash',async()=>{

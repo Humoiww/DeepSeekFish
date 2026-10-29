@@ -63,6 +63,7 @@ export class WebImages{
     emit({type:'thinking',stage:'generating'});
     const before=await this.quota.beforeImage(confirmed);signal.throwIfAborted();
     const result=await runCodexImage(this.root,prompt,{cfg,ledger:this.ledger,group:'web:'+sid,signal,mock:this.mock,character,runner:this.runner});
+    if(result.diagnostic)emit({type:'codex_record',record:result.diagnostic,error:result.error});
     if(result.error==='CODEX_RATE_LIMITED')this.quota.limited(new CodexRateLimitError(result.retryAt));
     if(!result.ok){await this.quota.afterImage(result.id,before);throw new FishError(result.error??'CODEX_IMAGE_GENERATION_FAILED');}
     if(result.manifest?.length!==1)throw new FishError('INVALID_IMAGE_MANIFEST');

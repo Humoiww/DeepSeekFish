@@ -42,6 +42,19 @@ export function linuxExecutable(root:string,arch=process.arch):string {
   return p;
 }
 export function bubblewrap(root:string):string|undefined {
+  // An administrator may install a narrowly scoped AppArmor launcher. Never
+  // trust a service-writable binary or ancestor for this privileged policy.
+  try {
+    const scoped=safePath(root,'runtime/tools/bwrap');
+    let p=scoped;
+    for(;;){
+      const st=fs.lstatSync(p);
+      if(st.uid!==0||(st.mode&0o022)!==0||st.isSymbolicLink())throw new Error('untrusted launcher');
+      if(path.dirname(p)===p)break;
+      p=path.dirname(p);
+    }
+    fs.accessSync(scoped,fs.constants.X_OK);return scoped;
+  }catch{}
   const candidates=['/usr/bin/bwrap','/bin/bwrap'];
   try { candidates.push(path.join(path.dirname(linuxExecutable(root)),'../codex-resources/bwrap')); } catch {}
   for(const p of candidates){try{fs.accessSync(p,fs.constants.X_OK);return fs.realpathSync(p);}catch{}}

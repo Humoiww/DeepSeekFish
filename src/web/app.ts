@@ -34,6 +34,8 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   store.db.exec(`CREATE TABLE IF NOT EXISTS web_sessions(id TEXT PRIMARY KEY,title TEXT,created INTEGER,updated INTEGER);
     CREATE TABLE IF NOT EXISTS web_turns(id TEXT PRIMARY KEY,sid TEXT,user TEXT,answer TEXT,trace TEXT,context TEXT,state TEXT,created INTEGER);`);
   let settings:Settings={model:'deepseek-flash',maxOutputTokens:1024,dailyTokens:loadConfig(root).dailyTokens,search:false,codexQueue:false,...JSON.parse(store.getMeta('web-settings')??'{}')};
+  const codexImageOnly=process.env.FISH_CODEX_IMAGE_ONLY==='1';
+  if(codexImageOnly)settings.codexQueue=false;
   let secret='';const secretPath=safePath(root,'runtime/data/webui-secrets.json');
   if(fs.existsSync(secretPath))secret=JSON.parse(fs.readFileSync(secretPath,'utf8')).deepseekKey??'';
   const key=()=>secret||process.env.DEEPSEEK_API_KEY||'';
@@ -68,6 +70,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     return {...s,busy:active.has(s.id),turns:turns.map(t=>({id:t.id,user:t.user,answer:t.answer,trace:JSON.parse(t.trace),images:images.list(s.id,t.id),state:t.state,created:t.created})),files:new SessionWorkspace(root,s.id).list()};
   }
   function configure(input:Record<string,unknown>){
+    if(codexImageOnly&&input?.codexQueue===true)throw new FishError('CODEX_IMAGE_ONLY');
     const allowed=['apiKey','model','maxOutputTokens','dailyTokens','search','codexQueue'];
     if(!input||typeof input!=='object'||Object.keys(input).some(k=>!allowed.includes(k)))throw new FishError('INVALID_WEB_SETTINGS');
     const next={...settings};
@@ -80,7 +83,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     }
     settings=next;store.setMeta('web-settings',JSON.stringify(settings));return status();
   }
-  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),settings,workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
+  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings,workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
     imageLimits:{daily:cfg().imageDaily,codexDaily:cfg().codexDaily},codexQuota:quota.status(),
     capabilities:['会话文件列表','会话文本读写','明确请求后设计并生成单张图片',...(settings.search?['公开搜索']:[]),...(settings.codexQueue?['提交 Codex 待审任务']:[])],
     budgets:{dailyTokens:settings.dailyTokens,usage:ledger.snapshot(),fault:budgetStore.getMeta('budgetFault')??null},
@@ -131,6 +134,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       if(imageRequest){
         const image=await images.generate(s.id,turnId,current[0].content,history,model,joined,e=>{
           if(e.type==='image_plan')record({name:'image_plan',state:'completed',plan:e.plan,character:e.character,mock:e.mock,result:JSON.stringify(e.plan)});
+          else if(e.type==='codex_record')record({name:'codex_record',state:e.error?'failed':'completed',result:JSON.stringify(e.record,null,2)});
           else emit(e);
         },imageConfirmed===true);
         answer=image.mock?'【离线演示】画面方案和出图流程已走通。下方是固定的 1×1 PNG 测试占位，不是 AI 作品；未调用 DeepSeek 或 Codex。':'画好啦，图片已通过校验，可以预览或下载。';

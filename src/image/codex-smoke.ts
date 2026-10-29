@@ -11,6 +11,7 @@ import { collectArtifacts, type Artifact } from '../codex/artifacts.js';
 import { verifyPng,MockImageProvider } from './provider.js';
 import { prepareCharacterPortrait,verifyCharacterReference,type CharacterReference } from './character-reference.js';
 import { CodexRateLimitError } from '../codex/rate-limit.js';
+import { readCodexRecord,saveCodexRecord,type CodexRecord } from '../codex/diagnostics.js';
 
 /** Accept only a native imageGeneration completion, never an agent's claimed path.
  * CODEX_HOME/generated_images is a trusted harness output, not model filesystem access. */
@@ -43,7 +44,7 @@ export function captureCodexImage(root:string,cwd:string,images:CodexImageItem[]
   }
 }
 
-export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server'|'mock';error?:string;retryAt?:number;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number}
+export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server'|'mock';error?:string;retryAt?:number;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number;diagnostic?:CodexRecord}
 export function publishCodexImage(root:string,id:string,maxBytes:number):Artifact[]{
   if(!/^[a-z0-9-]{1,64}$/.test(id))throw new FishError('INVALID_TASK_ID');
   const cwd=safePath(root,'runtime/workspace/'+id);
@@ -85,8 +86,8 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
     }else{
       const result=await (options.runner??new AppServerRunner(root)).generateImage(cwd,prepared.prompt,signal,reference?.path);
       signal.throwIfAborted();report.nativeImageCompletions=result.images.length;
-      if(reference)verifyCharacterReference(result.images,reference);
       captureCodexImage(root,cwd,result.images,cfg.maxArtifactBytes);
+      if(reference)verifyCharacterReference(result.images,reference);
     }
     signal.throwIfAborted();
     if(reference){fs.rmSync(reference.path,{force:true});reference=undefined;}
@@ -104,6 +105,8 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
       ledger.settle(reservation.image);
     }
     report.elapsedMs=Date.now()-started;
+    const diagnostic=readCodexRecord(root,id);
+    if(diagnostic){diagnostic.delivery={ok:report.ok,error:report.error,nativeImageCompletions:report.nativeImageCompletions};saveCodexRecord(root,diagnostic);report.diagnostic=diagnostic;}
   }
   return report;
 }

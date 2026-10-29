@@ -1,0 +1,35 @@
+# Dedicated outer launcher only. The distro /usr/bin/bwrap profile is unchanged.
+# Outer OS capabilities are still dropped with --cap-drop ALL. Namespace setup
+# is permitted here; the inner distro bwrap stacks unpriv_bwrap onto commands.
+abi <abi/5.0>,
+include <tunables/global>
+
+profile deepseekfish-outer /srv/deepseekfish/app/runtime/tools/bwrap flags=(attach_disconnected,mediate_deleted) {
+  allow capability,
+  allow file rwlkm /{**,},
+  allow network,
+  allow unix,
+  allow ptrace,
+  allow signal,
+  allow mqueue,
+  allow io_uring,
+  allow userns,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+  # Trusted app-server and the official host dispatching built-in image tools.
+  allow ix /srv/deepseekfish/app/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex,
+  allow ix /srv/deepseekfish/app/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex-code-mode-host,
+  allow ix /srv/deepseekfish/app/runtime/codex-home/tmp/arg0-linux/**,
+  # NNP-compatible stacking: inner bwrap and its capability-denying payload
+  # profile remain in force, rather than inheriting a capability grant alone.
+  allow pix /{usr/,}bin/bwrap -> &deepseekfish-outer//&bwrap,
+  # Normal immutable system executables inherit this profile. Exclude exactly
+  # "bwrap" so that its dedicated stacked transition above remains mandatory.
+  allow ix /{usr/,}{bin,sbin}/{[^b]*,b,b[^w]*,bw,bw[^r]*,bwr,bwr[^a]*,bwra,bwra[^p]*,bwrap?*},
+  allow ix /opt/deepseekfish-runtime/node,
+  # Ubuntu 26.04 coreutils may resolve under /lib rather than /usr/lib.
+  allow ix /{usr/,}{lib,lib64}/**,
+  deny /home/** rwklmx,
+  deny /root/** rwklmx,
+}

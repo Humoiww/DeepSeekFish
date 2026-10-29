@@ -1,0 +1,12 @@
+[Unit]
+Description=DeepSeekFish mobile WebUI on Tailscale only
+After=tailscaled.service
+
+[Socket]
+ListenStream=@TAILNET_IP@:17863
+BindToDevice=tailscale0
+FreeBind=yes
+NoDelay=yes
+
+[Install]
+WantedBy=sockets.target

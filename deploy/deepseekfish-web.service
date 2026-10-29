@@ -1,0 +1,58 @@
+[Unit]
+Description=DeepSeekFish WebUI (Codex execution locked)
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=deepseekfish
+Group=deepseekfish
+WorkingDirectory=/srv/deepseekfish/app
+Environment=HOME=/srv/deepseekfish
+Environment=PATH=/srv/deepseekfish/app/runtime/tools/node/bin:/usr/bin:/bin
+Environment=NODE_OPTIONS=--max-old-space-size=256
+UnsetEnvironment=DEEPSEEK_API_KEY OPENAI_API_KEY QQBOT_SECRET QQBOT_APPID SSH_AUTH_SOCK SSH_AGENT_PID CODEX_HOME
+ExecStartPre=/srv/deepseekfish/app/runtime/tools/node/bin/node /srv/deepseekfish/app/scripts/service-check.mjs
+ExecStart=/srv/deepseekfish/app/runtime/tools/node/bin/node /srv/deepseekfish/app/dist/src/cli.js webui --no-open
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/srv/deepseekfish/app/runtime/data /srv/deepseekfish/app/runtime/logs /srv/deepseekfish/app/runtime/cache /srv/deepseekfish/app/runtime/tmp /srv/deepseekfish/app/runtime/workspace /srv/deepseekfish/app/runtime/outputs
+# Empty codex-home is root-owned/read-only. Hide native payload as a second gate.
+InaccessiblePaths=/srv/deepseekfish/app/node_modules/@openai
+NoExecPaths=/
+ExecPaths=/srv/deepseekfish/app/runtime/tools/node/bin/node /usr/lib /lib
+MemoryHigh=512M
+MemoryMax=768M
+MemorySwapMax=0
+CPUQuota=100%
+TasksMax=64
+LimitNOFILE=1024
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deepseekfish-web
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target
