@@ -3,6 +3,8 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"><meta name="color-scheme" content="light"><title>DeepSeekFish · 本地助手</title><link rel="icon" href="/fish.svg" type="image/svg+xml"><link rel="stylesheet" href="/web.css"><script src="/web.js" defer></script></head>
 <body>
 <div class="app-shell">
+  <!-- Mobile app-shell is a stacking context; keep its backdrop beside the drawers. -->
+  <button id="drawer-backdrop" class="drawer-backdrop" type="button" aria-label="关闭侧栏" hidden></button>
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-heading"><a class="brand" href="/" aria-label="DeepSeekFish 首页"><img src="/fish.svg" alt="" width="36" height="36"><span>DeepSeekFish<small>你的本地灵感搭子</small></span></a><button id="close-sidebar" class="icon-button mobile-only" type="button" aria-label="关闭对话列表">×</button></div>
     <button id="new-chat" class="new-chat"><span>＋</span> 新的对话 <kbd>⌘ N</kbd></button>
@@ -51,7 +53,6 @@
     <div class="panel-footer"><i></i> 文件与对话都保存在本机项目目录</div>
   </aside>
 </div>
-<button id="drawer-backdrop" class="drawer-backdrop" type="button" aria-label="关闭侧栏" hidden></button>
 <dialog id="qq-dialog"><form id="qq-form">
   <div class="dialog-heading"><div><span class="eyebrow">CHAT ON QQ</span><h2>和大肥鱼在 QQ 聊天</h2></div><button type="button" class="icon-button" data-close="qq-dialog" aria-label="关闭 QQ 设置">×</button></div>
   <p class="dialog-description">给大肥鱼使用一个 QQ 账号。你用日常 QQ 加它为好友后，直接发消息就能连续聊天，无需 @。人设和 DeepSeek 连接已准备好。</p>
