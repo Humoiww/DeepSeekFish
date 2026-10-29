@@ -13,6 +13,7 @@ import { Bot } from './agent/bot.js';
 import { credentials, MockTransport, QQTransport } from './qq/adapter.js';
 import { OneBotTransport,onebotCredential } from './qq/onebot.js';
 import { readQQSettings } from './qq/settings.js';
+import { PersonMemory } from './memory/people.js';
 import { FishError } from './types.js';
 import { boundaryStatus } from './codex/platform.js';
 
@@ -38,7 +39,8 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
     new OneBotTransport(root,config.onebotUrl,onebotCredential(root),store,m=>bot.receive(m),group=>conversationAllowed(cfg(),group)):
     new QQTransport(creds!.appId,creds!.appSecret,store,m=>bot.receive(m),group=>cfg().groups.includes(group));
   }catch(e){store.close();throw e;}
-  bot=new Bot(root,cfg,store,ledger,model,tasks,search,mock?new MockImageProvider():new CodexImageProvider(),transport);
+  bot=new Bot(root,cfg,store,ledger,model,tasks,search,mock?new MockImageProvider():new CodexImageProvider(),transport,
+    transport instanceof OneBotTransport?new PersonMemory(root,store,transport,cfg):undefined);
   const tokenPath=safePath(root,'runtime/data/admin-token');
   if(!fs.existsSync(tokenPath))writePrivate(root,'runtime/data/admin-token',randomBytes(32).toString('hex'));
   const token=fs.readFileSync(tokenPath,'utf8').trim();
@@ -51,11 +53,15 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
     if((key==='enabled'||key==='codex')&&value===false)void tasks.stop();
     store.audit('setting','',key+'='+String(value));
   }
+  function projectLoginPresent(){
+    try{return fs.existsSync(safePath(root,'runtime/codex-home/auth.json'));}catch{return false;}
+  }
   const status=()=>({mode:mock?'mock':'live',enabled:cfg().enabled,qq:transport.status,privateUsers:cfg().privateUsers,
+    memory:{archive:'runtime/memory/days',automaticDays:2,timezone:'Asia/Shanghai',events:(store.db.prepare('SELECT count(*) AS n FROM memory_events').get() as any).n,persona:'personas/active.json'},
     qqTransport:config.qqTransport,
     deepseek:{provider:provider.kind,model:config.model,credentialPresent:!!key,status:store.getMeta('modelStatus')??'not probed'},
     codex:{enabled:config.codex,provider:mock?'mock':'official-app-server',unattended:false,localApprovalRequired:true,
-      projectLoginPresent:fs.existsSync(safePath(root,'runtime/codex-home/auth.json')),isolation:mock?'mock only':boundaryStatus(root)},
+      projectLoginPresent:projectLoginPresent(),isolation:mock?'mock only':boundaryStatus(root)},
     features:{autonomous:config.autonomous,search:config.search,images:config.images},
     budgets:{dailyTokens:config.dailyTokens,maxOutputTokens:config.maxOutputTokens,usage:ledger.snapshot(),fault:store.getMeta('budgetFault')??null},
     groups:config.groups.map(group=>({group,ordinaryMessages:store.getMeta('qqOrdinary:'+group)?'observed':'unverified; mention-only capability assumed'})),

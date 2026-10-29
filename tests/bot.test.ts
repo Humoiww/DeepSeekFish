@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fixture, message } from './helpers.js';
-import { MockModel, BudgetedModel } from '../src/agent/model.js';
+import { MockModel, BudgetedModel, messageText } from '../src/agent/model.js';
 import { Tasks } from '../src/codex/tasks.js';
 import { MockTaskRunner } from '../src/codex/runner.js';
 import { MockTransport } from '../src/qq/adapter.js';
@@ -67,4 +67,22 @@ test('SocialGate observes activity/topic changes and persists cooldown/daily cap
     f.store.setMeta('lastSpoke:g','0');f.ledger.reserve('interjection','g','u');assert.equal(gate.decide([a,b],now),undefined);
     assert.equal(gate.decide([message('explicit')],now),'mention');
   }finally{f.cleanup();}
+});
+test('QQ archives full accepted text and excludes old rolling history unless explicitly recalled',async()=>{
+  const f=setup();let payload:any;
+  try{
+    f.set({historyHours:168});
+    const old=message('三天前的海边露营',{at:Date.now()-3*86400000});
+    f.store.observe(old,168,20);f.bot.memory.record({id:old.id,conversation:old.group,actor:old.user,role:'user',text:old.text,at:old.at});
+    const complete=f.provider.complete.bind(f.provider);
+    f.provider.complete=async(messages,max)=>{payload=JSON.parse(messageText(messages.at(-1)!));return complete(messages,max);};
+    await f.bot.receive(message('长消息'+ '甲'.repeat(3000)));await f.bot.flush();
+    assert.ok(payload.messages.every((m:any)=>!m.text.includes('三天前')));
+    assert.equal(payload.memory.events.length,0);
+    const row=f.store.db.prepare('SELECT text FROM memory_events WHERE role=? ORDER BY seq DESC LIMIT 1').get('user') as any;
+    assert.equal(row.text.length,3003);
+    await f.bot.receive(message('还记得“海边露营”吗'));await f.bot.flush();
+    assert.equal(payload.memory.events[0].id,old.id);
+    assert.ok(payload.messages.every((m:any)=>!m.text.includes('三天前')));
+  }finally{await f.bot.stop();f.cleanup();}
 });

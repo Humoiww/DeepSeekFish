@@ -9,7 +9,8 @@ export interface Model {
   readonly kind: string;
   complete(messages: ChatMessage[], maxTokens: number): Promise<ModelResult>;
 }
-export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
+export type ChatPart={type:'text';text:string}|{type:'image_url';image_url:{url:string;detail?:'low'|'high'|'auto'}};
+export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string|ChatPart[] }
 export interface Transport {
   status: string;
   send(message: Message, text: string): Promise<void>;

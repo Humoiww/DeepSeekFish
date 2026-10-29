@@ -81,7 +81,7 @@ export function projectRoot(): string {
 export function prepare(root: string): void {
   noLinks(root);
   if(process.platform!=='win32')process.umask(0o077);
-  for (const p of ['runtime/data', 'runtime/logs', 'runtime/cache', 'runtime/tmp', 'runtime/workspace', 'runtime/outputs', 'runtime/codex-home']) makeDir(root, p);
+  for (const p of ['runtime/data', 'runtime/logs', 'runtime/cache', 'runtime/tmp', 'runtime/workspace', 'runtime/outputs', 'runtime/codex-home','runtime/memory']) makeDir(root, p);
   // All application caches/temp are project-owned; never redirect or copy existing credentials.
   process.env.TMPDIR = process.env.TMP = process.env.TEMP = safePath(root, 'runtime/tmp');
   process.env.XDG_CACHE_HOME = safePath(root, 'runtime/cache');

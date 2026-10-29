@@ -35,7 +35,7 @@ tar -xzf /srv/deepseekfish/release.tar.gz -C "$target" --no-same-owner --no-same
 chown -R root:root "$target"
 chmod -R u=rwX,go=rX "$target"
 useradd --system --user-group --no-create-home --home-dir /srv/deepseekfish --shell /usr/sbin/nologin deepseekfish
-for name in data logs cache tmp workspace outputs probe-codex-home; do
+for name in data logs cache tmp workspace outputs memory probe-codex-home; do
   install -d -o deepseekfish -g deepseekfish -m 0700 "$target/runtime/$name"
 done
 install -d -o root -g root -m 0755 "$target/runtime/codex-home"

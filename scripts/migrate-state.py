@@ -23,7 +23,7 @@ os.umask(0o077)
 root = args.root.resolve()
 data_names = {'fish.sqlite', 'webui.sqlite', 'mock.sqlite', 'demo.sqlite', 'webui-mock.sqlite', 'webui-mock-budget.sqlite'}
 nonsecret_data = {'qq-settings.json', 'qq-enabled'}
-trees = ['runtime/outputs', 'runtime/workspace', 'runtime/logs', 'runtime/character']
+trees = ['runtime/outputs', 'runtime/workspace', 'runtime/logs', 'runtime/character', 'runtime/memory']
 def allowed(name):
     parts = PurePosixPath(name).parts
     if name.startswith('/') or '\\' in name or any(x in ['..', '.'] for x in parts):
@@ -91,7 +91,7 @@ if args.action == 'export':
         finally:
             partial.unlink(missing_ok=True)
     print('Private portable state archive:', destination)
-    print('Includes databases, settings, chat state, generated images, workspaces and logs. Credentials and installed dependencies excluded.')
+    print('Includes databases, settings, daily/person memory, chat state, generated images, workspaces and logs. Credentials and installed dependencies excluded.')
 else:
     if not args.archive:
         p.error('--archive is required for import')

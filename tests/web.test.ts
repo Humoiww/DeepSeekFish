@@ -11,10 +11,30 @@ import { SessionWorkspace } from '../src/web/workspace.js';
 import type { WireMessage } from '../src/web/model.js';
 import { Tasks } from '../src/codex/tasks.js';
 import { MockTaskRunner } from '../src/codex/runner.js';
+import { Store } from '../src/storage/db.js';
+import { MemoryJournal } from '../src/memory/journal.js';
 
 const reply=(message:any,usage={prompt_tokens:20,completion_tokens:10})=>new Response(JSON.stringify({choices:[{message}],usage}));
 const call=(id:string,name:string,args:unknown)=>({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
 function web(mock=true,http?:typeof fetch){const f=fixture();const app=createWebApp(f.root,mock,http);return {f,app,async close(){await app.close();f.cleanup();}};}
+
+test('WebUI archives both sides and recalls older records only when explicitly requested in that session',async()=>{
+  let payload:any;const w=web(false,(async(_url:any,opts:any)=>{payload=JSON.parse(opts.body);return reply({content:'收到。'});}) as typeof fetch);
+  const db=new Store(w.f.root,'webui.sqlite'),memory=new MemoryJournal(w.f.root,db);
+  try{
+    w.app.configure({apiKey:'fixture-key'});const a=w.app.createSession(),b=w.app.createSession(),at=Date.now()-3*86400000;
+    for(const [id,sid,text] of [['old-a',a.id,'旧日海边露营'],['old-b',b.id,'其他会话的海边露营秘密']]){
+      db.db.prepare('INSERT INTO web_turns VALUES (?,?,?,?,?,?,?,?)').run(id,sid,text,'旧回复','[]',JSON.stringify([{role:'user',content:text},{role:'assistant',content:'旧回复'}]),'completed',at);
+      memory.record({id:id+':user',conversation:'web:'+sid,actor:'webui-local',role:'user',text,at});
+    }
+    await w.app.chat(a.id,'你好','chat',new AbortController().signal,()=>{});
+    assert.ok(!JSON.stringify(payload.messages).includes('海边露营'));
+    const n=db.db.prepare('SELECT count(*) AS n FROM memory_events WHERE conversation=?').get('web:'+a.id) as any;assert.equal(n.n,3);
+    await w.app.chat(a.id,'还记得“海边露营”吗','chat',new AbortController().signal,()=>{});
+    assert.ok(JSON.stringify(payload.messages).includes('旧日海边露营'));
+    assert.ok(!JSON.stringify(payload.messages).includes('其他会话'));
+  }finally{db.close();await w.close();}
+});
 
 test('WebUI mock is independent from QQ; sessions and generated files remain isolated',async()=>{
   const w=web();try{
@@ -42,7 +62,7 @@ test('DeepSeek sends real tool wire format, settles each request, and never expo
   let calls=0;const payloads:any[]=[];
   const http=(async(url:any,opts:any)=>{calls++;assert.equal(url,'https://api.deepseek.com/chat/completions');assert.equal(opts.redirect,'error');assert.equal(opts.headers.authorization,'Bearer fixture-key');
     const p=JSON.parse(opts.body);payloads.push(p);assert.equal(p.thinking.type,'disabled');
-    assert.match(p.messages[0].content,/鲸酱/);assert.match(p.messages[0].content,/白米饭/);assert.match(p.messages[0].content,/鲸鳍耳/);
+    assert.match(p.messages[0].content,/鲸酱/);assert.match(p.messages[0].content,/雌小鬼模式/);assert.match(p.messages[0].content,/鲸鳍耳/);
     return calls===1?reply({content:'',tool_calls:[call('c1','write_file',{path:'plan.md',content:'a useful plan'})]}):reply({content:'文件已保存。'});
   }) as typeof fetch;
   const w=web(false,http);try{

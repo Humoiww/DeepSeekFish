@@ -1,0 +1,35 @@
+[Unit]
+Description=Isolated Qzone screenshot worker
+
+[Service]
+Type=simple
+User=fishview
+Group=fishview
+Environment=HOME=/srv/deepseekfish/capture/state
+ExecStart=/srv/deepseekfish/app/runtime/tools/node/bin/node --max-old-space-size=96 /srv/deepseekfish/app/dist/src/capture/server.js
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=default
+ProcSubset=all
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=user mnt pid net ipc uts
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=/srv/deepseekfish/capture/state
+InaccessiblePaths=/srv/deepseekfish/app/runtime/data /srv/deepseekfish/app/runtime/codex-home /srv/deepseekfish/app/runtime/memory /srv/deepseekfish/app/runtime/workspace /srv/deepseekfish/app/runtime/outputs /srv/deepseekfish/app/runtime/logs /srv/deepseekfish/app/runtime/cache /srv/deepseekfish/app/runtime/tmp -/srv/deepseekfish/app/.env -/srv/deepseekfish/napcat/state
+MemoryHigh=512M
+MemoryMax=768M
+TasksMax=512
+LimitNOFILE=4096
+CPUQuota=100%
+TimeoutStopSec=5
+KillMode=control-group

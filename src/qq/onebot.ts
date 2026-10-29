@@ -20,7 +20,7 @@ export function normalizeOneBot(event:any,self:string):Message|undefined{
   if(!group||!user||!messageId||user===self||!Number.isSafeInteger(event.time))return;
   let mentioned=event.message_type==='private',text='';
   for(const segment of event.message){
-    if(segment?.type==='text'&&typeof segment.data?.text==='string')text+=segment.data.text.slice(0,2000);
+    if(segment?.type==='text'&&typeof segment.data?.text==='string')text+=segment.data.text.slice(0,16000);
     else if(segment?.type==='at'){
       if(id(segment.data?.qq)===self)mentioned=true;
       else text+=' @'+(id(segment.data?.qq)??'全体成员')+' ';
@@ -28,9 +28,9 @@ export function normalizeOneBot(event:any,self:string):Message|undefined{
     else if(segment?.type==='record')text+='[语音：未转写]';
     else if(segment?.type==='face')text+='[表情]';
     else if(segment?.type==='file')text+='[文件：未读取内容]';
-    if(text.length>=2000)break;
+    if(text.length>=16000)break;
   }
-  return {id:messageId,group,user,text:text.trim().slice(0,2000),at:event.time*1000,mentioned,event:mentioned?'mention':'ordinary'};
+  return {id:messageId,group,user,text:text.trim().slice(0,16000),at:event.time*1000,mentioned,event:mentioned?'mention':'ordinary'};
 }
 export function onebotCredential(root:string):string{
   const file=safePath(root,'runtime/data/onebot-credentials.json');
@@ -38,12 +38,14 @@ export function onebotCredential(root:string):string{
   if(typeof token!=='string'||!token||token.length>512||/[\r\n\0]/.test(token))throw new FishError('ONEBOT_TOKEN_MISSING');
   return token;
 }
-type Action='get_login_info'|'get_group_list'|'get_status'|'send_group_msg'|'send_private_msg';
+type Action='get_login_info'|'get_group_list'|'get_status'|'send_group_msg'|'send_private_msg'|'get_stranger_info'|'get_cookies';
 type Pending={resolve:(value:any)=>void;reject:(error:Error)=>void;timer:NodeJS.Timeout};
 export class OneBotTransport implements Transport {
   status='disconnected';private socket?:WebSocket;private self='';private stopped=false;
   private retry?:NodeJS.Timeout;private handshake?:NodeJS.Timeout;private heartbeat?:NodeJS.Timeout;private lastSeen=0;
   private pending=new Map<string,Pending>();private ready?:Promise<void>;
+  private qzoneAuth?:{value:{cookies:string;bkn:string};expires:number};
+  private qzonePending?:Promise<{cookies:string;bkn:string}>;
   constructor(private root:string,private url:string,private token:string,private store:Store,
     private inbound:(m:Message)=>Promise<void>,private allowed:(group:string)=>boolean,
     private connect:(url:string)=>WebSocket=url=>new WebSocket(url)) {validateOneBotUrl(url);}
@@ -83,7 +85,7 @@ export class OneBotTransport implements Transport {
       });
       ws.addEventListener('error',()=>{fail();ws.close();});
       ws.addEventListener('close',()=>{
-        fail();clearTimeout(this.handshake);clearInterval(this.heartbeat);this.ready=undefined;this.self='';
+        fail();clearTimeout(this.handshake);clearInterval(this.heartbeat);this.ready=undefined;this.self='';this.qzoneAuth=undefined;
         for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new FishError('ONEBOT_DISCONNECTED'));}this.pending.clear();
         this.status=this.stopped?'stopped':'reconnecting';
         if(!this.stopped){this.store.audit('qq-warning','','ONEBOT_DISCONNECTED');this.retry=setTimeout(()=>this.start(),5000);this.retry.unref();}
@@ -91,11 +93,11 @@ export class OneBotTransport implements Transport {
     });
     return this.ready;
   }
-  private call(action:Action,params:Record<string,unknown>):Promise<any>{
+  private call(action:Action,params:Record<string,unknown>,timeoutMs=10000):Promise<any>{
     if(this.socket?.readyState!==1)return Promise.reject(new FishError('ONEBOT_NOT_CONNECTED'));
     if(this.pending.size>=32)return Promise.reject(new FishError('ONEBOT_BUSY'));
     const echo=randomUUID();return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{this.pending.delete(echo);reject(new FishError('ONEBOT_ACTION_TIMEOUT'));},10000);timer.unref();
+      const timer=setTimeout(()=>{this.pending.delete(echo);reject(new FishError('ONEBOT_ACTION_TIMEOUT'));},timeoutMs);timer.unref();
       this.pending.set(echo,{resolve,reject,timer});
       try{this.socket!.send(JSON.stringify({action,params,echo}));}catch{clearTimeout(timer);this.pending.delete(echo);reject(new FishError('ONEBOT_SEND_FAILED'));}
     });
@@ -104,6 +106,19 @@ export class OneBotTransport implements Transport {
     await this.open();const groups=await this.call('get_group_list',{});
     if(!Array.isArray(groups))throw new FishError('ONEBOT_INVALID_GROUP_LIST');
     return {self:this.self,groups:groups.slice(0,1000).filter(g=>id(g.group_id)).map(g=>({id:String(g.group_id),name:String(g.group_name??'').slice(0,128)}))};
+  }
+  async readPerson(user:string):Promise<any>{
+    if(!id(user))throw new FishError('ONEBOT_INVALID_TARGET');await this.open();
+    return this.call('get_stranger_info',{user_id:user,no_cache:true});
+  }
+  /** Trusted profile module only; never returned by a model-facing tool/API. */
+  async qzoneSession():Promise<{cookies:string;bkn:string}>{
+    if(this.qzoneAuth&&this.qzoneAuth.expires>Date.now())return this.qzoneAuth.value;
+    if(this.qzonePending)return this.qzonePending;
+    await this.open();
+    if(this.qzonePending)return this.qzonePending;
+    this.qzonePending=this.call('get_cookies',{domain:'qzone.qq.com'},45000).then(value=>{this.qzoneAuth={value,expires:Date.now()+300000};return value;}).finally(()=>{this.qzonePending=undefined;});
+    return this.qzonePending;
   }
   async send(message:Message,text:string):Promise<void>{
     if(!this.allowed(message.group))throw new FishError('ONEBOT_GROUP_NOT_ALLOWED');
@@ -128,7 +143,7 @@ export class OneBotTransport implements Transport {
     return {action:'send_group_msg',params:{group_id:group}};
   }
   stop():void{
-    this.stopped=true;this.self='';clearTimeout(this.retry);clearTimeout(this.handshake);clearInterval(this.heartbeat);this.socket?.close();
+    this.stopped=true;this.self='';this.qzoneAuth=undefined;clearTimeout(this.retry);clearTimeout(this.handshake);clearInterval(this.heartbeat);this.socket?.close();
     for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new FishError('ONEBOT_STOPPED'));}this.pending.clear();this.status='stopped';
   }
 }

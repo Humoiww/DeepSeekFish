@@ -1,0 +1,22 @@
+abi <abi/5.0>,
+include <tunables/global>
+
+# Dedicated immutable browser only; no global AppArmor/userns changes.
+profile deepseekfish-capture /srv/deepseekfish/capture/browser/chrome-headless-shell flags=(attach_disconnected,mediate_deleted) {
+  allow file rwlkm /{**,},
+  allow network,
+  allow unix,
+  allow capability,
+  allow userns,
+  allow signal,
+  allow ptrace,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+  allow io_uring,
+  allow ix /srv/deepseekfish/capture/browser/{chrome-headless-shell,chrome_crashpad_handler},
+  deny /home/** rwklmx,
+  deny /root/** rwklmx,
+  deny /srv/deepseekfish/app/runtime/{data,codex-home}/** rwklmx,
+  deny /srv/deepseekfish/napcat/** rwklmx,
+}

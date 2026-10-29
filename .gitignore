@@ -9,3 +9,4 @@ config/local.json
 *.key
 *.pem
 *.log
+__pycache__/

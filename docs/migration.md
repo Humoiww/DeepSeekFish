@@ -33,7 +33,7 @@ DeepSeek Key 在网页手动重新填写；不要复制管理账户的 `.codex`�
 sudo python3 scripts/migrate-state.py export --root /srv/deepseekfish/app
 ```
 
-私有归档生成在 `runtime/deployment/state-时间.tar.gz`（0600），包含 SQLite 的在线一致备份、非秘密配置、网页聊天、任务工作区、生成图片、角色覆盖图与诊断日志。它不进入 Git；把它作为私有文件迁移到新服务器。跨多个数据库需要同一时刻的快照时，先停止本项目 WebUI/QQ，导出后再启动；不会停止 SSH 或 Tailscale。
+私有归档生成在 `runtime/deployment/state-时间.tar.gz`（0600），包含 SQLite 的在线一致备份、非秘密配置、每日聊天归档、人物记忆和空间截图、网页聊天、任务工作区、生成图片、角色覆盖图与诊断日志。它不进入 Git；把它作为私有文件迁移到新服务器。跨多个数据库需要同一时刻的快照时，先停止本项目 WebUI/QQ，导出后再启动；不会停止 SSH 或 Tailscale。
 
 新机器安装完成，停止本项目服务后导入：
 
@@ -57,3 +57,5 @@ API Key、QQ 登录状态、OneBot Token、Codex 登录、管理会话令牌、S
 普通 QQ 成员接入见 [NapCat / OneBot v11](qq-onebot.md)。
 
 需要同时迁移 QQ 登录端时，在新机执行 `sudo python3 scripts/install-napcat.py`，再运行 `install-tailnet.py` 生成该机的 QQ 私网入口；NapCat 使用独立账户，登录凭据重新扫码建立。二进制版本和社区 launcher 来源固定在 `deploy/napcat-versions.json`，不依赖旧机手工安装。
+
+空间截图能力另执行 `sudo python3 scripts/install-capture.py`，安装独立 fishview 账户和固定版本的 ARM64/x64 浏览器；登录态仍由已登录的 NapCat 瞬时提供，不迁移浏览器 profile。`personas/` 的原文人格及许可证随 Git/发布包迁移，详细规则见 [记忆与人格](memory-persona.md)。

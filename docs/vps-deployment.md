@@ -149,3 +149,15 @@ NapCat v4.18.41 与 Linux QQ 3.2.34-53644 已按固定来源部署，服务使�
 原生 loopback WebSocket 的群收发、私聊回复、历史隔离，以及网页 QQ 配置/暂停恢复、两个网关的边界检查已通过。NapCat 页面和二维码已实际就绪，但截至部署验收 QQ 仍未登录；真实 QQ→DeepSeek→QQ 回复需要用户扫码、填写自己的日常 QQ 号并完成好友聊天，不能把本地协议测试说成已在 QQ 上回复。
 
 全部安装器、服务/网关模板、ARM64/x64 的 Codex 规则和非秘密默认配置随 Git 提交；Tailscale 地址与 owner 安装时自动生成。私有运行状态可用 migrate-state.py 导出/恢复，数据库使用 SQLite backup，包含生成图片/聊天/日志，排除 Key、Codex/QQ 登录及 Token。新机重新登录，步骤见 migration.md 与 qq-onebot.md。
+
+## 每日记忆、原文人格与空间实测（2026-10-29）
+
+QQ 已由用户完成扫码并实际收到 DeepSeek 回复，取代上节尚未登录的验收状态。此次部署新增 QQ/WebUI 每日归档与 SQLite 检索：默认按北京时间仅调用今天、昨天看到的当前会话记录，明确日期/关键词可检索更早记录。现存聊天窗口和网页会话已导入；旧版已删除的聊天无法恢复。
+
+人格独立放在 personas/，雌小鬼段落直接来自 MIT 的 ififi2017/hybrid-catgirl-skill 固定版本，已与上游逐字比较一致，未自写人格 prompt。鲸酱既有外观原样迁入单独文件。
+
+生产服务账户实测读取当前操作者 QQ 资料、头像、3 条可见空间动态、最新动态一张配图与 1200×1500 的真实空间截图，最终采集 errors=[]。截图已人工查看，包含最新说说的正文和照片；不能把仅有页头的加载失败算成功。真实 deepseek-flash 已接收头像和截图并返回基于该动态文字、照片的评价，结果在私有 runtime/logs/people-live-check.json；最终媒体采集检查在 memory-deployment-check.json。测试没有向 QQ 发消息、发表说说或评论。
+
+新增 fishview 独立账户和 Chromium 原生沙箱截图 worker，经私有 Unix socket 调用，没有新 TCP 监听。使用固定版本 Chrome for Testing Linux ARM64，未安装自动化测试框架。截图账户实测不能读 DeepSeek Key、Codex auth、管理用户 SSH 目录和 NapCat 登录目录；QQ 服务挂载中仍看不到 Codex auth、管理 home 和网页会话数据库。AppArmor 保持启用，全局 Namespace 设置未变；WebUI 重启时原有完整 sandbox-check 再次通过。修正只读 QQ 状态接口在凭据目录被隐藏时抛出 EACCES 的问题，未放开目录权限。
+
+代码、服务 unit、浏览器安装器、每日记忆迁移规则均纳入仓库；私有状态归档包含新记忆与截图，排除登录凭据。详细机制和可复用部署命令见 [记忆与人格](memory-persona.md)。SSH 和 tailscaled 仍为原进程，没有修改防火墙或 Tailscale Exit Node。

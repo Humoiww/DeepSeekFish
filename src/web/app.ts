@@ -15,6 +15,7 @@ import { characterPrompt } from '../character.js';
 import { WebImages,requestsImage } from './images.js';
 import type { ImageRunner } from '../image/codex-smoke.js';
 import { AppServerQuotaReader,CodexQuotaMonitor,type QuotaReader } from '../codex/quota.js';
+import { MemoryJournal,dayStart } from '../memory/journal.js';
 
 type Settings={model:string;maxOutputTokens:number;dailyTokens:number;search:boolean;codexQueue:boolean};
 type Session={id:string;title:string;created:number;updated:number};
@@ -34,6 +35,11 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   const budgetStore=new Store(root,mock?'webui-mock-budget.sqlite':'fish.sqlite');
   store.db.exec(`CREATE TABLE IF NOT EXISTS web_sessions(id TEXT PRIMARY KEY,title TEXT,created INTEGER,updated INTEGER);
     CREATE TABLE IF NOT EXISTS web_turns(id TEXT PRIMARY KEY,sid TEXT,user TEXT,answer TEXT,trace TEXT,context TEXT,state TEXT,created INTEGER);`);
+  const memory=new MemoryJournal(root,store);
+  for(const t of store.db.prepare('SELECT id,sid,user,answer,state,created FROM web_turns ORDER BY created,rowid').all() as unknown as Turn[]){
+    memory.record({id:t.id+':user',conversation:'web:'+t.sid,actor:'webui-local',role:'user',text:t.user,at:t.created,source:'existing-web-chat'});
+    if(t.state==='completed')memory.record({id:t.id+':assistant',conversation:'web:'+t.sid,actor:'DeepSeekFish',role:'assistant',text:t.answer,at:t.created,source:'existing-web-chat'});
+  }
   let settings:Settings={model:'deepseek-flash',maxOutputTokens:1024,dailyTokens:loadConfig(root).dailyTokens,search:false,codexQueue:false,...JSON.parse(store.getMeta('web-settings')??'{}')};
   const codexImageOnly=process.env.FISH_CODEX_IMAGE_ONLY==='1';
   if(codexImageOnly)settings.codexQueue=false;
@@ -85,6 +91,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     settings=next;store.setMeta('web-settings',JSON.stringify(settings));return status();
   }
   function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings,workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
+    memory:{automaticDays:2,timezone:'Asia/Shanghai',archive:'runtime/memory/days',persona:'personas/active.json'},
     imageLimits:{daily:cfg().imageDaily,codexDaily:cfg().codexDaily},codexQuota:quota.status(),
     capabilities:['会话文件列表','会话文本读写','明确请求后设计并生成单张图片',...(settings.search?['公开搜索']:[]),...(settings.codexQueue?['提交 Codex 待审任务']:[])],
     budgets:{dailyTokens:settings.dailyTokens,usage:ledger.snapshot(),fault:budgetStore.getMeta('budgetFault')??null},
@@ -120,20 +127,23 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     const controller=new AbortController();active.set(s.id,controller);
     const imageRequest=mode==='image'||requestsImage(text);
     const joined=AbortSignal.any([signal,controller.signal,AbortSignal.timeout(imageRequest?cfg().codexTimeoutMs+90000:120000)]),turnId=randomUUID(),trace:any[]=[];
-    const prior=store.db.prepare("SELECT context FROM web_turns WHERE sid=? AND state='completed' ORDER BY created DESC,rowid DESC LIMIT 3").all(s.id) as {context:string}[];
+    const prior=store.db.prepare("SELECT id,context FROM web_turns WHERE sid=? AND state='completed' AND created>=? ORDER BY created DESC,rowid DESC LIMIT 3").all(s.id,dayStart()-86400000) as {id:string;context:string}[];
     const history=prior.reverse().flatMap(t=>JSON.parse(t.context) as WireMessage[]);
     // Whole completed turns only: never orphan tool results when trimming context.
     while(Buffer.byteLength(JSON.stringify(history))>24000&&history.length){history.splice(0,history.findIndex((m,i)=>i>0&&m.role==='user')>0?history.findIndex((m,i)=>i>0&&m.role==='user'):history.length);}
-    const current:WireMessage[]=[{role:'user',content:redact(text.trim())}],sent:WireMessage[]=[{role:'system',content:system},...history];
+    const recalled=memory.recall('web:'+s.id,text,prior.flatMap(t=>[{id:t.id+':user'},{id:t.id+':assistant'}]));
+    const memoryContext:WireMessage[]=recalled.events.length||recalled.needsReference?[{role:'user',content:JSON.stringify({memory:recalled})}]:[];
+    const current:WireMessage[]=[{role:'user',content:redact(text.trim())}],sent:WireMessage[]=[{role:'system',content:system},...memoryContext,...history];
     const offered=mode==='agent'?tools.filter(t=>t.function.name!=='search_web'||settings.search).filter(t=>t.function.name!=='queue_codex'||settings.codexQueue):[];
     store.db.prepare('INSERT INTO web_turns VALUES (?,?,?,?,?,?,?,?)').run(turnId,s.id,current[0].content,'','[]','[]','running',Date.now());
     store.db.prepare('UPDATE web_sessions SET title=?,updated=? WHERE id=?').run(s.title==='新的对话'?redact(text.trim()).slice(0,26):s.title,Date.now(),s.id);
     let answer='',calls=0;
     const record=(event:any)=>{trace.push(event);store.db.prepare('UPDATE web_turns SET trace=? WHERE id=?').run(JSON.stringify(trace),turnId);emit({type:'tool',event});};
     try{
+      memory.record({id:turnId+':user',conversation:'web:'+s.id,actor:'webui-local',role:'user',text:current[0].content,at:Date.now(),source:'web'});
       emit({type:'start',turnId});
       if(imageRequest){
-        const image=await images.generate(s.id,turnId,current[0].content,history,model,joined,e=>{
+        const image=await images.generate(s.id,turnId,current[0].content,[...memoryContext,...history],model,joined,e=>{
           if(e.type==='image_plan')record({name:'image_plan',state:'completed',plan:e.plan,character:e.character,mock:e.mock,result:JSON.stringify(e.plan)});
           else if(e.type==='codex_record')record({name:'codex_record',state:e.error?'failed':'completed',result:JSON.stringify(e.record,null,2)});
           else emit(e);
@@ -141,6 +151,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
         answer=image.mock?'【离线演示】画面方案和出图流程已走通。下方是固定的 1×1 PNG 测试占位，不是 AI 作品；未调用 DeepSeek 或 Codex。':'画好啦，图片已通过校验，可以预览或下载。';
         current.push({role:'assistant',content:answer});
         store.db.prepare("UPDATE web_turns SET answer=?,context=?,state='completed' WHERE id=?").run(answer,JSON.stringify(current),turnId);
+        memory.record({id:turnId+':assistant',conversation:'web:'+s.id,actor:'DeepSeekFish',role:'assistant',text:answer,at:Date.now(),source:'web'});
         emit({type:'answer',text:answer});emit({type:'done',turnId});return;
       }
       const used=new Set<string>();
@@ -165,6 +176,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       }
       joined.throwIfAborted();if(!answer)throw new FishError('DEEPSEEK_EMPTY_RESPONSE');
       store.db.prepare("UPDATE web_turns SET answer=?,context=?,state='completed' WHERE id=?").run(answer,JSON.stringify(current),turnId);
+      memory.record({id:turnId+':assistant',conversation:'web:'+s.id,actor:'DeepSeekFish',role:'assistant',text:answer,at:Date.now(),source:'web'});
       emit({type:'answer',text:answer});emit({type:'done',turnId});
     }catch(e){
       const error=joined.aborted?'CHAT_CANCELLED':codeOf(e);
