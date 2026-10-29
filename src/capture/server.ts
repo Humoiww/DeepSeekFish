@@ -25,7 +25,7 @@ class Pipe {
     const id=++this.seq;return new Promise((resolve,reject)=>{this.pending.set(id,{resolve,reject});(this.child.stdio[3] as NodeJS.WritableStream).write(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})})+'\0');});
   }
 }
-async function capture(uin:string,cookie:string){
+async function capture(uin:string,cookie:string,postId?:string){
   const dir=fs.mkdtempSync(base+'/state/job-');let child:ChildProcess|undefined,timer:NodeJS.Timeout|undefined;
   try{
     child=spawn(browser,['--headless','--disable-gpu','--disable-background-networking','--disable-component-update','--no-first-run','--disable-sync','--password-store=basic','--remote-debugging-pipe','--user-data-dir='+dir,'about:blank'],{stdio:['ignore','ignore','pipe','pipe','pipe'],detached:true,env:{PATH:'/usr/bin:/bin',HOME:base+'/state',TMPDIR:'/tmp',LANG:'C.UTF-8'}});
@@ -40,7 +40,8 @@ async function capture(uin:string,cookie:string){
     await rpc.call('Emulation.setDeviceMetricsOverride',{width:1200,height:1500,deviceScaleFactor:1,mobile:false},sessionId);
     const cookies=cookie.split(';').map(v=>{const i=v.indexOf('=');return {name:v.slice(0,i).trim(),value:v.slice(i+1).trim()};}).filter(v=>['uin','skey','p_uin','p_skey','pt4_token','ptcz'].includes(v.name)).map(v=>({...v,domain:'.qzone.qq.com',path:'/',secure:true}));
     await rpc.call('Network.setCookies',{cookies},sessionId);
-    await rpc.call('Page.navigate',{url:'https://user.qzone.qq.com/'+uin+'/311'},sessionId);
+    const pageUrl='https://user.qzone.qq.com/'+uin+(postId?'/mood/'+encodeURIComponent(postId):'/311');
+    await rpc.call('Page.navigate',{url:pageUrl},sessionId);
     await new Promise(resolve=>setTimeout(resolve,14500));
     const frameTexts:string[]=[],tree=await rpc.call('Page.getFrameTree',{},sessionId);
     for(const frame of (tree.frameTree?.childFrames??[]).slice(0,3)){
@@ -55,7 +56,7 @@ async function capture(uin:string,cookie:string){
     const image=await rpc.call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId);
     if(typeof image.data!=='string'||image.data.length>12000000)throw Error('CAPTURE_IMAGE_LIMIT');
     // Do not return cookies, headers, CDP events or a persisted browser profile.
-    return {png:image.data,page:{title:String(page.title??'').slice(0,200),text:String(page.text??'').slice(0,10000),url:'https://user.qzone.qq.com/'+uin+'/311'},diagnostics:{frames:page.frames,frameTextLengths:frameTexts.map(t=>t.length),failed,blocked},sandboxEnabled:true};
+    return {png:image.data,page:{title:String(page.title??'').slice(0,200),text:String(page.text??'').slice(0,10000),url:pageUrl},diagnostics:{frames:page.frames,frameTextLengths:frameTexts.map(t=>t.length),failed,blocked},sandboxEnabled:true};
   }finally{
     clearTimeout(timer);if(child?.pid){const ended=once(child,'exit').catch(()=>{});try{process.kill(-child.pid,'SIGTERM');}catch{};await Promise.race([ended,new Promise(resolve=>setTimeout(resolve,500))]);try{process.kill(-child.pid,'SIGKILL');}catch{}}
     fs.rmSync(dir,{recursive:true,force:true});
@@ -70,7 +71,8 @@ const server=createServer(async(req,res)=>{
     if(busy){res.writeHead(429);res.end('{"error":"CAPTURE_BUSY"}');return;}
     let body='';for await(const b of req){body+=b;if(Buffer.byteLength(body)>16384)throw Error('CAPTURE_INPUT_LIMIT');}
     const input=JSON.parse(body);if(!/^[1-9]\d{4,19}$/.test(input.uin)||typeof input.cookie!=='string'||input.cookie.length>12000||/[\r\n\0]/.test(input.cookie))throw Error('CAPTURE_INPUT_INVALID');
-    busy=true;try{res.end(JSON.stringify(await capture(input.uin,input.cookie)));}finally{busy=false;}
+    if(input.postId!==undefined&&(typeof input.postId!=='string'||!/^[a-zA-Z0-9._-]{1,120}$/.test(input.postId)))throw Error('CAPTURE_INPUT_INVALID');
+    busy=true;try{res.end(JSON.stringify(await capture(input.uin,input.cookie,input.postId)));}finally{busy=false;}
   }catch{if(!res.headersSent)res.writeHead(502);res.end('{"error":"CAPTURE_FAILED"}');}
 });
 server.requestTimeout=30000;server.headersTimeout=5000;server.listen({fd:3},()=>console.log('Private Qzone screenshot service ready; Chromium sandbox enabled.'));

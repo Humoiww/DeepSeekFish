@@ -10,6 +10,7 @@ import { MockTransport } from '../src/qq/adapter.js';
 import { MockSearchProvider,SearchService } from '../src/search/provider.js';
 import { MockImageProvider } from '../src/image/provider.js';
 import { PersonMemory } from '../src/memory/people.js';
+import { QzoneMemory } from '../src/memory/qzone.js';
 import { QQImageClient } from '../src/qq/image-client.js';
 import { startQQImageBroker } from '../src/qq/image-broker.js';
 import { qqResources } from '../src/qq/resources.js';
@@ -19,23 +20,25 @@ import type { Model,ToolCall } from '../src/types.js';
 
 const call=(name:string,args:unknown):ToolCall=>({id:'tool-'+name,type:'function',function:{name,arguments:JSON.stringify(args)}});
 const plan={subject:'一条蓝色的小鱼',scene:'服务器旁边',style:'柔和插画',composition:'主体居中',lighting:'暖光',palette:'蓝白',details:'没有文字'};
-function setup(provider:Model,people?:PersonMemory,client?:QQImageClient){
+function setup(provider:Model,people?:PersonMemory,client?:QQImageClient,qzone?:QzoneMemory){
   const f=fixture({qqTransport:'onebot',privateUsers:['20002'],admins:['20002'],images:true,bufferMs:10000});
   const tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),transport=new MockTransport();
-  const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),tasks,new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport,people,client);
+  const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),tasks,new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport,people,client,qzone);
   return {...f,bot,transport};
 }
 test('QQ sends the model-authored remark before fetching Space, then continues from actual media',async()=>{
   let turns=0,f:ReturnType<typeof setup>;
-  const people={remembered:()=>undefined,refresh:async()=>{assert.equal(f.transport.sent[0].text,'哟，你又整什么活了？');return {profile:{nickname:'测试朋友'},posts:[{text:'自热锅太大了',publishedAt:Date.now()}],observedAt:Date.now(),errors:[]};},images:()=>[{type:'image_url',image_url:{url:'data:image/png;base64,AA=='}}],close:async()=>{}} as unknown as PersonMemory;
-  const provider:Model={kind:'fixture',async complete(messages,_max,options){turns++;assert.ok(options?.tools?.some(t=>t.function.name==='get_person'));
-    if(turns===1){assert.equal(options?.toolChoice,'get_person');assert.ok(!String(messages[0].content).includes('区分发布时间'));return {text:'',tool_calls:[call('get_person',{view:'latest',remark:'哟，你又整什么活了？'})],usage:{input:100,output:30}};}
+  const person={remembered:()=>({profile:{nickname:'友人'},avatar:'cached-avatar.png',posts:[]}),images:()=>{throw Error('Avatar must not be attached to Space');},close:async()=>{}} as unknown as PersonMemory;
+  const qzone={remembered:()=>undefined,lastIndex:()=>1,read:async(_person:string,_conversation:string,selection:any)=>{assert.equal(f.transport.sent[0].text,'哟，你又整什么活了？');assert.equal(selection.index,3);return {};},context:()=>({source:'QQ空间本人说说列表',posts:[{id:'third-post',position:3,text:'海边散步'}]}),images:()=>[{type:'text',text:'说说 third-post 的附件'},{type:'image_url',image_url:{url:'data:image/png;base64,AA=='}}],close:async()=>{}} as unknown as QzoneMemory;
+  const provider:Model={kind:'fixture',async complete(messages,_max,options){turns++;assert.ok(options?.tools?.some(t=>t.function.name==='get_qzone'));
+    if(turns===1){assert.equal(options?.toolChoice,'get_qzone');assert.ok(!options?.tools?.some(t=>t.function.name==='get_person'));assert.ok(messages.every(m=>typeof m.content==='string'));assert.ok(!String(messages[0].content).includes('区分发布时间'));return {text:'',tool_calls:[call('get_qzone',{index:1,count:1,remark:'哟，你又整什么活了？'})],usage:{input:100,output:30}};}
     assert.equal(messages.filter(m=>m.role==='tool').length,1);assert.ok(Array.isArray(messages.at(-1)!.content));
-    return {text:'这么大一口锅，你是准备把桌子也煮了嘛。',usage:{input:300,output:30}};
+    assert.equal(JSON.parse(String(messages.find(m=>m.role==='tool')!.content)).posts[0].id,'third-post');
+    return {text:'你这海面拍得还挺会挑时候嘛。',usage:{input:300,output:30}};
   }};
-  f=setup(provider,people);
-  try{await f.bot.receive(message('评判一下我最新动态',{group:'private:20002',user:'20002'}));await f.bot.flush();
-    assert.deepEqual(f.transport.sent.map(m=>m.text),['哟，你又整什么活了？','这么大一口锅，你是准备把桌子也煮了嘛。']);
+  f=setup(provider,person,undefined,qzone);
+  try{await f.bot.receive(message('来，再看看我上上条动态',{group:'private:20002',user:'20002'}));await f.bot.flush();
+    assert.deepEqual(f.transport.sent.map(m=>m.text),['哟，你又整什么活了？','你这海面拍得还挺会挑时候嘛。']);
   }finally{await f.bot.stop();f.cleanup();}
 });
 test('energy and image allowance come from live counters; the model composes the wording',async()=>{

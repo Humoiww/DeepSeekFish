@@ -4,7 +4,7 @@
 
 手机打开大肥鱼网页，侧栏选择「QQ 对话」。使用两个账号：给大肥鱼的 QQ 账号登录服务器，你的日常 QQ 账号和它聊天。
 
-1. 点「打开 QQ 扫码登录页」，给大肥鱼的 QQ 扫码并确认。
+1. 打开 QQ 登录页，可以使用 QQ 密码登录，也可以扫码；密码登录成功后保存自动重登凭据。
 2. 回到「QQ 对话」，填写**你的日常 QQ 号**，群号先留空。
 3. 保存并启用，然后用日常 QQ 加大肥鱼为好友；需要好友验证时在机器人账号侧确认。
 4. 直接发“你好”，后续继续聊天，不用 @ 或输入命令。
@@ -21,7 +21,7 @@
 
 在你准备登录 QQ 的机器上运行 NapCat。它可和本项目同机，也可在另一台连着 Tailscale 的机器上。NapCat 社区提供 [Linux/ARM64 安装方式](https://napneko.github.io/guide/boot/Shell)；本仓库不自动执行网络上的 root 一键脚本，也不为 QQ 接入安装 Docker 或改变防火墙。
 
-使用要作为群成员的 QQ 账号扫码登录，并让这个账号加入目标群。NapCat 中新增「WebSocket 服务器」：
+使用要作为群成员的 QQ 账号完成密码登录或扫码登录，并让这个账号加入目标群。NapCat 中新增「WebSocket 服务器」：
 
 | 配置 | 同机建议值 |
 | --- | --- |
@@ -85,7 +85,7 @@ sudo -u deepseekfish bash /srv/deepseekfish/app/scripts/manage.sh set autonomous
 
 ## 已验证与待操作
 
-本机用真实 loopback WebSocket 对已实现适配器验证身份/Token、普通消息入库、@ 后走现有 Bot/预算链并回传文本；没有安装新的测试框架。真正的 QQ 接入仍需要：NapCat 运行并扫码登录、提供目标群/管理员 QQ 号和 OneBot Token，以及一次群内实测。
+本机用真实 loopback WebSocket 对已实现适配器验证身份/Token、普通消息入库、@ 后走现有 Bot/预算链并回传文本；没有安装新的测试框架。真正的 QQ 接入仍需要：NapCat 运行并完成 QQ 登录、提供目标群/管理员 QQ 号和 OneBot Token，以及一次群内实测。
 
 ## 本项目的 VPS NapCat 安装与手机登录
 
@@ -100,6 +100,19 @@ sudo python3 scripts/install-tailnet.py
 
 协议进程运行于 `deepseekfish-napcat.service`，状态在 `/srv/deepseekfish/napcat/state`（0700）；程序在其 sibling vendor 目录，由 root 管理。WebUI 只听 `127.0.0.1:6099`，登录完成后的 OneBot 只听 `127.0.0.1:3001`，心跳和 `array` 事件已预置。OneBot Token 安装时私有生成并同步给大肥鱼，不需要发到聊天。
 
-`install-tailnet.py` 为 QQ 页面另建 **17864** 的私网 socket，只允许同一 Tailscale 账户的设备。固定 `/` 入口自动带入本机 WebUI 登录信息，无须复制 Token；它不代理任意外部地址。手机开 Tailscale 后访问安装器打印的 `http://100.x.x.x:17864/`，用机器人的 QQ 扫码并确认；同一手机可保存二维码，再从 QQ 扫一扫选择相册。二维码可在页面刷新，入口本身长期有效。
+`install-tailnet.py` 为 QQ 页面另建 **17864** 的私网 socket，只允许同一 Tailscale 账户的设备。固定 `/` 入口自动带入本机 WebUI 登录信息，无须复制 Token；它不代理任意外部地址。手机开 Tailscale 后访问安装器打印的 `http://100.x.x.x:17864/`，使用机器人的 QQ 密码登录，或扫码并确认；同一手机可保存二维码，再从 QQ 扫一扫选择相册。二维码可在页面刷新，入口本身长期有效。
 
-完成扫码后，还需数字群号和管理员 QQ 号。可以复用已生成的私有 OneBot Token，仅保存非秘密群配置，然后检查账号并启用 QQ 服务；不要重新生成 Token 或发送到聊天。NapCat 登录数据也属于凭据，不进 Git、不进普通迁移归档；新机器重新扫码。所有安装器、服务和网关源码随仓库迁移。
+完成 QQ 登录后，还需数字群号和管理员 QQ 号。可以复用已生成的私有 OneBot Token，仅保存非秘密群配置，然后检查账号并启用 QQ 服务；不要重新生成 Token 或发送到聊天。NapCat 登录数据也属于凭据，不进 Git、不进普通迁移归档；新机器重新完成 QQ 登录。所有安装器、服务和网关源码随仓库迁移。
+
+
+## 密码和登录状态的持久化
+
+本机日志已确认用户使用密码登录。原 NapCat WebUI PasswordLogin 接口只执行登录，不保存回退密码；内置自动登录在缓存身份不可用时，仅从 NAPCAT_QUICK_PASSWORD / NAPCAT_QUICK_PASSWORD_MD5 读取回退凭据。只保存 autoLoginAccount 并不足以完成密码回退。社区已有同类需求：[NapCat #1632](https://github.com/NapNeko/NapCatQQ/issues/1632)。
+
+安装器现在调用 install-napcat-login.py，为固定版本的三个密码/验证码/新设备登录回调添加持久化适配：登录成功才自动保存原生协议要求的 passwordMd5，并更新自动登录账号；失败密码不覆盖，验证码/新设备验证停下来交给原 QQ 页面。
+
+已有在线会话可在 QQ 页面右下角「自动登录」补存一次密码，不需要退出。早先未保存的密码无法从已登录状态还原。仅保存 QQ 协议要求的 MD5 凭据，不存明文；该值同样按密码保护，位于 napcat 独立账户的 state/login-secrets.json，0600，仅该账户及 root 可读，不进 Git、普通迁移包、聊天记忆或模型提示。
+
+启动时先复用 Native QQ 缓存，失败后调用 NapCat 已有密码回退。运行中掉回离线状态也可有界重试；错误密码、验证码或设备验证会暂停重试，避免不断尝试。不会执行退出账号、删除 QQ 数据或重置设备标识。服务账户和原权限边界保持。
+
+已有固定版本安装可执行 `sudo python3 scripts/install-napcat-login.py --reload-worker` 激活。此命令使用原生工作进程重载接口，保留客户端状态；本机实测返回「自动快速登录成功」，QQ transport 为 connected。新安装通过 install-napcat.py 自动包含适配器。

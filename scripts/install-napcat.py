@@ -86,6 +86,7 @@ p = state/'webui-token';p.write_text(webui_token + '\n');p.chmod(0o600);os.chown
 shutil.copyfile(source/'deploy/napcat-versions.json', vendor/'versions.json')
 shutil.copyfile(source/'deploy/deepseekfish-napcat.service', '/etc/systemd/system/deepseekfish-napcat.service')
 Path('/etc/systemd/system/deepseekfish-napcat.service').chmod(0o644)
+subprocess.run(['python3',str(source/'scripts/install-napcat-login.py')],check=True)
 subprocess.run(['systemctl', 'daemon-reload'], check=True)
 subprocess.run(['systemctl', 'enable', '--now', 'deepseekfish-napcat.service'], check=True)
 print('NapCat prepared under its own UID. WebUI: loopback 6099; OneBot: loopback 3001 after QQ login.')

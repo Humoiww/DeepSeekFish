@@ -74,7 +74,7 @@ $('settings-button').onclick=settings;$('setup-button').onclick=settings;
 $('qq-button').onclick=async()=>{closeDrawers(false);$('qq-error').textContent='';$('qq-dialog').showModal();await refreshQQ(true);};
 async function refreshQQ(fill=false){
   $('qq-login-link').href='http://'+(location.hostname==='127.0.0.1'||location.hostname==='localhost'?'127.0.0.1:6099/webui':location.hostname+':17864/');
-  try{const qq=await api('qq');$('qq-status').textContent=qq.connected?'大肥鱼 QQ：'+qq.self+' · 已登录'+(qq.enabled?' · 对话已启用':' · 等待启用对话'):'QQ 尚未登录，请先打开扫码登录页。';
+  try{const qq=await api('qq');$('qq-status').textContent=qq.connected?'大肥鱼 QQ：'+qq.self+' · 已登录'+(qq.enabled?' · 对话已启用':' · 等待启用对话'):'QQ 尚未登录，请打开 QQ 登录页，支持密码登录。';
     if(fill){$('qq-admins').value=qq.admins.join(',');$('qq-groups').value=qq.configuredGroups.join(',');$('qq-enabled').checked=qq.enabled||!qq.admins.length;}
   }catch(e){$('qq-status').textContent='读取 QQ 状态失败：'+explain(e.message);}
 }

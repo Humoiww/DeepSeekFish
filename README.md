@@ -244,3 +244,5 @@ runtime/research/   本次官方接口调查和生成的协议 schema（不提�
 详细说明：[Linux 部署](docs/linux.md)、[架构](docs/architecture.md)、[官方接口调查](docs/research.md)、[安全边界](docs/security.md)、[配置](docs/configuration.md)、[验收和已知限制](docs/status.md)。
 
 QQ 的精简人格、精力查询和自然语言生图见 [QQ 人格与工具](docs/qq-personality-tools.md)。
+
+QQ 登录状态复用见 [QQ 接入](docs/qq-onebot.md)，说说序号与配图来源见 [QQ空间读取](docs/qzone-reading.md)。

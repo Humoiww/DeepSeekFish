@@ -11,14 +11,13 @@ import subprocess
 p=argparse.ArgumentParser()
 p.add_argument('--uin', help='Choose an existing cached account when there is more than one')
 p.add_argument('--restart', action='store_true')
-p.add_argument('--disable', action='store_true', help='Return to QR login after a cached identity expires')
 args=p.parse_args()
 if os.geteuid()!=0:
     raise SystemExit('Run with sudo to update the isolated NapCat account config.')
 folder=Path('/srv/deepseekfish/napcat/state/config')
 accounts=[re.fullmatch(r'napcat_(\d+)\.json',f.name)[1] for f in folder.glob('napcat_*.json') if re.fullmatch(r'napcat_(\d+)\.json',f.name)]
-account='' if args.disable else args.uin or (accounts[0] if len(accounts)==1 else None)
-if not args.disable and account not in accounts:
+account=args.uin or (accounts[0] if len(accounts)==1 else None)
+if account not in accounts:
     raise SystemExit('Select an existing cached account with --uin; complete initial QR login first.')
 config=folder/'webui.json'
 u=pwd.getpwnam('napcat')
@@ -43,4 +42,4 @@ finally:
     os.close(directory)
 if args.restart:
     subprocess.run(['systemctl','restart','deepseekfish-napcat.service'],check=True)
-print('QR login selected.' if args.disable else 'Cached QQ quick login saved; no password, token or device identity was changed.')
+print('Cached QQ quick login saved; no password, token or device identity was changed.')

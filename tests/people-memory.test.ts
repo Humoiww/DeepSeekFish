@@ -21,10 +21,10 @@ test('profile observations retain verified media, keep cookies transient and iso
     }) as typeof fetch;
     const capture=async(_uin:string,cookie:string)=>{assert.ok(cookie.includes('never-store-this-secret'));return {png:png.toString('base64'),page:{title:'测试空间',text:'今天去海边摄影'}};};
     const people=new PersonMemory(f.root,f.store,qq,f.cfg,http,capture),snapshot=await people.refresh('20002','private:20002');
-    assert.ok(snapshot.avatar&&snapshot.screenshot);assert.equal(snapshot.posts[0].id,'post-one');assert.equal(people.images(snapshot,true).length,2);
-    const file=f.root+'/'+snapshot.screenshot!.replace(/qzone\.png$/,'observation.json'),saved=fs.readFileSync(file,'utf8');
+    assert.ok(snapshot.avatar);assert.equal(snapshot.screenshot,undefined);assert.equal(snapshot.posts.length,0);assert.equal(people.images(snapshot).filter(p=>p.type==='image_url').length,1);
+    const file=f.root+'/'+snapshot.avatar!.replace(/avatar\.png$/,'observation.json'),saved=fs.readFileSync(file,'utf8');
     assert.ok(!saved.includes('never-store-this-secret'));assert.ok(!saved.includes('not-retained'));
-    assert.equal((await people.refresh('20002','private:20002')).id,snapshot.id);assert.equal(reads,1);
+    assert.equal((await people.refresh('20002','private:20002')).id,snapshot.id);assert.equal(reads,0);
     assert.equal(people.remembered('20002','g2',{mode:'recent',since:0}),undefined);
     f.store.db.prepare('UPDATE person_observations SET observed=?').run(dayStart()-3*86400000);
     assert.equal(people.remembered('20002','private:20002',{mode:'recent',since:dayStart()-86400000}),undefined);

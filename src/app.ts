@@ -17,6 +17,7 @@ import { PersonMemory } from './memory/people.js';
 import { FishError } from './types.js';
 import { boundaryStatus } from './codex/platform.js';
 import { QQImageClient } from './qq/image-client.js';
+import { QzoneMemory } from './memory/qzone.js';
 
 export function createApp(root:string,mock:boolean,override:Partial<Config>={},demo=false){
   prepare(root);loadSecrets(root);
@@ -42,7 +43,8 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
   }catch(e){store.close();throw e;}
   bot=new Bot(root,cfg,store,ledger,model,tasks,search,mock?new MockImageProvider():new CodexImageProvider(),transport,
     transport instanceof OneBotTransport?new PersonMemory(root,store,transport,cfg):undefined,
-    transport instanceof OneBotTransport?new QQImageClient(root):undefined);
+    transport instanceof OneBotTransport?new QQImageClient(root):undefined,
+    transport instanceof OneBotTransport?new QzoneMemory(root,store,transport,cfg):undefined);
   const tokenPath=safePath(root,'runtime/data/admin-token');
   if(!fs.existsSync(tokenPath))writePrivate(root,'runtime/data/admin-token',randomBytes(32).toString('hex'));
   const token=fs.readFileSync(tokenPath,'utf8').trim();

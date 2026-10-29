@@ -8,7 +8,7 @@ QQ 把双方聊天作为真实 user/assistant 消息送入模型，记忆、人�
 
 ## 功能
 
-- get_person：由模型生成动手前想说的话，然后读取说话者的头像或最新空间动态。文字只选最新一条；有原始配图时优先给模型看配图，完整空间截图仍存入人物记忆，不把整页旧动态一起用来点评。
+- get_person：只读取 QQ 头像和个人资料。get_qzone：读取本人 QQ 空间说说，支持最新/上一条/上上条/第 N 条、逐条与分页；每条包含真实 ID、时间、正文及绑定到该 ID 的附件。头像不会进入说说图片输入，完整网页截图另存人物记忆。视频封面标记为 video_cover，只表示看过封面。
 - get_quota：读取当前账本和 GPT 账号状态。energy 的 token 代表精力值；图片 collaborator 是 GPT小姐。措辞由模型组织，不拼装固定额度台词。
 - generate_image：对当前明确想要图片的 QQ 消息，模型自行设计画面并交给原有 Codex 内置生图。生成成功后将 PNG 发进当前对话，再把实际结果交回模型继续说话。普通对话、历史和工具结果不能代替当前请求授权。
 
@@ -28,4 +28,4 @@ sudo bash scripts/enable-qq-images.sh
 
 每轮生成文字、工具名称、结果和实际 token usage 在 runtime/logs/qq/UUID.json，包含当轮真正的 system 提示，不记录图片 base64 或登录 Cookie。Codex 原生生图记录继续在 runtime/logs/codex/。这些私有日志、图片及 SQLite 账本随原有 migrate-state.py 迁移；socket 和登录凭据不迁移。
 
-NapCat 重启后可用已有授权的缓存登录：完成 QR 登录后运行 `sudo python3 scripts/remember-qq-login.py` 保存自动登录账号选择。如果腾讯判定缓存身份失效，使用 `sudo python3 scripts/remember-qq-login.py --disable --restart` 回到 QR 登录；它不更改密码、Token 或设备标识，也不能绕过腾讯重新授权。
+登录持久化修复见 [QQ 接入](qq-onebot.md)。用户实际采用密码登录，不能按扫码推断。缓存失效时优先使用已保存的密码回退，不清空自动登录账号；设备验证仍由 QQ 原有流程完成。
