@@ -15,12 +15,13 @@ export interface Config {
   maxFiles: number; maxArtifactBytes: number; images: boolean; imageDaily: number;
   port: number; model: string; qqTransport:'official'|'onebot'; onebotUrl:string; privateUsers:string[];
 }
+export const MAX_DAILY_TOKENS=10_000_000;
 export const defaults: Config = {
   enabled: true, groups: [], admins: [], names: ['小鱼', 'DeepSeekFish'],
   autonomous: false, autoReply: false, probability: 0.02, activity: 0.5,
   cooldownMs: 480000, dailyInterjections: 12, windowSize: 20, maxChars: 600,
   quietHours: [0, 7], interests: ['AI', '编程', '游戏'], bufferMs: 1200, historyHours: 24,
-  dailyTokens: 120000, groupDailyTokens: 60000, userDailyRequests: 50, maxOutputTokens: 256,
+  dailyTokens: 1000000, groupDailyTokens: 60000, userDailyRequests: 50, maxOutputTokens: 256,
   search: false, searchDaily: 20, searchCount: 3, searchTimeoutMs: 10000,
   codex: false, codexDaily: 22, codexTimeoutMs: 300000, codexDailyMs: 6600000,
   maxFiles: 20, maxArtifactBytes: 10485760, images: false, imageDaily: 20,
@@ -40,7 +41,7 @@ export function validateConfig(input: Record<string, unknown>): Config {
   }
   if (!Array.isArray(c.quietHours) || c.quietHours.length !== 2 || !c.quietHours.every(v => Number.isInteger(v) && v >= 0 && v < 24) ||
     c.probability > 1 || c.activity > 1 || c.maxOutputTokens < 1 || c.maxOutputTokens > 4096 ||
-    c.windowSize < 1 || c.windowSize > 100 || c.maxChars < 32 || c.maxChars > 4000 ||
+    c.dailyTokens > MAX_DAILY_TOKENS || c.windowSize < 1 || c.windowSize > 100 || c.maxChars < 32 || c.maxChars > 4000 ||
     c.searchCount < 1 || c.searchCount > 5 || c.codexTimeoutMs < 10 || c.codexTimeoutMs > 1800000 ||
     c.port < 1024 || c.port > 65535 || c.historyHours < 1 || c.historyHours > 168 || c.bufferMs > 10000 ||
     !/^[a-zA-Z0-9._-]{1,80}$/.test(c.model)) throw new FishError('INVALID_CONFIG');

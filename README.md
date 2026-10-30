@@ -174,7 +174,7 @@ npm run cli -- set enabled false
 npm run cli -- set autonomous true
 npm run cli -- set search true
 npm run cli -- set codex true
-npm run cli -- set dailyTokens 120000
+npm run cli -- set dailyTokens 1000000
 npm run cli -- history 群OPENID
 npm run cli -- clear 群OPENID
 npm run cli -- cancel 任务UUID

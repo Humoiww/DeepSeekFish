@@ -15,7 +15,7 @@
   "interests": ["AI", "编程", "游戏"],
   "bufferMs": 1200,
   "historyHours": 24,
-  "dailyTokens": 120000,
+  "dailyTokens": 1000000,
   "groupDailyTokens": 60000,
   "userDailyRequests": 50,
   "maxOutputTokens": 256,

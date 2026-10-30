@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { configureQQ,qqStatus } from '../qq/settings.js';
 import { randomBytes,randomUUID } from 'node:crypto';
-import { defaults,prepare,loadSecrets,loadConfig,validateConfig,type Config } from '../config.js';
+import { defaults,prepare,loadSecrets,loadConfig,validateConfig,MAX_DAILY_TOKENS,type Config } from '../config.js';
 import { safePath,writePrivate } from '../paths.js';
 import { Store,redact } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
@@ -85,7 +85,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     const next={...settings};
     for(const field of ['model','maxOutputTokens','dailyTokens','search','codexQueue'] as const)if(field in input)(next as any)[field]=input[field];
     if(typeof next.model!=='string'||!/^[a-zA-Z0-9._-]{1,80}$/.test(next.model)||!Number.isInteger(next.maxOutputTokens)||next.maxOutputTokens<128||next.maxOutputTokens>4096||
-      !Number.isInteger(next.dailyTokens)||next.dailyTokens<1000||next.dailyTokens>1000000||typeof next.search!=='boolean'||typeof next.codexQueue!=='boolean')throw new FishError('INVALID_WEB_SETTINGS');
+      !Number.isInteger(next.dailyTokens)||next.dailyTokens<1000||next.dailyTokens>MAX_DAILY_TOKENS||typeof next.search!=='boolean'||typeof next.codexQueue!=='boolean')throw new FishError('INVALID_WEB_SETTINGS');
     if(input.apiKey!==undefined){
       if(typeof input.apiKey!=='string'||input.apiKey.length>256||input.apiKey&&!/^[a-zA-Z0-9_-]{8,256}$/.test(input.apiKey))throw new FishError('INVALID_API_KEY');
       if(input.apiKey){secret=input.apiKey;writePrivate(root,'runtime/data/webui-secrets.json',JSON.stringify({deepseekKey:secret})+'\n');}
