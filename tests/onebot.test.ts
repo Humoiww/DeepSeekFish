@@ -20,7 +20,8 @@ test('OneBot normalizes ordinary/mention messages and rejects self, string CQ an
   const mention=normalizeOneBot(event('',{message:[{type:'at',data:{qq:'10001'}},{type:'text',data:{text:'你好'}}]}),'10001');
   assert.equal(mention?.mentioned,true);assert.equal(mention?.text,'你好');
   for(const extra of [{user_id:10001},{self_id:999},{message:'[CQ:at,qq=10001]hello'},{group_id:{}},{post_type:'message_sent'}])assert.equal(normalizeOneBot(event('bad',extra),'10001'),undefined);
-  assert.match(normalizeOneBot(event('',{message:[{type:'image',data:{url:'https://untrusted.invalid'}}]}),'10001')!.text,/未解析/);
+  const picture=normalizeOneBot(event('',{message:[{type:'image',data:{url:'https://multimedia.nt.qq.com.cn/test',file:'fixture.gif',sub_type:1}}]}),'10001')!;
+  assert.equal(picture.text,'[图片 1]');assert.equal(picture.images?.[0].stickerHint,true);assert.equal(picture.images?.[0].file,'fixture.gif');
 });
 test('OneBot URLs keep tokens separate and WebUI key reuse does not copy credentials into config',()=>{
   for(const onebotUrl of ['https://example.com','ws://8.8.8.8:3001','ws://127.0.0.1:3001?access_token=secret','wss://user:pass@example.com'])assert.throws(()=>validateConfig({onebotUrl}));

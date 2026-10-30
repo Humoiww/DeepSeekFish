@@ -24,7 +24,8 @@ export class Tasks {
     const pending=Number((this.store.db.prepare("SELECT count(*) AS n FROM tasks WHERE state='waiting'").get() as any).n);
     if(pending>=20)throw new FishError('TASK_QUEUE_FULL');
     const id=randomUUID();
-    this.store.db.prepare('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(id,message.group,message.user,redact(request),redact(brief),'waiting',Date.now(),null,null,null,null,JSON.stringify({...message,text:''}));
+    const {images:_downloadHandles,...source}=message;
+    this.store.db.prepare('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(id,message.group,message.user,redact(request),redact(brief),'waiting',Date.now(),null,null,null,null,JSON.stringify({...source,text:''}));
     return this.get(id);
   }
   get(id:string):Task{

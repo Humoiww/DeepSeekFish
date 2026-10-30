@@ -7,30 +7,38 @@ import { Store } from '../storage/db.js';
 import { FishError,codeOf,type Message,type Transport } from '../types.js';
 import { echoKey } from './adapter.js';
 import { verifyPng } from '../image/provider.js';
+import { imageMime } from '../memory/people.js';
 
 function id(value:unknown,signed=false):string|undefined{
   if(typeof value==='number'&&!Number.isSafeInteger(value))return;
   if(typeof value!=='number'&&typeof value!=='string')return;
   const s=String(value);return (signed?/^-?\d{1,20}$/:/^[1-9]\d{0,19}$/).test(s)?s:undefined;
 }
-/** Array messages only. Images/voice are labelled, never claimed to be seen. */
+/** Array messages only. Image handles stay transient until trusted ingestion. */
 export function normalizeOneBot(event:any,self:string):Message|undefined{
   if(event?.post_type!=='message'||!['group','private'].includes(event.message_type)||id(event.self_id)!==self||!Array.isArray(event.message)||event.message.length>256)return;
   const user=id(event.user_id),group=event.message_type==='private'&&user?'private:'+user:id(event.group_id),messageId=id(event.message_id,true);
   if(!group||!user||!messageId||user===self||!Number.isSafeInteger(event.time))return;
-  let mentioned=event.message_type==='private',text='';
+  let mentioned=event.message_type==='private',text='';const images:NonNullable<Message['images']>=[];
   for(const segment of event.message){
     if(segment?.type==='text'&&typeof segment.data?.text==='string')text+=segment.data.text.slice(0,16000);
     else if(segment?.type==='at'){
       if(id(segment.data?.qq)===self)mentioned=true;
       else text+=' @'+(id(segment.data?.qq)??'全体成员')+' ';
-    }else if(segment?.type==='image')text+='[图片：未解析内容]';
+    }else if(segment?.type==='image'){
+      if(images.length<4){
+        const d=segment.data??{};images.push({stickerHint:Number(d.sub_type)===1,
+          ...(typeof d.url==='string'&&d.url.length<=4096?{url:d.url}:{}),
+          ...(typeof d.file==='string'&&/^[a-zA-Z0-9_-]{1,128}\.(?:gif|png|jpe?g|webp)$/i.test(d.file)?{file:d.file}:{})});
+        text+='[图片 '+images.length+']';
+      }else text+='[图片：本条超过4张，未读取]';
+    }
     else if(segment?.type==='record')text+='[语音：未转写]';
     else if(segment?.type==='face')text+='[表情]';
     else if(segment?.type==='file')text+='[文件：未读取内容]';
     if(text.length>=16000)break;
   }
-  return {id:messageId,group,user,text:text.trim().slice(0,16000),at:event.time*1000,mentioned,event:mentioned?'mention':'ordinary'};
+  return {id:messageId,group,user,text:text.trim().slice(0,16000),at:event.time*1000,mentioned,event:mentioned?'mention':'ordinary',...(images.length?{images}:{})};
 }
 export function onebotCredential(root:string):string{
   const file=safePath(root,'runtime/data/onebot-credentials.json');
@@ -38,7 +46,7 @@ export function onebotCredential(root:string):string{
   if(typeof token!=='string'||!token||token.length>512||/[\r\n\0]/.test(token))throw new FishError('ONEBOT_TOKEN_MISSING');
   return token;
 }
-type Action='get_login_info'|'get_group_list'|'get_status'|'send_group_msg'|'send_private_msg'|'get_stranger_info'|'get_cookies';
+type Action='get_login_info'|'get_group_list'|'get_status'|'send_group_msg'|'send_private_msg'|'get_stranger_info'|'get_cookies'|'get_image';
 type Pending={resolve:(value:any)=>void;reject:(error:Error)=>void;timer:NodeJS.Timeout};
 export class OneBotTransport implements Transport {
   status='disconnected';private socket?:WebSocket;private self='';private stopped=false;
@@ -111,6 +119,11 @@ export class OneBotTransport implements Transport {
     if(!id(user))throw new FishError('ONEBOT_INVALID_TARGET');await this.open();
     return this.call('get_stranger_info',{user_id:user,no_cache:true});
   }
+  async imageUrl(file:string):Promise<string>{
+    if(!/^[a-zA-Z0-9_-]{1,128}\.(?:gif|png|jpe?g|webp)$/i.test(file))throw new FishError('QQ_IMAGE_HANDLE_INVALID');
+    await this.open();const result=await this.call('get_image',{file});
+    if(typeof result?.url!=='string')throw new FishError('QQ_IMAGE_URL_MISSING');return result.url;
+  }
   /** Trusted profile module only; never returned by a model-facing tool/API. */
   async qzoneSession():Promise<{cookies:string;bkn:string}>{
     if(this.qzoneAuth&&this.qzoneAuth.expires>Date.now())return this.qzoneAuth.value;
@@ -135,6 +148,12 @@ export class OneBotTransport implements Transport {
     // QQ uploads the image before acknowledging the send; the text/action
     // timeout is too short for a normal PNG upload on a small VPS.
     await this.call(target.action,{...target.params,message:[{type:'image',data:{file:'base64://'+fs.readFileSync(png).toString('base64')}}]},60000);
+  }
+  async meme(message:Message,original:Buffer):Promise<void>{
+    if(!this.allowed(message.group))throw new FishError('ONEBOT_GROUP_NOT_ALLOWED');
+    if(original.length>10485760)throw new FishError('QQ_MEDIA_TOO_LARGE');imageMime(original);
+    const target=this.target(message.group);
+    await this.call(target.action,{...target.params,message:[{type:'image',data:{file:'base64://'+original.toString('base64'),sub_type:1}}]},60000);
   }
   private target(conversation:string):{action:'send_group_msg'|'send_private_msg';params:Record<string,string>}{
     if(conversation.startsWith('private:')){

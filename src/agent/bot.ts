@@ -22,6 +22,7 @@ import { requestsImage,validateImagePlan } from '../web/images.js';
 import { writePrivate } from '../paths.js';
 import { QzoneMemory,qzoneSelection } from '../memory/qzone.js';
 import { hasToolMarkup } from './tool-protocol.js';
+import { QQMedia,mediaTools } from '../qq/media.js';
 
 const PERSONA=personalityPrompt();
 const SYSTEM=PERSONA+'\n记忆在memory，人物资料在person，外观和设定图在character，精力在energy。画图协作者是GPT小姐。';
@@ -36,7 +37,7 @@ export class Bot {
   private gate:SocialGate;
   readonly memory:MemoryJournal;
   constructor(private root:string,private cfg:()=>Config,public store:Store,public ledger:Ledger,
-    private model:BudgetedModel,public tasks:Tasks,private search:SearchService,private image:ImageProvider,public transport:Transport,private people?:PersonMemory,private imageClient?:QQImageClient,private qzone?:QzoneMemory){
+    private model:BudgetedModel,public tasks:Tasks,private search:SearchService,private image:ImageProvider,public transport:Transport,private people?:PersonMemory,private imageClient?:QQImageClient,private qzone?:QzoneMemory,private media?:QQMedia){
     this.gate=new SocialGate(cfg,ledger);tasks.onComplete=t=>this.deliver(t,JSON.parse(t.source));
     this.memory=new MemoryJournal(root,store);this.memory.backfill();
   }
@@ -76,6 +77,8 @@ export class Bot {
   private async respond(batch:Message[]):Promise<void>{
     const last=batch.at(-1)!;const c=this.cfg();
     if(!c.enabled||!conversationAllowed(c,last.group))return;
+    const incoming=this.media?await this.media.ingest(batch,this.controller.signal):[];
+    const mediaIds=[...new Set(incoming.flatMap(m=>m.id?[m.id]:[]))];
     const history=this.store.history(last.group,c.windowSize).filter(m=>m.at>=dayStart()-86400000&&(m.user!=='DeepSeekFish'||!hasToolMarkup(m.text)));
     // Trigger only on this batch, use rolling history solely for local activity/topic checks.
     const reason=this.gate.decide(batch,Date.now(),history);
@@ -87,21 +90,22 @@ export class Bot {
       memory.events=memory.events.filter(event=>event.role!=='assistant'||!hasToolMarkup(event.text));
       if(this.people&&!requestsQzone(last.text)&&!requestsAvatar(last.text))void this.people.refresh(last.user,last.group).catch(e=>this.store.audit('profile-error',last.group,codeOf(e)));
       const savedQzone=this.qzone?.remembered(last.user,last.group,memory);
-      const context={memory:{events:memory.events,needsReference:memory.needsReference},person:personContext(person),qzone:savedQzone?this.qzone!.context(savedQzone):null,character:{appearance:CHARACTER_APPEARANCE,referenceId:'character'},...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
+      const context={memory:{events:memory.events,needsReference:memory.needsReference},person:personContext(person),qzone:savedQzone?this.qzone!.context(savedQzone):null,character:{appearance:CHARACTER_APPEARANCE,referenceId:'character'},...this.media?.context(last.group),...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
       const dialogue:ChatMessage[]=history.map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:m.user==='DeepSeekFish'||last.group.startsWith('private:')?m.text:'['+m.user+'] '+m.text}));
       if(history.at(-1)?.id!==last.id)dialogue.push({role:'user',content:last.text});
       const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
+      if(incoming.length)messages.push({role:'user',content:this.media!.parts(last.group,incoming)});
       const imageIntent=requestsImage(last.text,true);
-      const tools=[...qqChatTools(!!this.people&&!requestsQzone(last.text),!!this.imageClient&&c.images&&imageIntent,!!this.qzone),...(this.imageClient?imageLibraryTools():[])];
-      const requestedTool=this.qzone&&requestsQzone(last.text)?'get_qzone':this.people&&requestsAvatar(last.text)?'get_person':
+      const tools=[...qqChatTools(!!this.people&&!requestsQzone(last.text),!!this.imageClient&&c.images&&imageIntent,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
+      const requestedTool=mediaIds.length?'remember_images':this.qzone&&requestsQzone(last.text)?'get_qzone':this.people&&requestsAvatar(last.text)?'get_person':
         this.imageClient&&(requestsReferences(last.text)||(c.images&&imageIntent))?'list_images':
         /累不累|累了吗|累吗|精力|额度|限额|还能.{0,12}(?:图|张)|剩.{0,12}(?:图|张)|token/i.test(last.text)?'get_quota':undefined;
-      const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,qzoneRead=false;
+      const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,qzoneRead=false,memeAttempted=false,memeSent=false;
       let imageReply:ChatMessage[]|undefined;
       let imagePreview:ChatPart[]=[];
-      const maxRounds=this.imageClient&&imageIntent?6:4,maxCalls=maxRounds;let repaired=false;
+      const maxRounds=this.imageClient&&imageIntent||mediaIds.length?6:4,maxCalls=maxRounds;let repaired=false;
       const tracePath='runtime/logs/qq/'+randomUUID()+'.json';makeDir(this.root,'runtime/logs/qq');
-      const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,imageIntent,imageRequested,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
+      const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,imageIntent,imageRequested,received:incoming,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
       saveTrace();
       try{
         for(let round=0;round<maxRounds;round++){
@@ -136,7 +140,7 @@ export class Bot {
             if(hasToolMarkup(completion.text))completion={...completion,text:''};
           }
           saveTrace();
-          if(!completion.tool_calls?.length){if(!completion.text.trim())throw new FishError('DEEPSEEK_EMPTY_RESPONSE');await this.send(last,completion.text);break;}
+          if(!completion.tool_calls?.length){if(!completion.text.trim()){if(memeSent)break;throw new FishError('DEEPSEEK_EMPTY_RESPONSE');}await this.send(last,completion.text);break;}
           if(round===maxRounds-1||calls+completion.tool_calls.length>maxCalls)throw new FishError('QQ_TOOL_LIMIT');
           messages.push({role:'assistant',content:completion.text,tool_calls:completion.tool_calls});
           let said=false;const roundMedia:ChatPart[]=[];
@@ -147,7 +151,26 @@ export class Bot {
               if(!tools.some(t=>t.function.name===call.function.name))throw new FishError('TOOL_NOT_ALLOWED');
               const args=JSON.parse(call.function.arguments);
               if(!args||typeof args!=='object'||Array.isArray(args))throw new FishError('INVALID_TOOL_ARGS');
-              if(call.function.name==='list_images'){
+              if(call.function.name==='remember_images'){
+                if(!this.media||Object.keys(args).some(k=>k!=='images'))throw new FishError('INVALID_TOOL_ARGS');
+                const remembered=this.media.remember(last.group,args.images,mediaIds);result={images:remembered};
+                for(const item of remembered){
+                  const source=incoming.find(m=>m.id===item.id)!,owner=batch.find(m=>m.id===source.messageId)!;
+                  this.memory.record({id:'media:'+owner.id+':'+item.id,conversation:last.group,actor:owner.user,role:'user',text:JSON.stringify({imageId:item.id,description:item.description,animated:item.animated,meme:item.meme,tags:item.tags}),at:owner.at,source:'qq-image-observation'});
+                }
+              }else if(call.function.name==='find_memes'){
+                if(!this.media||Object.keys(args).some(k=>k!=='query'))throw new FishError('INVALID_TOOL_ARGS');
+                result={memes:this.media.find(last.group,args.query)};
+              }else if(call.function.name==='send_meme'){
+                if(!this.media||!this.transport.meme||typeof args.id!=='string'||Object.keys(args).some(k=>k!=='id')||memeAttempted)throw new FishError('QQ_MEME_SEND_UNAVAILABLE');
+                const original=this.media.original(last.group,args.id);memeAttempted=true;
+                trace.push({tool:'send_meme',phase:'submitted',id:args.id});saveTrace();
+                if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
+                result={sent:false,deliveryStatus:'unconfirmed',retryScheduled:false,id:args.id};
+                await this.transport.meme(last,original);memeSent=true;this.media.sent(last.group,args.id);
+                const item=this.media.describe(last.group,args.id);result={sent:true,deliveryStatus:'confirmed',id:args.id,animated:item.animated};
+                this.memory.record({id:'meme:'+randomUUID(),conversation:last.group,actor:'DeepSeekFish',role:'assistant',text:'[发送表情包] '+item.description,at:Date.now(),source:'qq-meme-sent'});
+              }else if(call.function.name==='list_images'){
                 if(!this.imageClient||Object.keys(args).some(k=>!['source','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
                 result=await this.imageClient.list(last,args.source??'all',args.offset??0,this.controller.signal);
               }else if(call.function.name==='view_images'){

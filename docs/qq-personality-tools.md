@@ -19,6 +19,7 @@ QQ 把双方聊天作为真实 user/assistant 消息送入模型，记忆、人�
 - list_images：浏览设定图、当前对话近两天看到的 QQ 头像/空间原图、这段 QQ 对话生成过的图片。返回来源、图片 ID 和分页位置，不读取其他会话的私人图片、不触发生图。头像和空间配图保持不同来源。
 - view_images：查看选中的真实图片，图片 ID 与来源紧挨每张图片交给视觉模型；不把文字说明当作看过原图。
 - generate_image：模型自行设计画面，并用 referenceIds 自选最多三张参考原图交给原有 Codex 内置生图。原图实际复制到本次独立任务目录，通过 app-server localImage 输入传入；原生 imageGeneration.inputImages 必须包含选中图片的路径与摘要才认定成功。成功后把 PNG 发进当前对话，实际参考 ID 回传给模型。普通对话、历史和工具结果不能代替当前请求授权。
+- remember_images / find_memes / send_meme：读取 QQ 收到的静图与动图抽帧，记录内容并自动收藏模型判定的表情包，按聊天语境选择发送原图。详见 [图片理解与表情收藏](qq-media.md)。
 
 ## 参考图使用指引
 
@@ -26,7 +27,7 @@ QQ 把双方聊天作为真实 user/assistant 消息送入模型，记忆、人�
 
 鲸酱本人原设定图 ID 恒为 character，优先使用 runtime/character/whalechan-reference.png，缺省用仓库 assets/character/whalechan-reference.png。可将其他 PNG/JPEG/GIF/WebP 放入 assets/character/（随源码迁移）或 runtime/character/（随私有状态迁移），会出现在设定图库。浏览或查看本身不扣生图次数。
 
-可以在 QQ 自然地要求“看看你有哪些参考图”“用你自己的设定图让 GPT小姐画张你趴在服务器上摸鱼的图”，或先看空间再要求结合某张已看到的配图画图。由模型浏览并选择参考，不要求用户填写路径或 ID。图片工具不会把 QQ 收到但尚未解析的聊天附件或互联网任意图片假装成已经可用的参考。
+可以在 QQ 自然地要求“看看你有哪些参考图”“用你自己的设定图让 GPT小姐画张你趴在服务器上摸鱼的图”，或先看空间再要求结合某张已看到的配图画图。由模型浏览并选择参考，不要求用户填写路径或 ID。QQ 收图理解和表情收藏使用独立素材 ID；目前尚未并入 GPT 生图参考图库，不把任意互联网图片假装成已有参考。
 
 图片列表/预览与生图均经现有私有 broker；模型只见 ID，不能传入任意文件路径。QQ 不获得 Codex 凭据。API 依据当前联系人和会话重新解析 ID，复制的参考文件在验收后清除，发布产物仍只有新生成的一张 PNG。参考 ID、是否附上本人设定图、原生实际输入图片记录保存在原有私有日志，不记录 base64 或凭据。接口依据 [OpenAI Docs 的 app-server Turns](https://learn.chatgpt.com/docs/app-server#turns) 使用 localImage 列表。
 

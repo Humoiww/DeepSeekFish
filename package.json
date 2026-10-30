@@ -12,7 +12,8 @@
   "dependencies": {
     "@tencent-connect/qqbot-nodejs": "1.0.5",
     "@tencent-connect/qqbot-connector": "1.2.0",
-    "@openai/codex": "0.164.0"
+    "@openai/codex": "0.164.0",
+    "sharp": "0.35.5"
   },
   "devDependencies": { "typescript": "6.0.3", "@types/node": "24.10.1" }
 }

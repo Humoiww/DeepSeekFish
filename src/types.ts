@@ -1,6 +1,8 @@
 export interface Message {
   id: string; group: string; user: string; text: string; at: number;
   mentioned: boolean; bot?: boolean; event: 'mention' | 'ordinary';
+  // Transport-only download handles; never archive URLs or expose them to models.
+  images?: {url?:string;file?:string;stickerHint:boolean}[];
 }
 export type Reason = 'mention' | 'name' | 'auto' | 'interest' | 'opportunity' | 'random';
 export interface Usage { input: number; output: number }
@@ -18,6 +20,7 @@ export interface Transport {
   status: string;
   send(message: Message, text: string): Promise<void>;
   file(message: Message, path: string): Promise<void>;
+  meme?(message:Message,original:Buffer):Promise<void>;
   stop(): void;
 }
 export class FishError extends Error {
