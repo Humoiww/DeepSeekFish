@@ -6,6 +6,22 @@ import { fixture } from './helpers.js';
 import { Store } from '../src/storage/db.js';
 import { Ledger, dayKey } from '../src/budget/ledger.js';
 import { MockModel, BudgetedModel } from '../src/agent/model.js';
+import { qqResources } from '../src/qq/resources.js';
+test('QQ private chats use the global daily allowance while groups, request limits and actual usage remain enforced',async()=>{
+  const f=fixture({dailyTokens:80000,groupDailyTokens:30000,maxOutputTokens:256,userDailyRequests:30});
+  try{
+    const group='private:20002';f.ledger.add('tokens',24000);f.ledger.add('tokens',24000,'g:'+group);
+    const provider=new MockModel(),model=new BudgetedModel(provider,f.ledger,f.cfg);
+    // Synthetic limits: crossing 30k works privately, while 80k remains the ceiling.
+    const lease=f.ledger.reserve('model',group,'20002',8000,256);f.ledger.settle(lease,{input:500,output:50});
+    assert.equal(f.ledger.value('tokens'),24550);
+    const resources=qqResources(f.cfg(),f.ledger,group,'20002');assert.equal(resources.energy.daily,80000);assert.equal(resources.energy.conversationDaily,80000);assert.equal(resources.energy.conversationRemaining,55450);
+    f.ledger.add('tokens',29000,'g:g');assert.throws(()=>f.ledger.reserve('model','g','20002',1001,0),/TOKEN_BUDGET_EXHAUSTED/);
+    f.ledger.add('tokens',54000);await assert.rejects(model.call(group,'20002',[{role:'user',content:'hello'}]),/TOKEN_BUDGET_EXHAUSTED/);assert.equal(provider.calls,0);
+    const denial=f.store.db.prepare("SELECT detail FROM audit WHERE kind='budget-denied' ORDER BY id DESC LIMIT 1").get() as any;
+    assert.equal(JSON.parse(denial.detail).reason,'daily');assert.ok(JSON.parse(denial.detail).inputReservation>0);
+  }finally{f.cleanup();}
+});
 test('global/group/user budget checked BEFORE provider; actual usage settles and survives reopen',async()=>{
   const f=fixture({dailyTokens:20000,groupDailyTokens:15000,userDailyRequests:1});
   try{

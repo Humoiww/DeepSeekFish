@@ -89,8 +89,8 @@ test('private image broker shares quotas, requires a current image request and d
     await assert.rejects(client.status({...m,group:'private:30003',user:'30003'}),/TARGET_DENIED/);
     const status=await client.status(m);assert.equal(status.images.used,1);assert.equal(status.images.remaining,19);assert.equal(status.gpt.remainingImages,null);
     assert.equal(f.ledger.value('codex'),1);assert.equal(f.ledger.value('image'),1);
-    for(const text of ['想要张图','我想要张图，随便画','来随便画张图'])assert.equal(requestsImage(text),true);
-    for(const text of ['不要画图','还有多少张图','解释想要张图这句话'])assert.equal(requestsImage(text),false);
+    for(const text of ['想要张图','我想要张图，随便画','来随便画张图','今天可以，能画张么？','你现在能画张吗？'])assert.equal(requestsImage(text),true);
+    for(const text of ['不要画图','还有多少张图','解释想要张图这句话','解释“今天可以，能画张么？”这句话'])assert.equal(requestsImage(text),false);
   }finally{await broker.close();await quota.close();f.cleanup();}
 });
 test('DeepSeek accepts native tool-call replies with null content and bounded tool definitions',async()=>{

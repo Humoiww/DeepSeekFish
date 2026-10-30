@@ -1,6 +1,6 @@
 import type { ChatMessage, Model, ModelResult,CompletionOptions } from '../types.js';
 import { FishError } from '../types.js';
-import { Ledger } from '../budget/ledger.js';
+import { Ledger,conversationTokenLimit } from '../budget/ledger.js';
 import type { Config } from '../config.js';
 
 export function messageText(message:ChatMessage):string{return typeof message.content==='string'?message.content:message.content.filter(p=>p.type==='text').map(p=>p.text).join('\n');}
@@ -68,7 +68,16 @@ export class BudgetedModel {
     // Byte-level BPE cannot emit more normal tokens than UTF-8 bytes. Include a
     // deliberately large allowance for fixed chat framing; no tools/hidden context.
     const bound=inputBound(messages)+Buffer.byteLength(JSON.stringify(options.tools??[]));
-    const id=this.ledger.reserve('model',group,user,bound,max);
+    let id:string;
+    try{id=this.ledger.reserve('model',group,user,bound,max);}
+    catch(e){
+      if(e instanceof FishError&&e.code==='TOKEN_BUDGET_EXHAUSTED'){
+        const cfg=this.cfg(),dailyUsed=this.ledger.value('tokens'),conversationUsed=this.ledger.value('tokens','g:'+group),requestsUsed=this.ledger.value('requests','u:'+user),conversationLimit=conversationTokenLimit(cfg,group);
+        const reason=max>cfg.maxOutputTokens?'output':dailyUsed+bound+max>cfg.dailyTokens?'daily':conversationUsed+bound+max>conversationLimit?'conversation':'requests';
+        this.ledger.store.audit('budget-denied',group,JSON.stringify({reason,inputReservation:bound,outputReservation:max,dailyUsed,dailyLimit:cfg.dailyTokens,conversationUsed,conversationLimit,requestsUsed,requestsLimit:cfg.userDailyRequests}));
+      }
+      throw e;
+    }
     try { const r=await this.provider.complete(messages,max,options);this.ledger.settle(id,r.usage);this.ledger.store.setMeta('modelStatus','last call succeeded');return r; }
     catch(e) { this.ledger.settle(id);this.ledger.error();this.ledger.store.setMeta('modelStatus','last call failed');throw e; }
   }

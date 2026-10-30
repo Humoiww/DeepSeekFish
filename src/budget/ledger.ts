@@ -4,6 +4,9 @@ import { Store } from '../storage/db.js';
 import { FishError, type Usage } from '../types.js';
 
 export const dayKey = (at = Date.now()): string => new Date(at + 8 * 3600000).toISOString().slice(0, 10);
+/** A direct QQ conversation shares the global daily budget; the per-group cap
+ * belongs to groups, not an extra hidden allowance for the owner's private chat. */
+export const conversationTokenLimit=(cfg:Config,conversation:string):number=>conversation.startsWith('private:')?cfg.dailyTokens:cfg.groupDailyTokens;
 type Kind = 'model' | 'search' | 'codex' | 'image' | 'interjection';
 interface Reservation { id:string; day:string; grp:string; usr:string; kind:Kind; input:number; output:number; ms:number; state:string }
 /** Every allowance is charged before dispatch under one SQLite write transaction. */
@@ -42,7 +45,7 @@ export class Ledger {
     const total=input+output;
     if (kind === 'model') {
       if (output > cfg.maxOutputTokens || this.value('tokens','*',day)+total > cfg.dailyTokens ||
-        this.value('tokens','g:'+group,day)+total > cfg.groupDailyTokens ||
+        this.value('tokens','g:'+group,day)+total > conversationTokenLimit(cfg,group) ||
         this.value('requests','u:'+user,day) >= cfg.userDailyRequests) throw new FishError('TOKEN_BUDGET_EXHAUSTED');
       for (const scope of ['*','g:'+group]) this.add('tokens',total,scope,day);
       this.add('requests',1,'u:'+user,day);
