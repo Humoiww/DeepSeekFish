@@ -11,17 +11,17 @@ import type { SearchService } from '../search/provider.js';
 import { makeDir, safePath } from '../paths.js';
 import { verifyPng, type ImageProvider } from '../image/provider.js';
 import { echoKey } from '../qq/adapter.js';
-import { characterPrompt,personalityPrompt } from '../character.js';
+import { characterPrompt,personalityPrompt,CHARACTER_APPEARANCE } from '../character.js';
 import { MemoryJournal,dayStart } from '../memory/journal.js';
 import { PersonMemory,requestsQzone,requestsAvatar } from '../memory/people.js';
 import { qqResources } from '../qq/resources.js';
-import { qqChatTools } from '../qq/chat-tools.js';
+import { qqChatTools,imageLibraryTools,requestsReferences } from '../qq/chat-tools.js';
 import { QQImageClient } from '../qq/image-client.js';
 import { requestsImage,validateImagePlan } from '../web/images.js';
 import { writePrivate } from '../paths.js';
 import { QzoneMemory,qzoneSelection } from '../memory/qzone.js';
 
-const SYSTEM=personalityPrompt()+'\n近两天的记忆在 memory，人物资料在 person；头像用 get_person，QQ空间说说用 get_qzone。精力值是 energy 中的 token，实时限额在 get_quota；画图协作者叫 GPT小姐，找她画图用 generate_image。';
+const SYSTEM=personalityPrompt()+'\n近两天的记忆在 memory，人物资料在 person；头像用 get_person，QQ空间说说用 get_qzone。精力值是 energy 中的 token，实时限额在 get_quota。画图协作者叫 GPT小姐；list_images 浏览参考图库，view_images 查看原图，generate_image 的 referenceIds 会把你选的原图实际传给她。你的外观和原设定图 ID 在 character。';
 function personContext(person:ReturnType<PersonMemory['remembered']>){
   return person?{profile:person.profile}:null;
 }
@@ -83,23 +83,24 @@ export class Bot {
       const memory=this.memory.recall(last.group,last.text,history),person=this.people?.remembered(last.user,last.group,memory);
       if(this.people&&!requestsQzone(last.text)&&!requestsAvatar(last.text))void this.people.refresh(last.user,last.group).catch(e=>this.store.audit('profile-error',last.group,codeOf(e)));
       const savedQzone=this.qzone?.remembered(last.user,last.group,memory);
-      const payload=JSON.stringify({memory:{events:memory.events,needsReference:memory.needsReference},person:personContext(person),qzone:savedQzone?this.qzone!.context(savedQzone):null,...qqResources(c,this.ledger,last.group,last.user)});
+      const payload=JSON.stringify({memory:{events:memory.events,needsReference:memory.needsReference},person:personContext(person),qzone:savedQzone?this.qzone!.context(savedQzone):null,character:{appearance:CHARACTER_APPEARANCE,referenceId:'character'},...qqResources(c,this.ledger,last.group,last.user)});
       const dialogue:ChatMessage[]=history.map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:m.user==='DeepSeekFish'||last.group.startsWith('private:')?m.text:'['+m.user+'] '+m.text}));
       if(history.at(-1)?.id!==last.id)dialogue.push({role:'user',content:last.text});
       const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
-      const tools=qqChatTools(!!this.people&&!requestsQzone(last.text),!!this.imageClient&&c.images&&requestsImage(last.text),!!this.qzone);
+      const tools=[...qqChatTools(!!this.people&&!requestsQzone(last.text),!!this.imageClient&&c.images&&requestsImage(last.text),!!this.qzone),...(this.imageClient?imageLibraryTools():[])];
       const requestedTool=this.qzone&&requestsQzone(last.text)?'get_qzone':this.people&&requestsAvatar(last.text)?'get_person':
-        this.imageClient&&c.images&&requestsImage(last.text)?'generate_image':
+        this.imageClient&&(requestsReferences(last.text)||(c.images&&requestsImage(last.text)))?'list_images':
         /累不累|累了吗|累吗|精力|额度|限额|还能.{0,12}(?:图|张)|剩.{0,12}(?:图|张)|token/i.test(last.text)?'get_quota':undefined;
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,qzoneRead=false;
+      const maxRounds=this.imageClient&&requestsImage(last.text)?6:4,maxCalls=maxRounds;
       const tracePath='runtime/logs/qq/'+randomUUID()+'.json';makeDir(this.root,'runtime/logs/qq');
       try{
-        for(let round=0;round<4;round++){
-          const completion=await this.model.complete(last.group,last.user,messages,{tools,toolChoice:round===0?requestedTool:undefined,final:round===3||calls>=4,signal:this.controller.signal});
+        for(let round=0;round<maxRounds;round++){
+          const completion=await this.model.complete(last.group,last.user,messages,{tools,toolChoice:round===0?requestedTool:undefined,final:round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});
           trace.push({round,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage});
           if(round===0&&requestedTool&&!completion.tool_calls?.some(call=>call.function.name===requestedTool))throw new FishError('QQ_TOOL_REQUIRED');
           if(!completion.tool_calls?.length){if(!completion.text.trim())throw new FishError('DEEPSEEK_EMPTY_RESPONSE');await this.send(last,completion.text);break;}
-          if(round===3||calls+completion.tool_calls.length>4)throw new FishError('QQ_TOOL_LIMIT');
+          if(round===maxRounds-1||calls+completion.tool_calls.length>maxCalls)throw new FishError('QQ_TOOL_LIMIT');
           messages.push({role:'assistant',content:completion.text,tool_calls:completion.tool_calls});
           let said=false;const roundMedia:ChatPart[]=[];
           for(const call of completion.tool_calls){
@@ -109,7 +110,15 @@ export class Bot {
               if(!tools.some(t=>t.function.name===call.function.name))throw new FishError('TOOL_NOT_ALLOWED');
               const args=JSON.parse(call.function.arguments);
               if(!args||typeof args!=='object'||Array.isArray(args))throw new FishError('INVALID_TOOL_ARGS');
-              if(call.function.name==='get_quota'){
+              if(call.function.name==='list_images'){
+                if(!this.imageClient||Object.keys(args).some(k=>!['source','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
+                result=await this.imageClient.list(last,args.source??'all',args.offset??0,this.controller.signal);
+              }else if(call.function.name==='view_images'){
+                if(!this.imageClient||Object.keys(args).some(k=>k!=='imageIds')||!Array.isArray(args.imageIds)||!args.imageIds.length)throw new FishError('INVALID_TOOL_ARGS');
+                const viewed=await this.imageClient.view(last,args.imageIds,this.controller.signal);
+                result={images:viewed.images.map(({data,...image}:any)=>image)};
+                media=viewed.images.flatMap((image:any)=>[{type:'text',text:JSON.stringify({imageId:image.id,source:image.label})},{type:'image_url',image_url:{url:'data:'+image.mime+';base64,'+image.data,detail:'high'}}]);
+              }else if(call.function.name==='get_quota'){
                 if(Object.keys(args).length)throw new FishError('INVALID_TOOL_ARGS');
                 result=this.imageClient?await this.imageClient.status(last,this.controller.signal):qqResources(this.cfg(),this.ledger,last.group,last.user);
               }else{
@@ -132,13 +141,13 @@ export class Bot {
                   result=this.qzone.context(snapshot);media=this.qzone.images(snapshot);
                 }else if(call.function.name==='generate_image'){
                   if(!this.imageClient||!this.cfg().images||!requestsImage(last.text)||imageRequested)throw new FishError('QQ_IMAGE_REQUEST_REQUIRED');
-                  const {remark:_remark,...values}=args,plan=validateImagePlan(values);imageRequested=true;
+                  const {remark:_remark,referenceIds=[],...values}=args,plan=validateImagePlan(values);imageRequested=true;
                   if(!said){await this.send(last,remark);said=true;}
-                  const image=await this.imageClient.generate(last,plan,this.cfg().codexTimeoutMs,this.controller.signal);
+                  const image=await this.imageClient.generate(last,plan,this.cfg().codexTimeoutMs,this.controller.signal,referenceIds);
                   const file=this.imageClient.verifiedImage(image.imageId,image.manifest,this.cfg().maxArtifactBytes);
                   this.controller.signal.throwIfAborted();
                   if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
-                  await this.transport.file(last,file);result={created:true,mock:image.mock,resources:image.resources};
+                  await this.transport.file(last,file);result={created:true,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
                 }
               }
             }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};}
@@ -146,7 +155,7 @@ export class Bot {
             messages.push({role:'tool',tool_call_id:call.id,content:JSON.stringify(result)});
             roundMedia.push(...media);
           }
-          if(roundMedia.length)messages.push({role:'user',content:[{type:'text',text:'工具返回的图片，来源及说说ID标在各图前'},...roundMedia]});
+          if(roundMedia.length)messages.push({role:'user',content:[{type:'text',text:'工具返回的原图，图片ID、来源或说说ID标在各图前'},...roundMedia]});
         }
       }finally{writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,trace},null,2)));}
       this.gate.record(last.group);this.store.audit('speech',last.group,reason);

@@ -85,9 +85,9 @@ test('self portraits stage the fixed character PNG, ordinary images do not read 
     assert.throws(()=>verifyCharacterReference([{inputImages:[{...prepared.reference!,sha256:'wrong'}]}],prepared.reference!),/CHARACTER_REFERENCE_NOT_USED/);
   }finally{f.cleanup();}
 });
-test('shared character prompt keeps the requested appearance and roleplay within existing tool permissions',()=>{
+test('shared character prompt preserves the current appearance and reference guidance',()=>{
   const prompt=characterPrompt();
-  for(const part of ['鲸酱','白米饭','鲸鳍耳','女仆裙','鲸尾','不改变工具权限','不能声称已经生成'])assert.ok(prompt.includes(part));
+  for(const part of ['鲸酱','Q版','鲸鳍耳','女仆裙','鲸尾','设定图','不能声称已经生成'])assert.ok(prompt.includes(part));
 });
 test('bundled original reference works and is staged without private runtime data',()=>{
   const f=fixture();try{

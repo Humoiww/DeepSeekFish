@@ -52,6 +52,30 @@ test('energy and image allowance come from live counters; the model composes the
   try{await f.bot.receive(message('你累不累，还能画多少张？',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(f.transport.sent[0].text,'还活蹦乱跳呢，今天还能找 GPT小姐画 17 张。');}
   finally{await f.bot.stop();f.cleanup();}
 });
+test('QQ browses originals and passes model-selected image IDs through to GPT',async()=>{
+  let round=0,f:ReturnType<typeof setup>;
+  const client={
+    list:async()=>({canAttachOriginals:true,images:[{id:'character',source:'character',label:'鲸酱原设定图'}]}),
+    view:async(_m:any,ids:string[])=>{assert.deepEqual(ids,['character']);return {images:[{id:'character',label:'鲸酱原设定图',mime:'image/png',data:'AA=='}]};},
+    generate:async(_m:any,_plan:any,_timeout:any,_signal:any,ids:string[])=>{assert.deepEqual(ids,['character']);return {imageId:'fixture',manifest:{},mock:true,references:[{id:'character'}]};},
+    verifiedImage:()=>f.root+'/runtime/outputs/mock.png'
+  } as unknown as QQImageClient;
+  const provider:Model={kind:'fixture',async complete(messages,_max,options){
+    round++;
+    if(round===1){assert.equal(options?.toolChoice,'list_images');return {text:'',tool_calls:[call('list_images',{source:'character'})],usage:{input:100,output:20}};}
+    if(round===2)return {text:'',tool_calls:[call('view_images',{imageIds:['character']})],usage:{input:100,output:20}};
+    if(round===3){
+      assert.ok(Array.isArray(messages.at(-1)!.content));assert.ok((messages.at(-1)!.content as any[]).some(p=>p.type==='image_url'));
+      return {text:'把这张设定图一起丢给她。',tool_calls:[call('generate_image',{remark:'把这张设定图一起丢给她。',referenceIds:['character'],...plan})],usage:{input:100,output:80}};
+    }
+    const result=JSON.parse(String(messages.at(-1)!.content));assert.equal(result.references[0].id,'character');
+    return {text:'这次她照着原图画的。',usage:{input:100,output:20}};
+  }};
+  f=setup(provider,undefined,client);
+  await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
+  try{await f.bot.receive(message('把你自己参考图丢给gpt',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(round,4);assert.equal(f.transport.files.length,1);assert.equal(f.transport.sent.at(-1)?.text,'这次她照着原图画的。');}
+  finally{await f.bot.stop();f.cleanup();}
+});
 test('private image broker shares quotas, requires a current image request and deduplicates message IDs',async()=>{
   const f=fixture({qqTransport:'onebot',privateUsers:['20002'],admins:['20002'],images:true});
   fs.mkdirSync(f.root+'/config');

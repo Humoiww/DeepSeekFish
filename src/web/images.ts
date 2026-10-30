@@ -17,6 +17,8 @@ import { CodexRateLimitError } from '../codex/rate-limit.js';
 // Only the current human message can select this flow. Tool results/history cannot.
 export function requestsImage(text:string):boolean{
   if(/(?:不要|别|无需|不用|不需要).{0,12}(?:画|生成|生图|自拍|自画像|头像|立绘)|(?:怎么|如何|教程|提示词|prompt|代码|接口|流程|解释|意思|这句话|引用)/i.test(text))return false;
+  if(/(?:不要|别|无需|不用|不需要|不能|无法|没法).{0,35}(?:参考图|设定图|原图|配图)/.test(text))return false;
+  if(/(?:^|[，,。!！])\s*(?:(?:你|就|那|不妨|请|麻烦|帮我|给我|可以|能不能)\s*)*(?:把|用|拿|带上|附上).{0,35}(?:参考图|设定图|原图|配图).{0,20}(?:给|交给|丢给|传给|发给).{0,6}gpt/i.test(text))return true;
   if(/^(?:我)?想要(?:一)?张(?:图|图片|画)(?:[吧呀哦，,。.!！?？\s]|$)/.test(text.trim()))return true;
   if(/^(?:来|给我)?随便画(?:一)?张(?:图|画)/.test(text.trim()))return true;
   if(/(?:^|[，,。:：])\s*(?:小鱼|鲸酱)?(?:请|麻烦)?(?:给(?:我)?|来|拍|发|要|想看).{0,12}(?:自拍|自画像|头像|立绘)(?:[吧呀哦图，,。.!！?？\s]|$)/.test(text.trim()))return true;

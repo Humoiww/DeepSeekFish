@@ -8,6 +8,7 @@ import { initialize,probeIsolation } from './probe.js';
 import { verifyPng } from '../image/provider.js';
 import { rateLimitFailure } from './rate-limit.js';
 import { CodexDiagnostics } from './diagnostics.js';
+import { readReference } from '../image/references.js';
 export { childEnvironment,codexEntry,permissionArgs,PERMISSION_PROFILE } from './platform.js';
 
 export interface TaskRunner { run(cwd:string,brief:string,signal:AbortSignal):Promise<string> }
@@ -19,18 +20,25 @@ export class AppServerRunner implements TaskRunner {
     if(process.env.FISH_CODEX_IMAGE_ONLY==='1')throw new FishError('CODEX_IMAGE_ONLY');
     return (await this.execute(cwd,brief,signal,false)).text;
   }
-  async generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string):Promise<CodexRunResult>{
-    return this.execute(cwd,prompt,signal,true,referencePath);
+  async generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string,additionalReferences:string[]=[]):Promise<CodexRunResult>{
+    return this.execute(cwd,prompt,signal,true,referencePath,additionalReferences);
   }
-  private async execute(cwd:string,brief:string,signal:AbortSignal,imageGeneration:boolean,referencePath?:string):Promise<CodexRunResult>{
+  private async execute(cwd:string,brief:string,signal:AbortSignal,imageGeneration:boolean,referencePath?:string,additionalReferences:string[]=[]):Promise<CodexRunResult>{
     if(!['linux','win32'].includes(process.platform))throw new FishError('CODEX_PLATFORM_UNSUPPORTED');
     cwd=taskDirectory(this.root,cwd);
     const diagnostic=new CodexDiagnostics(this.root,path.basename(cwd),brief,imageGeneration,referencePath);
+    diagnostic.record.request.referencePaths=[...(referencePath?[referencePath]:[]),...additionalReferences];
     let processRpc:RpcProcess|undefined,final='',fallback='',failureCode:string|undefined;
     try{
     if(referencePath){
       if(referencePath!==safePath(cwd,'character-reference.png'))throw new FishError('CODEX_IMAGE_REFERENCE_INVALID');
       verifyPng(cwd,'character-reference.png',10485760);
+    }
+    if(additionalReferences.length>3)throw new FishError('CODEX_IMAGE_REFERENCE_INVALID');
+    for(const file of additionalReferences){
+      const relative=path.relative(cwd,file);
+      if(!/^selected-reference-[1-3]\.(?:png|jpg|gif|webp)$/.test(relative)||file!==safePath(cwd,relative))throw new FishError('CODEX_IMAGE_REFERENCE_INVALID');
+      readReference(cwd,relative);
     }
     if(!fs.existsSync(safePath(this.root,'runtime/codex-home/auth.json')))throw new FishError('CODEX_PROJECT_LOGIN_REQUIRED');
     const features=executionFeatures(imageGeneration),images:CodexImageItem[]=[],seenImages=new Set<string>();
@@ -82,12 +90,12 @@ export class AppServerRunner implements TaskRunner {
       });
       // Observe a rejection even if turn/start itself fails first.
       void done.catch(()=>{});
-      diagnostic.event('turn-requested',{referenceAttached:!!referencePath});
+      diagnostic.event('turn-requested',{referenceAttached:!!referencePath||!!additionalReferences.length,referenceCount:Number(!!referencePath)+additionalReferences.length});
       await rpc.call('turn/start',{threadId:thread.id,cwd,approvalPolicy:'never',permissions:PERMISSION_PROFILE,
         input:[{type:'text',text:imageGeneration?
           'Use your built-in image generation tool to generate exactly one PNG for this prompt. Do not call any separate Image API or create a replacement with code. No retries.\n'+brief:
           '只处理以下有限任务。仅在当前目录创建产物；不访问私人文件、凭据、网络或其他项目。\n'+brief},
-          ...(referencePath?[{type:'localImage',path:referencePath}]:[])]});
+          ...[...(referencePath?[referencePath]:[]),...additionalReferences].map(path=>({type:'localImage',path}))]});
       return await done;
     }catch(e){failureCode=codeOf(e);throw e;}
     finally{try{await processRpc?.stop();}catch(e){failureCode=codeOf(e);throw e;}finally{diagnostic.finish(final||fallback,failureCode);}}

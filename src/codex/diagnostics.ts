@@ -4,7 +4,7 @@ import { redact } from '../storage/db.js';
 
 export interface CodexRecord {
   id:string;startedAt:number;finishedAt?:number;outcome:string;
-  request:{prompt:string;imageGeneration:boolean;referencePath?:string};
+  request:{prompt:string;imageGeneration:boolean;referencePath?:string;referencePaths?:string[]};
   threadId?:string;turnId?:string;model?:string;
   events:{at:number;method:string;detail:unknown}[];
   messages:{id:string;phase?:string;text:string}[];

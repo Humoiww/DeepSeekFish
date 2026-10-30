@@ -12,6 +12,7 @@ import { verifyPng,MockImageProvider } from './provider.js';
 import { prepareCharacterPortrait,verifyCharacterReference,type CharacterReference } from './character-reference.js';
 import { CodexRateLimitError } from '../codex/rate-limit.js';
 import { readCodexRecord,saveCodexRecord,type CodexRecord } from '../codex/diagnostics.js';
+import { stageReferences,verifySelectedReferences,type SelectedReference } from './references.js';
 
 /** Accept only a native imageGeneration completion, never an agent's claimed path.
  * CODEX_HOME/generated_images is a trusted harness output, not model filesystem access. */
@@ -54,8 +55,8 @@ export function publishCodexImage(root:string,id:string,maxBytes:number):Artifac
   // whole file set before publishing. image.png consumes the only file allowance.
   return collectArtifacts(root,id,1,maxBytes);
 }
-export interface ImageRunner {generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string):Promise<CodexRunResult>}
-export interface ImageJobOptions {cfg:Config;ledger:Ledger;group:string;signal:AbortSignal;mock?:boolean;character?:boolean;runner?:ImageRunner}
+export interface ImageRunner {generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string,additionalReferences?:string[]):Promise<CodexRunResult>}
+export interface ImageJobOptions {cfg:Config;ledger:Ledger;group:string;signal:AbortSignal;mock?:boolean;character?:boolean;references?:SelectedReference[];runner?:ImageRunner}
 
 /** Cheap preflight, repeated atomically at dispatch. Does not enable any global switch. */
 export function checkImageCapacity(root:string,cfg:Config,ledger:Ledger,mock=false):void{
@@ -74,23 +75,28 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
   const {cfg,ledger,group,mock=false}=options,id=randomUUID(),started=Date.now();
   const report:ImageSmokeReport={ok:false,id,source:mock?'mock':'codex-app-server',elapsedMs:0};
   let reservation:{codex:string;image:string}|undefined,stopUnconfirmed=false,reference:CharacterReference|undefined;
+  let selected:CharacterReference[]=[];
   const signal=AbortSignal.any([options.signal,AbortSignal.timeout(cfg.codexTimeoutMs)]);
   try{
     signal.throwIfAborted();checkImageCapacity(root,cfg,ledger,mock);
     const cwd=makeDir(root,'runtime/workspace/'+id);
     const prepared=prepareCharacterPortrait(root,cwd,prompt,options.character);reference=prepared.reference;
+    selected=stageReferences(root,cwd,options.references??[]);
+    const selectedPrompt=selected.length?'\n随附参考原图：'+selected.map((ref,i)=>path.basename(ref.path)+'（'+options.references![i].label+'）').join('；')+'。必须将这些文件全部传入内置生图工具的 referenced_image_paths，用作本次画面的视觉参考，不直接返回原图。':'';
     reservation=ledger.reserveImageJob(group,'local-human',cfg.codexTimeoutMs);
     if(mock){
       await new MockImageProvider().generate('offline fixture only',cwd);
       fs.renameSync(safePath(cwd,'mock.png'),safePath(cwd,'image.png'));
     }else{
-      const result=await (options.runner??new AppServerRunner(root)).generateImage(cwd,prepared.prompt,signal,reference?.path);
+      const result=await (options.runner??new AppServerRunner(root)).generateImage(cwd,prepared.prompt+selectedPrompt,signal,reference?.path,selected.map(i=>i.path));
       signal.throwIfAborted();report.nativeImageCompletions=result.images.length;
       captureCodexImage(root,cwd,result.images,cfg.maxArtifactBytes);
       if(reference)verifyCharacterReference(result.images,reference);
+      verifySelectedReferences(result.images,selected);
     }
     signal.throwIfAborted();
     if(reference){fs.rmSync(reference.path,{force:true});reference=undefined;}
+    for(const ref of selected)fs.rmSync(ref.path,{force:true});selected=[];
     report.manifest=publishCodexImage(root,id,cfg.maxArtifactBytes);
     report.outputDir=safePath(root,'runtime/outputs/'+id);report.ok=true;
   }catch(e){
@@ -100,6 +106,7 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
     if(reservation)ledger.error();
   }finally{
     if(reference&&!stopUnconfirmed)fs.rmSync(reference.path,{force:true});
+    if(!stopUnconfirmed)for(const ref of selected)fs.rmSync(ref.path,{force:true});
     if(reservation){
       if(!stopUnconfirmed)ledger.settle(reservation.codex,undefined,Date.now()-started);
       ledger.settle(reservation.image);
