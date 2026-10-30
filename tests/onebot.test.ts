@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
-import { OneBotTransport,normalizeOneBot } from '../src/qq/onebot.js';
+import { OneBotTransport,OneBotActionError,normalizeOneBot } from '../src/qq/onebot.js';
 import { validateConfig,deepseekCredential } from '../src/config.js';
 import { fixture } from './helpers.js';
 import { createApp } from '../src/app.js';
@@ -80,14 +80,41 @@ test('image upload acknowledgement can arrive after the ordinary action deadline
     const r=JSON.parse(raw.toString()),reply=(data:unknown)=>socket.send(JSON.stringify({echo:r.echo,status:'ok',retcode:0,data}));
     if(r.action==='get_login_info')reply({user_id:10001});
     else if(r.action==='get_group_list')reply([]);
-    else {assert.equal(r.params.message[0].type,'image');acknowledge=()=>reply({message_id:123});received();}
+    else {assert.equal(r.params.message[0].type,'image');assert.equal(r.params.timeout,60000);acknowledge=()=>reply({message_id:123});received();}
   }));
   const transport=new OneBotTransport(f.root,`ws://127.0.0.1:${server.address().port}`,'fixture-token',f.store,async()=>{},()=>true);
   try{
     await transport.inspect();t.mock.timers.enable({apis:['setTimeout']});
     const sent=transport.file({id:'1',group:'private:20002',user:'20002',text:'画张图',at:Date.now(),mentioned:true,event:'mention'},(out as {path:string}).path);
     let failed=false;void sent.catch(()=>{failed=true;});await uploading;
-    t.mock.timers.tick(25000);await Promise.resolve();assert.equal(failed,false);
+    t.mock.timers.tick(65000);await Promise.resolve();assert.equal(failed,false);
     acknowledge();await sent;
   }finally{t.mock.timers.reset();transport.stop();for(const client of server.clients)client.terminate();await new Promise<void>(resolve=>server.close(()=>resolve()));f.cleanup();}
+});
+test('native send timeout stays unconfirmed, real rejection stays failed, and raw errors never enter logs',async()=>{
+  const {WebSocketServer}=createRequire(import.meta.url)('ws');
+  const server=new WebSocketServer({host:'127.0.0.1',port:0});await once(server,'listening');
+  const f=fixture(),out=await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
+  assert.equal(out.status,'ok');let sends=0;
+  server.on('connection',(socket:any)=>socket.on('message',(raw:Buffer)=>{
+    const r=JSON.parse(raw.toString());
+    if(r.action==='get_login_info'||r.action==='get_group_list')socket.send(JSON.stringify({echo:r.echo,status:'ok',retcode:0,data:r.action==='get_login_info'?{user_id:10001}:[]}));
+    else {
+      sends++;
+      const response=sends===1?{status:'failed',retcode:1200,wording:'Timeout: NTEvent serviceAndMethod:NodeIKernelMsgService/sendMsg ListenerName:NodeIKernelMsgListener/onMsgInfoListUpdate EventRet: secret-sentinel'}:
+        sends===2?{status:'failed',retcode:1200,message:'explicit rejection secret-sentinel'}:{status:'ok',retcode:0,data:{}};
+      socket.send(JSON.stringify({echo:r.echo,...response}));
+    }
+  }));
+  const transport=new OneBotTransport(f.root,`ws://127.0.0.1:${server.address().port}`,'fixture-token',f.store,async()=>{},()=>true);
+  const message={id:'1',group:'private:20002',user:'20002',text:'画张图',at:Date.now(),mentioned:true,event:'mention' as const};
+  try{
+    await transport.inspect();
+    await assert.rejects(transport.file(message,(out as {path:string}).path),e=>e instanceof OneBotActionError&&e.code==='ONEBOT_SEND_UNCONFIRMED'&&e.diagnostic.reason==='native_timeout'&&e.diagnostic.retcode===1200);
+    await assert.rejects(transport.file(message,(out as {path:string}).path),e=>e instanceof OneBotActionError&&e.code==='ONEBOT_ACTION_FAILED'&&e.diagnostic.reason==='action_rejected');
+    await assert.rejects(transport.file(message,(out as {path:string}).path),/ONEBOT_SEND_UNCONFIRMED/);
+    assert.equal(sends,3); // No automatic retry of any failed/uncertain send.
+    const audit=JSON.stringify(f.store.db.prepare('SELECT detail FROM audit').all());
+    assert.match(audit,/native_timeout/);assert.match(audit,/action_rejected/);assert.ok(!audit.includes('secret-sentinel'));
+  }finally{transport.stop();for(const client of server.clients)client.terminate();await new Promise<void>(resolve=>server.close(()=>resolve()));f.cleanup();}
 });

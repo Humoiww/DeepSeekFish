@@ -47,7 +47,13 @@ export function onebotCredential(root:string):string{
   return token;
 }
 type Action='get_login_info'|'get_group_list'|'get_status'|'send_group_msg'|'send_private_msg'|'get_stranger_info'|'get_cookies'|'get_image';
-type Pending={resolve:(value:any)=>void;reject:(error:Error)=>void;timer:NodeJS.Timeout};
+type Pending={resolve:(value:any)=>void;reject:(error:Error)=>void;timer:NodeJS.Timeout;action:Action;started:number;conversation:string};
+const IMAGE_SEND_TIMEOUT_MS=60000;
+const IMAGE_RESPONSE_TIMEOUT_MS=75000;
+/** Keep provider details out of chat; only fixed diagnostic fields reach the audit. */
+export class OneBotActionError extends FishError {
+  constructor(public diagnostic:{action:Action;status:string;retcode:number|null;reason:'native_timeout'|'action_rejected';elapsedMs:number}){super(diagnostic.reason==='native_timeout'?'ONEBOT_SEND_UNCONFIRMED':'ONEBOT_ACTION_FAILED');}
+}
 export class OneBotTransport implements Transport {
   status='disconnected';private socket?:WebSocket;private self='';private stopped=false;
   private retry?:NodeJS.Timeout;private handshake?:NodeJS.Timeout;private heartbeat?:NodeJS.Timeout;private lastSeen=0;
@@ -81,8 +87,18 @@ export class OneBotTransport implements Transport {
         if(typeof event?.echo==='string'){
           const pending=this.pending.get(event.echo);if(!pending)return;
           clearTimeout(pending.timer);this.pending.delete(event.echo);
-          if(event.status==='ok'&&event.retcode===0)pending.resolve(event.data);
-          else pending.reject(new FishError('ONEBOT_ACTION_FAILED'));
+          const elapsedMs=Date.now()-pending.started;
+          if(event.status==='ok'&&event.retcode===0){
+            if(pending.action==='send_private_msg'||pending.action==='send_group_msg')this.store.audit('qq-send',pending.conversation,JSON.stringify({action:pending.action,status:'ok',retcode:0,elapsedMs,messageId:id(event.data?.message_id,true)??null}));
+            pending.resolve(event.data);
+          }else{
+            // NapCat can reject its API wait after QQ has accepted the upload.
+            // Never log the raw response: other actions can contain credentials.
+            const diagnostic={action:pending.action,status:['failed','async','ok'].includes(event.status)?event.status:'unknown',retcode:Number.isSafeInteger(event.retcode)?event.retcode:null,
+              reason:(/Timeout: NTEvent[^\n]*NodeIKernelMsgService\/sendMsg/i.test(String(event.message??'')+' '+String(event.wording??''))?'native_timeout':'action_rejected') as 'native_timeout'|'action_rejected',elapsedMs};
+            this.store.audit('qq-action',pending.conversation,JSON.stringify(diagnostic));
+            pending.reject(new OneBotActionError(diagnostic));
+          }
           return;
         }
         if(!this.self)return;
@@ -105,8 +121,9 @@ export class OneBotTransport implements Transport {
     if(this.socket?.readyState!==1)return Promise.reject(new FishError('ONEBOT_NOT_CONNECTED'));
     if(this.pending.size>=32)return Promise.reject(new FishError('ONEBOT_BUSY'));
     const echo=randomUUID();return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{this.pending.delete(echo);reject(new FishError('ONEBOT_ACTION_TIMEOUT'));},timeoutMs);timer.unref();
-      this.pending.set(echo,{resolve,reject,timer});
+      const started=Date.now(),conversation=action==='send_private_msg'?'private:'+params.user_id:action==='send_group_msg'?String(params.group_id):'';
+      const timer=setTimeout(()=>{this.pending.delete(echo);this.store.audit('qq-action',conversation,JSON.stringify({action,reason:'response_timeout',elapsedMs:Date.now()-started}));reject(new FishError('ONEBOT_ACTION_TIMEOUT'));},timeoutMs);timer.unref();
+      this.pending.set(echo,{resolve,reject,timer,action,started,conversation});
       try{this.socket!.send(JSON.stringify({action,params,echo}));}catch{clearTimeout(timer);this.pending.delete(echo);reject(new FishError('ONEBOT_SEND_FAILED'));}
     });
   }
@@ -144,16 +161,20 @@ export class OneBotTransport implements Transport {
     if(!this.allowed(message.group))throw new FishError('ONEBOT_GROUP_NOT_ALLOWED');
     const base=safePath(this.root,'runtime/outputs'),relative=path.relative(base,file).split(path.sep).join('/');
     const png=verifyPng(base,relative,10485760);
-    const target=this.target(message.group);
-    // QQ uploads the image before acknowledging the send; the text/action
-    // timeout is too short for a normal PNG upload on a small VPS.
-    await this.call(target.action,{...target.params,message:[{type:'image',data:{file:'base64://'+fs.readFileSync(png).toString('base64')}}]},60000);
+    await this.sendImage(message,fs.readFileSync(png));
   }
   async meme(message:Message,original:Buffer):Promise<void>{
     if(!this.allowed(message.group))throw new FishError('ONEBOT_GROUP_NOT_ALLOWED');
     if(original.length>10485760)throw new FishError('QQ_MEDIA_TOO_LARGE');imageMime(original);
+    await this.sendImage(message,original,true);
+  }
+  private async sendImage(message:Message,original:Buffer,sticker=false):Promise<void>{
     const target=this.target(message.group);
-    await this.call(target.action,{...target.params,message:[{type:'image',data:{file:'base64://'+original.toString('base64'),sub_type:1}}]},60000);
+    // NapCat's native send wait defaults to ~10s + size/256KBps, independently
+    // of our WebSocket deadline. Override it per image; allow reply overhead.
+    const receipt=await this.call(target.action,{...target.params,timeout:IMAGE_SEND_TIMEOUT_MS,
+      message:[{type:'image',data:{file:'base64://'+original.toString('base64'),...(sticker?{sub_type:1}:{})}}]},IMAGE_RESPONSE_TIMEOUT_MS);
+    if(!id(receipt?.message_id,true))throw new FishError('ONEBOT_SEND_UNCONFIRMED');
   }
   private target(conversation:string):{action:'send_group_msg'|'send_private_msg';params:Record<string,string>}{
     if(conversation.startsWith('private:')){

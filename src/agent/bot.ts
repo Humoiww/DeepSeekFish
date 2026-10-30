@@ -29,6 +29,12 @@ const SYSTEM=PERSONA+'\n记忆在memory，人物资料在person，外观和设�
 function personContext(person:ReturnType<PersonMemory['remembered']>){
   return person?{profile:person.profile}:null;
 }
+function deliveryFailure(error:unknown):Record<string,unknown>|undefined{
+  const code=codeOf(error);
+  if(['ONEBOT_SEND_UNCONFIRMED','ONEBOT_ACTION_TIMEOUT','ONEBOT_DISCONNECTED','ONEBOT_STOPPED','ONEBOT_SEND_FAILED'].includes(code))
+    return {deliveryStatus:'unconfirmed',retryScheduled:false,deliveryNote:'已提交 QQ，发送确认尚未收到；未安排重发。'};
+  if(code==='ONEBOT_ACTION_FAILED')return {deliveryStatus:'failed',retryScheduled:false,deliveryNote:'QQ 明确拒绝了这次发送；未安排重发。'};
+}
 export class Bot {
   private pending=new Map<string,{messages:Message[];timer:NodeJS.Timeout}>();
   private chains=new Map<string,Promise<void>>();private accepting=true;
@@ -161,7 +167,7 @@ export class Bot {
                 const delivered:Record<string,unknown>[]=[];
                 for(const id of ids){
                   const prior=memeResults.get(id);if(prior){delivered.push({...prior,reused:true});continue;}
-                  let outcome:Record<string,unknown>={id,sent:false,deliveryStatus:'not_attempted',retryScheduled:false};
+                  let outcome:Record<string,unknown>={id,deliveryStatus:'not_attempted',retryScheduled:false};
                   try{
                     const original=this.media.original(last.group,id);
                     if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
@@ -170,7 +176,10 @@ export class Bot {
                     await this.transport.meme(last,original);memeSent=true;this.media.sent(last.group,id);
                     const item=this.media.describe(last.group,id);outcome={id,sent:true,deliveryStatus:'confirmed',animated:item.animated};
                     this.memory.record({id:'meme:'+randomUUID(),conversation:last.group,actor:'DeepSeekFish',role:'assistant',text:'[发送表情包] '+item.description,at:Date.now(),source:'qq-meme-sent'});
-                  }catch(e){outcome={...outcome,error:codeOf(e)};}
+                  }catch(e){
+                    trace.push({tool:'send_meme',phase:'delivery_error',id,error:codeOf(e)});
+                    outcome={...outcome,...(deliveryFailure(e)??{error:codeOf(e)})};
+                  }
                   memeResults.set(id,outcome);delivered.push(outcome);
                 }
                 result=args.ids?{images:delivered}:delivered[0];
@@ -213,11 +222,17 @@ export class Bot {
                   if(image.alreadyRequested){
                     result={created:image.state==='completed',imageId:image.imageId,deliveryStatus:'unconfirmed',...JSON.parse(this.store.getMeta('qq-image-result:'+image.imageId)??'{}'),reused:true,state:image.state,...(image.error?{error:image.error}:{})};
                   }else{
-                  result={created:true,delivered:false,deliveryStatus:'unconfirmed',imageId:image.imageId,catalogId:'generated-'+image.imageId,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
+                  result={created:true,deliveryStatus:'not_attempted',retryScheduled:false,imageId:image.imageId,catalogId:'generated-'+image.imageId,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
                   const file=this.imageClient.verifiedImage(image.imageId,image.manifest,this.cfg().maxArtifactBytes);
                   this.controller.signal.throwIfAborted();
                   if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
-                  await this.transport.file(last,file);result={...result as Record<string,unknown>,delivered:true,deliveryStatus:'confirmed'};
+                  try{
+                    await this.transport.file(last,file);result={...result as Record<string,unknown>,delivered:true,deliveryStatus:'confirmed'};
+                  }catch(e){
+                    const failure=deliveryFailure(e);if(!failure)throw e;
+                    trace.push({tool:'generate_image',phase:'delivery_error',error:codeOf(e),imageId:image.imageId,at:Date.now()});
+                    result={...result as Record<string,unknown>,...failure};
+                  }
                   }
                   }
                 }
@@ -227,7 +242,7 @@ export class Bot {
             if(imageAttempt){
               imageOutcome=result as Record<string,unknown>;
               const outcome=imageOutcome;
-              const image={created:outcome.created===true,delivery:outcome.created?outcome.delivered?'sent':'unconfirmed':'not_sent',retryScheduled:false,
+              const image={created:outcome.created===true,delivery:outcome.created?outcome.delivered?'sent':outcome.deliveryStatus??'unconfirmed':'not_sent',retryScheduled:false,
                 referenceIds:((outcome.references??[]) as {id:string}[]).map(r=>r.id),...(outcome.created?{catalogId:'generated-'+outcome.imageId}:{}),...(!outcome.created&&outcome.error?{error:outcome.error}:{})};
               if(outcome.created&&outcome.imageId){
                 const {resources:_resources,...receipt}=outcome;this.store.setMeta('qq-image-result:'+outcome.imageId,JSON.stringify(receipt));

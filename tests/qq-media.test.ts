@@ -105,7 +105,7 @@ test('OneBot sends the saved GIF bytes as an image sticker without flattening an
   server.on('connection',(socket:any)=>socket.on('message',(raw:Buffer)=>{
     const r=JSON.parse(raw.toString());let data:any={};
     if(r.action==='get_login_info')data={user_id:10001};else if(r.action==='get_group_list')data=[];
-    else {assert.equal(r.action,'send_private_msg');const image=r.params.message[0];assert.equal(image.data.sub_type,1);assert.deepEqual(Buffer.from(image.data.file.slice(9),'base64'),gif);sent=true;data={message_id:5};}
+    else {assert.equal(r.action,'send_private_msg');assert.equal(r.params.timeout,60000);const image=r.params.message[0];assert.equal(image.data.sub_type,1);assert.deepEqual(Buffer.from(image.data.file.slice(9),'base64'),gif);sent=true;data={message_id:5};}
     socket.send(JSON.stringify({echo:r.echo,status:'ok',retcode:0,data}));
   }));
   const transport=new OneBotTransport(f.root,`ws://127.0.0.1:${server.address().port}`,'fixture',f.store,async()=>{},g=>g==='private:20002');

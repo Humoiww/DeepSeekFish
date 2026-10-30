@@ -58,7 +58,9 @@ sudo bash scripts/enable-qq-images.sh
 
 QQ 记录从请求开始持续更新，包含 toolPolicy=model-choice 与 imageRequested；生图分别记录提交、生成的 imageId 和发送成功结果。尚在生成的任务也能直接查看进度，协议修复事件另行记录，不再只在整轮结束后落盘。
 
-QQ 图片上传等待回执最多 60 秒，普通文字/API 调用仍为 10 秒。上传超时不等于图片生成失败：工具结果保留 created、imageId 和未确认的 deliveryStatus，不重跑生图或盲目重发；可以根据原 QQ 消息历史核实迟到的图片。
+QQ 图片及表情发送在每次 OneBot 请求中传 timeout=60000，延长 NapCat 内部等待 QQ 发送确认的时间；外层 WebSocket 等待 75 秒，留出文件解析与回执传输时间。只延长外层等待无法修复 NapCat 默认约 10 秒加上传大小估算的提前超时。普通文字/API 调用仍为 10 秒，不改 NapCat 全局配置或登录状态。
+
+发送成功必须有实际 message_id。NapCat 内层超时、外层超时或断连都是确认不明，不能据此报告失败；明确拒绝才记为 failed。私有 audit 记录 action、retcode、固定原因类别、耗时和成功消息 ID，不记录原始错误响应、Token 或图片数据。模型只收到生成事实、发送状态、简短事实说明和 retryScheduled=false，协议错误码保留在诊断 trace 中。没有重发队列，不重新生成或盲目补发；后续可结合原 QQ 记录核实迟到图片。
 
 生图后的原生工具调用及真实返回保留在同一对话链中，避免模型失去完成记录又从头调用。后台 actions.lastImage 提供生成/送达事实、重试状态、参考 ID 与成图 catalogId；不自动把成图加成一条“请看图”的用户消息。完整工具集继续可用，模型想看或收藏时自主调用 view_images / collect_meme。送达回执保存到私有数据库，后续回合也能区分已生成、已确认送达与未确认状态。没有自动重发任务，没有添加固定台词。
 

@@ -16,7 +16,7 @@ import { startQQImageBroker } from '../src/qq/image-broker.js';
 import { qqResources } from '../src/qq/resources.js';
 import { CodexQuotaMonitor } from '../src/codex/quota.js';
 import { requestsImage } from '../src/web/images.js';
-import type { Model,ToolCall } from '../src/types.js';
+import { FishError,type Model,type ToolCall } from '../src/types.js';
 import { hasToolMarkup } from '../src/agent/tool-protocol.js';
 
 const call=(name:string,args:unknown):ToolCall=>({id:'tool-'+name,type:'function',function:{name,arguments:JSON.stringify(args)}});
@@ -154,10 +154,12 @@ test('image delivery failure preserves the generated artifact for the model and 
     if(turns===2)return {text:'',tool_calls:[call('generate_image',plan)],usage:{input:100,output:20}};
     const result=replyImage(messages);
     assert.equal(result.created,true);assert.equal(result.delivery,'unconfirmed');assert.equal(result.retryScheduled,false);
-    assert.ok(!JSON.stringify(messages).includes('upload timeout'));assert.ok(messages.some(m=>m.role==='tool'));
+    assert.ok(!JSON.stringify(messages).includes('ONEBOT_ACTION_TIMEOUT'));assert.ok(messages.some(m=>m.role==='tool'));
+    const toolResult=JSON.parse(String(messages.filter(m=>m.role==='tool').at(-1)!.content));
+    assert.equal(toolResult.retryScheduled,false);assert.equal(toolResult.delivered,undefined);assert.match(toolResult.deliveryNote,/未安排重发/);
     return {text:'画好了，传图那边还没确认收到。',usage:{input:100,output:20}};
   }};
-  f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');f.transport.file=async()=>{throw Error('upload timeout');};
+  f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');f.transport.file=async()=>{throw new FishError('ONEBOT_ACTION_TIMEOUT');};
   try{await f.bot.receive(message('可以画吗',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(generated,1);assert.equal(turns,3);assert.match(f.transport.sent[0].text,/画好了/);}
   finally{await f.bot.stop();f.cleanup();}
 });
