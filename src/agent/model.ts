@@ -36,7 +36,7 @@ export class DeepSeekModel implements Model {
       method:'POST', redirect:'error', signal:AbortSignal.any([AbortSignal.timeout(30000),...(options.signal?[options.signal]:[])]),
       headers:{authorization:'Bearer '+this.key,'content-type':'application/json'},
       body:JSON.stringify({model:this.cfg().model,messages,max_tokens:maxTokens,stream:false,thinking:{type:'disabled'},
-        ...(options.tools?.length?{tools:options.tools,tool_choice:options.final?'none':options.toolChoice?{type:'function',function:{name:options.toolChoice}}:'auto'}:{})}),
+        ...(options.tools?.length?{tools:options.tools,tool_choice:options.final?'none':options.toolChoice?{type:'function',function:{name:options.toolChoice}}:options.requireTool?'required':'auto'}:{})}),
     });
     if(!res.ok) { await res.body?.cancel(); throw new FishError('DEEPSEEK_HTTP_'+res.status); }
     const data=await boundedJson(res);

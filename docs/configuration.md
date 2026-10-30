@@ -13,7 +13,7 @@
 | windowSize / historyHours | 20 / 24 | 每群消息上限与 TTL，二者取更早删除 |
 | bufferMs / maxChars | 1200 / 600 | 归并窗口 / 回复字符上限 |
 | dailyTokens / groupDailyTokens | 1000000 / 60000 | 全局 / 每群 DeepSeek token 上限；每日总额度最多可设为 10000000，QQ 私聊使用全局上限，不额外套用群上限 |
-| userDailyRequests / maxOutputTokens | 50 / 256 | 每用户模型调用次数 / 每回合最大输出 |
+| userDailyRequests / maxOutputTokens | 1000 / 256 | 每用户模型调用次数 / 每回合最大输出 |
 | search / searchDaily | false / 20 | Search 开关 / 每日出站搜索请求数 |
 | searchCount / searchTimeoutMs | 3 / 10000 | 结果数（最多 5）/ 超时 |
 | codex / codexDaily | false / 22 | 接受管理员任务 / 共享每日执行尝试数（为 20 次生图和其他任务保留空间） |

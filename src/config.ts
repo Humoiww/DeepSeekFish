@@ -21,7 +21,7 @@ export const defaults: Config = {
   autonomous: false, autoReply: false, probability: 0.02, activity: 0.5,
   cooldownMs: 480000, dailyInterjections: 12, windowSize: 20, maxChars: 600,
   quietHours: [0, 7], interests: ['AI', '编程', '游戏'], bufferMs: 1200, historyHours: 24,
-  dailyTokens: 1000000, groupDailyTokens: 60000, userDailyRequests: 50, maxOutputTokens: 256,
+  dailyTokens: 1000000, groupDailyTokens: 60000, userDailyRequests: 1000, maxOutputTokens: 256,
   search: false, searchDaily: 20, searchCount: 3, searchTimeoutMs: 10000,
   codex: false, codexDaily: 22, codexTimeoutMs: 300000, codexDailyMs: 6600000,
   maxFiles: 20, maxArtifactBytes: 10485760, images: false, imageDaily: 20,

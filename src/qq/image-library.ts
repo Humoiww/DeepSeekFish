@@ -8,7 +8,7 @@ import { dayStart } from '../memory/journal.js';
 import { resolveCharacterReference } from '../image/character-reference.js';
 import { readReference,type SelectedReference } from '../image/references.js';
 
-export type ImageSource='all'|'character'|'avatar'|'qzone'|'generated';
+export type ImageSource='all'|'character'|'avatar'|'qzone'|'generated'|'received';
 export interface LibraryImage {id:string;source:Exclude<ImageSource,'all'>;label:string;postId?:string;position?:number;observedAt?:number;path:string}
 export class QQImageLibrary{
   constructor(private root:string,private broker:Store){}
@@ -27,6 +27,14 @@ export class QQImageLibrary{
     try{
       const file=safePath(this.root,'runtime/data/fish.sqlite');if(fs.existsSync(file))db=new DatabaseSync(file,{readOnly:true});
       db?.exec('PRAGMA busy_timeout=2000');
+      if(db?.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='qq_media'").get()){
+        const received=db.prepare('SELECT id,path,description,observed,meme FROM qq_media WHERE conversation=? AND (observed>=? OR meme=1) ORDER BY observed DESC LIMIT 500')
+          .all(conversation,dayStart()-86400000) as {id:string;path:string;description:string;observed:number;meme:number}[];
+        for(const row of received){
+          if(!/^media-[a-f0-9]{32}$/.test(row.id)||!['png','jpeg','gif','webp'].some(ext=>row.path==='runtime/memory/media/'+row.id+'/original.'+ext))continue;
+          images.push({id:row.id,source:'received',label:(row.meme?'聊天表情包：':'聊天图片：')+row.description,observedAt:row.observed,path:safePath(this.root,row.path)});
+        }
+      }
       for(const [table,kind] of [['qzone_observations','qzone'],['person_observations','avatar']] as const){
         if(!db?.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;
         const rows=db.prepare('SELECT id,observed,data FROM '+table+' WHERE conversation=? AND person=? AND observed>=? ORDER BY observed DESC,rowid DESC LIMIT 30').all(conversation,user,dayStart()-86400000) as {id:string;observed:number;data:string}[];
@@ -50,7 +58,7 @@ export class QQImageLibrary{
     return images.filter(image=>{try{const st=fs.lstatSync(image.path);return st.isFile()&&st.nlink===1&&st.size>=12&&st.size<=10485760;}catch{return false;}});
   }
   list(conversation:string,user:string,source:ImageSource='all',offset=0){
-    if(!['all','character','avatar','qzone','generated'].includes(source)||!Number.isInteger(offset)||offset<0||offset>1000)throw new FishError('IMAGE_CATALOG_QUERY_INVALID');
+    if(!['all','character','avatar','qzone','generated','received'].includes(source)||!Number.isInteger(offset)||offset<0||offset>1000)throw new FishError('IMAGE_CATALOG_QUERY_INVALID');
     const all=this.entries(conversation,user).filter(i=>source==='all'||i.source===source),page=all.slice(offset,offset+12);
     return {canAttachOriginals:true,images:page.map(({path,...image})=>image),total:all.length,nextOffset:offset+12<all.length?offset+12:null};
   }

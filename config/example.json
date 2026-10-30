@@ -17,7 +17,7 @@
   "historyHours": 24,
   "dailyTokens": 1000000,
   "groupDailyTokens": 60000,
-  "userDailyRequests": 50,
+  "userDailyRequests": 1000,
   "maxOutputTokens": 256,
   "model": "deepseek-v4-flash",
   "search": false,

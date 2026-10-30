@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
 import { fixture,message } from './helpers.js';
+import { QQImageLibrary } from '../src/qq/image-library.js';
 import { QQMedia,decodeMedia,qqImageUrl } from '../src/qq/media.js';
 import { OneBotTransport } from '../src/qq/onebot.js';
 import { Bot } from '../src/agent/bot.js';
@@ -78,12 +79,12 @@ test('bot sees actual images, classifies memes automatically, and later chooses 
   const provider:Model={kind:'fixture',async complete(messages,_max,options){
     round++;
     if(round===1){
-      assert.equal(options?.toolChoice,'remember_images');const visible=messages.flatMap(m=>Array.isArray(m.content)?m.content:[]);
+      assert.equal(options?.toolChoice,undefined);const visible=messages.flatMap(m=>Array.isArray(m.content)?m.content:[]);
       assert.equal(visible.filter(p=>p.type==='image_url').length,3);assert.ok(!JSON.stringify(messages).includes('transient-handle'));
       storedId=(options!.tools!.find(t=>t.function.name==='remember_images')!.function.parameters.properties as any).images.items.properties.id.enum[0];
       return {text:'',tool_calls:[call('remember_images',{images:[{id:storedId,description:'黑色逐渐变白的惊讶表情',tags:['惊讶'],meme:true}]})],usage:{input:200,output:70}};
     }
-    if(round===2)return {text:'这反应也太真实了。',usage:{input:200,output:20}};
+    if(round===2){assert.ok(messages.every(m=>m.role!=='tool'&&!m.tool_calls));assert.ok(JSON.stringify(messages).includes('黑色逐渐变白'));return {text:'这反应也太真实了。',usage:{input:200,output:20}};}
     if(round===3){assert.equal(options?.toolChoice,undefined);return {text:'',tool_calls:[call('send_meme',{id:storedId})],usage:{input:100,output:20}};}
     return {text:'',usage:{input:100,output:1}};
   }};
@@ -109,4 +110,22 @@ test('OneBot sends the saved GIF bytes as an image sticker without flattening an
   const transport=new OneBotTransport(f.root,`ws://127.0.0.1:${server.address().port}`,'fixture',f.store,async()=>{},g=>g==='private:20002');
   try{await transport.inspect();await transport.meme(incoming(),gif);assert.ok(sent);await assert.rejects(transport.meme(incoming('x','private:30003'),gif),/NOT_ALLOWED/);}
   finally{transport.stop();for(const client of server.clients)client.terminate();await new Promise<void>(resolve=>server.close(()=>resolve()));f.cleanup();}
+});
+
+test('received media are real GPT references, scoped by conversation and time, with saved memes retained',async()=>{
+  const f=fixture(),bytes=await animation(),media=new QQMedia(f.root,f.store,undefined,http(bytes));
+  f.store.db.exec('CREATE TABLE qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT)');
+  const library=new QQImageLibrary(f.root,f.store);
+  try{
+    const [received]=await media.ingest([incoming()]),id=received.id!;
+    assert.equal(library.list('private:20002','20002','received').images[0].id,id);
+    assert.deepEqual(Buffer.from(library.view('private:20002','20002',[id]).images[0].data,'base64'),bytes);
+    assert.throws(()=>library.select('private:30003','30003',[id]),/NOT_AVAILABLE/);
+    f.store.db.prepare('UPDATE qq_media SET observed=0').run();
+    assert.throws(()=>library.select('private:20002','20002',[id]),/NOT_AVAILABLE/);
+    media.remember('private:20002',[{id,description:'惊讶的动画',tags:['惊讶'],meme:true}],[id]);
+    assert.equal(library.select('private:20002','20002',[id])[0].id,id);
+    f.store.db.prepare("UPDATE qq_media SET path='runtime/codex-home/auth.json'").run();
+    assert.throws(()=>library.select('private:20002','20002',[id]),/NOT_AVAILABLE/);
+  }finally{f.cleanup();}
 });

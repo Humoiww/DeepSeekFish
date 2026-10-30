@@ -8,7 +8,7 @@ export type Reason = 'mention' | 'name' | 'auto' | 'interest' | 'opportunity' | 
 export interface Usage { input: number; output: number }
 export interface ToolCall {id:string;type:'function';function:{name:string;arguments:string}}
 export interface ModelTool {type:'function';function:{name:string;description:string;parameters:Record<string,unknown>}}
-export interface CompletionOptions {tools?:ModelTool[];toolChoice?:string;final?:boolean;signal?:AbortSignal}
+export interface CompletionOptions {tools?:ModelTool[];toolChoice?:string;requireTool?:boolean;final?:boolean;signal?:AbortSignal}
 export interface ModelResult { text: string; usage: Usage; tool_calls?:ToolCall[];finishReason?:string }
 export interface Model {
   readonly kind: string;

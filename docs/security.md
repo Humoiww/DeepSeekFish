@@ -13,7 +13,7 @@
 - 权限 profile 显式 root deny、minimal read、绝对任务目录 write、命令网络关闭；Linux 为原生 sandbox 启动器另加 vendor / arg0-linux 的只读权限，不授权 auth.json；不混用旧 sandbox_mode。OS 最小路径是为了程序运行，不包含额外授权的私人项目。
 - app-server 与执行命令的信任边界不同：app-server 自身需要账号通信和项目 CODEX_HOME，不能把 shell 网络限制当成宿主进程网络隔离的证明。
 - 项目 CODEX_HOME 使用独立本机登录；现有用户 Codex auth/config 没有被复制、修改或重置。仅允许 ChatGPT 账号类型，不让环境 API Key 变成独立付费模式。
-- 子进程环境按白名单重建，不继承 DeepSeek、QQ、SSH agent、OpenAI API Key 等凭据。显式关闭外部 MCP、hooks、apps、plugins、multi_agent、搜索与依赖自动安装。普通任务关闭内置生图；只有本机显式授权的 `codex-image --reviewed` 或已鉴权 WebUI 的明确单张画图请求为当前回合启用内置生图，同时关闭 shell。用户后续已明确授权 QQ 当前画图请求：QQ 只能经私有 Unix broker 请求单张生图，broker 独立校验当前消息意图、联系人/群白名单、方案和共享额度，拒绝重复消息。QQ 服务仍隐藏 Codex 登录和 payload；普通 Codex 执行与审批工具不开放。
+- 子进程环境按白名单重建，不继承 DeepSeek、QQ、SSH agent、OpenAI API Key 等凭据。显式关闭外部 MCP、hooks、apps、plugins、multi_agent、搜索与依赖自动安装。普通任务关闭内置生图；只有本机显式授权的 `codex-image --reviewed` 或已鉴权 WebUI 的明确单张画图请求为当前回合启用内置生图，同时关闭 shell。用户后续已明确授权 QQ 模型在允许的聊天回合中自主选择功能，包括生图；不再按当前消息关键词过滤工具。QQ 通过私有 Unix broker 请求单张生图，broker 校验联系人/群范围、方案、参考 ID 和共享额度，拒绝重复消息。QQ 服务仍隐藏 Codex 登录和 payload；普通 Codex 执行与审批工具不开放。
 - 每次启动先做真实 OS 外部读写 canary，还要通过任务目录正向读写控制，并检查宿主越界写入没有落盘，随后校验线程返回的 activePermissionProfile。探针只用项目内、任务目录外的无秘密哨兵，不读取用户私人文件。canary 通过是局部证据，不是对所有系统/工具路径的安全证明。
 - Windows launcher 使用 CreateProcess suspended → AssignProcessToJobObject → ResumeThread，job 启用 kill-on-close 且不允许 breakaway。它监控 bot owner 进程，owner 退出时关闭 job；取消、超时、正常结束均收尾进程树。不能确认进程终止时保留并发 reservation。Windows 原生效果仍需现场测试。
 
@@ -25,7 +25,7 @@
 
 ## 输入与管理
 
-群消息、工具结果、网页摘要、模型输出、生成文件都是不可信数据。只有固定命令 parser 和事件 openid 白名单能提出任务。QQ 模型可使用人物资料、额度查询和当前请求授权的单张图片工具，没有 shell/授权工具；Codex 只收到管理员本条请求整理的独立 brief，不接收整段群聊。
+群消息、工具结果、网页摘要、模型输出、生成文件都是不可信数据。只有固定命令 parser 和事件 openid 白名单能提出任务。QQ 模型可自主使用人物资料、空间、额度查询、图片与收藏表情工具，没有 shell/授权工具；Codex 只收到管理员本条请求整理的独立 brief，不接收整段群聊。
 
 管理 API 只监听 127.0.0.1，要求本机随机令牌并检查 Host、Origin、跨站请求。审批要求 reviewed 标记与对应任务 ID。拥有本机用户文件权限的人可取得此令牌，因此它不用于防御恶意本机用户。不要把管理令牌发到群里，也不要对外映射端口。
 
