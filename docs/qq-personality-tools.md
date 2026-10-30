@@ -2,9 +2,11 @@
 
 当前人格在 personas/mesugaki/prompt.md，只有一小段鲸酱的身份和性格。上游原始段落保留在 upstream.md，许可证和来源仍在同目录。用户已明确授权本轮精简适配；没有固定开场白、示范回复或逐句扮演脚本。
 
-QQ 把双方聊天作为真实 user/assistant 消息送入模型，记忆、人物资料和用量是单独的上下文。系统提示只说明这些信息的位置以及工具名称，不再要求“区分发布时间与观察时间”或输出审核式报告。人格不包含服务权限规则。
+QQ 把双方聊天作为真实 user/assistant 消息送入模型，记忆、人物资料和用量是单独的上下文。系统提示只保留人格、信息位置和画图协作者；工具用法由函数定义提供，不重复堆在系统提示里。人格不包含服务权限规则。
 
-明确要求看新动态、查询精力/额度或画图时，第一轮选择对应函数；画图先读取可用图库，后续看图、选图、画面方案和最终回复由模型决定。过渡语也由模型生成；普通聊天自由选择是否使用工具。接口采用 [DeepSeek 原生 tool_choice](https://api-docs.deepseek.com/api/create-chat-completion/)，不追加固定台词。
+明确要求看新动态、查询精力/额度或画图时，第一轮选择对应函数；QQ 也识别省略量词的口语画图追问。画图先读取可用图库，后续看图、选图、画面方案和最终回复由模型决定。工具备注可省略，需要说什么由模型自己决定，不强制播报操作流程；普通聊天自由选择是否使用工具。接口采用 [DeepSeek 原生 tool_choice](https://api-docs.deepseek.com/api/create-chat-completion/)，不追加固定台词。
+
+模型调用协议只通过原生 tool_calls 处理，不把 DSML 正文当作可执行命令或 QQ 消息。如果正文串入协议，会针对本轮已有权限的工具进行至多一次原生 JSON 恢复；未知工具、重复失败与发送端都拦截协议文字。历史中曾泄漏协议的助手消息不会再次进入滚动上下文或自动回忆，原始档案和私有调用记录保留。
 
 ## 功能
 
@@ -44,6 +46,6 @@ sudo bash scripts/enable-qq-images.sh
 
 该脚本只安装本项目 drop-in、创建私有 socket 目录、启用 QQ 图片选项，并将不足 768 的输出预算提升到 768，以容纳结构化画面方案；不增加每日精力/图片限额，不改 SSH、Tailscale 或防火墙。
 
-每轮生成文字、工具名称、结果和实际 token usage 在 runtime/logs/qq/UUID.json，包含当轮真正的 system 提示，不记录图片 base64 或登录 Cookie。Codex 原生生图记录继续在 runtime/logs/codex/。这些私有日志、图片及 SQLite 账本随原有 migrate-state.py 迁移；socket 和登录凭据不迁移。
+每轮生成文字、工具名称、结果和实际 token usage 在 runtime/logs/qq/UUID.json，包含当轮真正的 system 提示、finishReason、协议恢复事件和 contextSize（系统/人格字符数、工具定义及上下文字节数、历史条数），不记录图片 base64 或登录 Cookie。字符/字节统计不是 tokenizer 的精确 Token 数；实际费用以供应商 usage 为准。Codex 原生生图记录继续在 runtime/logs/codex/。这些私有日志、图片及 SQLite 账本随原有 migrate-state.py 迁移；socket 和登录凭据不迁移。
 
 登录持久化修复见 [QQ 接入](qq-onebot.md)。用户实际采用密码登录，不能按扫码推断。缓存失效时优先使用已保存的密码回退，不清空自动登录账号；设备验证仍由 QQ 原有流程完成。

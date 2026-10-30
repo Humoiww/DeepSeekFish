@@ -44,7 +44,7 @@ export class DeepSeekModel implements Model {
     const input=data.usage?.prompt_tokens,output=data.usage?.completion_tokens;
     if(typeof text!=='string' || !Number.isSafeInteger(input) || input<0 || !Number.isSafeInteger(output) || output<0) throw new FishError('DEEPSEEK_INVALID_RESPONSE');
     if(calls!==undefined&&(!Array.isArray(calls)||calls.length>4||calls.some(c=>typeof c?.id!=='string'||c.id.length>200||c.type!=='function'||typeof c.function?.name!=='string'||typeof c.function.arguments!=='string'||c.function.arguments.length>12000)))throw new FishError('DEEPSEEK_INVALID_TOOL_CALL');
-    return {text,usage:{input,output},...(calls?.length?{tool_calls:calls}:{})};
+    return {text,usage:{input,output},...(calls?.length?{tool_calls:calls}:{}),...(typeof data.choices[0].finish_reason==='string'?{finishReason:data.choices[0].finish_reason}:{})};
   }
 }
 export class MockModel implements Model {

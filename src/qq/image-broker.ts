@@ -46,7 +46,7 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
         if(body.op==='list'){res.end(JSON.stringify(library.list(body.conversation,body.user,body.source,body.offset)));return;}
         if(body.op==='view'){res.end(JSON.stringify(library.view(body.conversation,body.user,body.referenceIds)));return;}
         if(body.op!=='image'||!c.images)throw new FishError('IMAGE_DISABLED');
-        if(typeof body.messageId!=='string'||body.messageId.length>200||typeof body.request!=='string'||body.request.length>2000||!requestsImage(body.request))throw new FishError('QQ_IMAGE_REQUEST_REQUIRED');
+        if(typeof body.messageId!=='string'||body.messageId.length>200||typeof body.request!=='string'||body.request.length>2000||!requestsImage(body.request,true))throw new FishError('QQ_IMAGE_REQUEST_REQUIRED');
         const plan=validateImagePlan(body.plan);
         const selected=library.select(body.conversation,body.user,body.referenceIds??[]);
         const claimed=store.db.prepare('INSERT OR IGNORE INTO qq_image_requests VALUES (?,?,?,?,?)').run(body.conversation,body.messageId,'claimed','','').changes;

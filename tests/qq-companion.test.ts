@@ -17,6 +17,7 @@ import { qqResources } from '../src/qq/resources.js';
 import { CodexQuotaMonitor } from '../src/codex/quota.js';
 import { requestsImage } from '../src/web/images.js';
 import type { Model,ToolCall } from '../src/types.js';
+import { hasToolMarkup } from '../src/agent/tool-protocol.js';
 
 const call=(name:string,args:unknown):ToolCall=>({id:'tool-'+name,type:'function',function:{name,arguments:JSON.stringify(args)}});
 const plan={subject:'一条蓝色的小鱼',scene:'服务器旁边',style:'柔和插画',composition:'主体居中',lighting:'暖光',palette:'蓝白',details:'没有文字'};
@@ -76,6 +77,51 @@ test('QQ browses originals and passes model-selected image IDs through to GPT',a
   try{await f.bot.receive(message('把你自己参考图丢给gpt',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(round,4);assert.equal(f.transport.files.length,1);assert.equal(f.transport.sent.at(-1)?.text,'这次她照着原图画的。');}
   finally{await f.bot.stop();f.cleanup();}
 });
+test('textual tool protocol is repaired through native JSON, kept out of chat/history, and optional remarks stay optional',async()=>{
+  let turns=0,generated=0,f:ReturnType<typeof setup>;
+  const leaked='<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="generate_image">untrusted textual arguments</｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>';
+  const client={
+    list:async()=>({images:[]}),
+    generate:async(_m:any,actual:any)=>{generated++;assert.deepEqual(actual,plan);return {imageId:'fixture',manifest:{},mock:true};},
+    verifiedImage:()=>f.root+'/runtime/outputs/mock.png'
+  } as unknown as QQImageClient;
+  const provider:Model={kind:'fixture',async complete(messages,_max,options){
+    turns++;assert.ok(messages.every(m=>m.role!=='assistant'||!hasToolMarkup(String(m.content))));
+    assert.ok(!hasToolMarkup(String(messages[1].content)));assert.ok(String(messages[0].content).length<180);
+    const required=options?.tools?.find(t=>t.function.name==='generate_image')?.function.parameters.required as string[]|undefined;
+    assert.ok(!required?.includes('remark'));
+    if(turns===1){assert.equal(options?.toolChoice,'list_images');return {text:'',tool_calls:[call('list_images',{})],usage:{input:100,output:20}};}
+    if(turns===2)return {text:leaked,usage:{input:100,output:30},finishReason:'stop'};
+    if(turns===3){assert.equal(options?.toolChoice,'generate_image');assert.equal(options?.final,undefined);return {text:'',tool_calls:[call('generate_image',{...plan})],usage:{input:100,output:60},finishReason:'tool_calls'};}
+    return {text:'喏，摸鱼证据又多一张。',usage:{input:100,output:20}};
+  }};
+  f=setup(provider,undefined,client);
+  await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
+  f.store.observe(message(leaked,{group:'private:20002',user:'DeepSeekFish'}),24,20);
+  f.bot.memory.record({id:'old-leak',conversation:'private:20002',actor:'DeepSeekFish',role:'assistant',text:leaked,at:Date.now()});
+  try{
+    await f.bot.receive(message('那，可以画吗？',{group:'private:20002',user:'20002'}));await f.bot.flush();
+    assert.equal(generated,1);assert.equal(turns,4);assert.equal(f.transport.files.length,1);
+    assert.deepEqual(f.transport.sent.map(m=>m.text),['喏，摸鱼证据又多一张。']);
+    assert.ok(f.transport.sent.every(m=>!hasToolMarkup(m.text)));
+    const records=fs.readdirSync(f.root+'/runtime/logs/qq').map(n=>JSON.parse(fs.readFileSync(f.root+'/runtime/logs/qq/'+n,'utf8')));
+    assert.ok(records[0].trace.some((t:any)=>t.protocolRepair?.tool==='generate_image'));
+    assert.ok(records[0].trace.some((t:any)=>t.assistant===leaked));assert.ok(records[0].contextSize.systemCharacters<180);
+  }finally{await f.bot.stop();f.cleanup();}
+});
+test('unknown or repeated textual protocol never executes and never reaches QQ',async()=>{
+  for(const text of ['你好','那，可以画吗？']){
+    let calls=0,generated=0;
+    const client={list:async()=>({images:[]}),generate:async()=>{generated++;}} as unknown as QQImageClient;
+    const provider:Model={kind:'fixture',async complete(_messages,_max,options){
+      calls++;if(options?.toolChoice==='list_images')return {text:'',tool_calls:[call('list_images',{})],usage:{input:100,output:20}};
+      return {text:'<|DSML|invoke name="generate_image">not native JSON',usage:{input:100,output:20}};
+    }};
+    const f=setup(provider,undefined,client);
+    try{await f.bot.receive(message(text,{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(generated,0);assert.ok(calls<=3);assert.ok(f.transport.sent.length);assert.ok(f.transport.sent.every(m=>!hasToolMarkup(m.text)));}
+    finally{await f.bot.stop();f.cleanup();}
+  }
+});
 test('private image broker shares quotas, requires a current image request and deduplicates message IDs',async()=>{
   const f=fixture({qqTransport:'onebot',privateUsers:['20002'],admins:['20002'],images:true});
   fs.mkdirSync(f.root+'/config');
@@ -90,6 +136,7 @@ test('private image broker shares quotas, requires a current image request and d
     const status=await client.status(m);assert.equal(status.images.used,1);assert.equal(status.images.remaining,19);assert.equal(status.gpt.remainingImages,null);
     assert.equal(f.ledger.value('codex'),1);assert.equal(f.ledger.value('image'),1);
     for(const text of ['想要张图','我想要张图，随便画','来随便画张图','今天可以，能画张么？','你现在能画张吗？'])assert.equal(requestsImage(text),true);
+    for(const text of ['那，可以画吗？','今天还能画么？','可以画不？']){assert.equal(requestsImage(text,true),true);assert.equal(requestsImage(text),false);}
     for(const text of ['不要画图','还有多少张图','解释想要张图这句话','解释“今天可以，能画张么？”这句话'])assert.equal(requestsImage(text),false);
   }finally{await broker.close();await quota.close();f.cleanup();}
 });

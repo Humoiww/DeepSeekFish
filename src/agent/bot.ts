@@ -20,8 +20,10 @@ import { QQImageClient } from '../qq/image-client.js';
 import { requestsImage,validateImagePlan } from '../web/images.js';
 import { writePrivate } from '../paths.js';
 import { QzoneMemory,qzoneSelection } from '../memory/qzone.js';
+import { hasToolMarkup } from './tool-protocol.js';
 
-const SYSTEM=personalityPrompt()+'\n近两天的记忆在 memory，人物资料在 person；头像用 get_person，QQ空间说说用 get_qzone。精力值是 energy 中的 token，实时限额在 get_quota。画图协作者叫 GPT小姐；list_images 浏览参考图库，view_images 查看原图，generate_image 的 referenceIds 会把你选的原图实际传给她。你的外观和原设定图 ID 在 character。';
+const PERSONA=personalityPrompt();
+const SYSTEM=PERSONA+'\n记忆在memory，人物资料在person，外观和设定图在character，精力在energy。画图协作者是GPT小姐。';
 function personContext(person:ReturnType<PersonMemory['remembered']>){
   return person?{profile:person.profile}:null;
 }
@@ -73,7 +75,7 @@ export class Bot {
   private async respond(batch:Message[]):Promise<void>{
     const last=batch.at(-1)!;const c=this.cfg();
     if(!c.enabled||!conversationAllowed(c,last.group))return;
-    const history=this.store.history(last.group,c.windowSize).filter(m=>m.at>=dayStart()-86400000);
+    const history=this.store.history(last.group,c.windowSize).filter(m=>m.at>=dayStart()-86400000&&(m.user!=='DeepSeekFish'||!hasToolMarkup(m.text)));
     // Trigger only on this batch, use rolling history solely for local activity/topic checks.
     const reason=this.gate.decide(batch,Date.now(),history);
     if(!reason)return;
@@ -81,23 +83,38 @@ export class Bot {
     const lease=spontaneous?this.ledger.reserve('interjection',last.group,last.user):undefined;
     try{
       const memory=this.memory.recall(last.group,last.text,history),person=this.people?.remembered(last.user,last.group,memory);
+      memory.events=memory.events.filter(event=>event.role!=='assistant'||!hasToolMarkup(event.text));
       if(this.people&&!requestsQzone(last.text)&&!requestsAvatar(last.text))void this.people.refresh(last.user,last.group).catch(e=>this.store.audit('profile-error',last.group,codeOf(e)));
       const savedQzone=this.qzone?.remembered(last.user,last.group,memory);
       const payload=JSON.stringify({memory:{events:memory.events,needsReference:memory.needsReference},person:personContext(person),qzone:savedQzone?this.qzone!.context(savedQzone):null,character:{appearance:CHARACTER_APPEARANCE,referenceId:'character'},...qqResources(c,this.ledger,last.group,last.user)});
       const dialogue:ChatMessage[]=history.map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:m.user==='DeepSeekFish'||last.group.startsWith('private:')?m.text:'['+m.user+'] '+m.text}));
       if(history.at(-1)?.id!==last.id)dialogue.push({role:'user',content:last.text});
       const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
-      const tools=[...qqChatTools(!!this.people&&!requestsQzone(last.text),!!this.imageClient&&c.images&&requestsImage(last.text),!!this.qzone),...(this.imageClient?imageLibraryTools():[])];
+      const imageIntent=requestsImage(last.text,true);
+      const tools=[...qqChatTools(!!this.people&&!requestsQzone(last.text),!!this.imageClient&&c.images&&imageIntent,!!this.qzone),...(this.imageClient?imageLibraryTools():[])];
       const requestedTool=this.qzone&&requestsQzone(last.text)?'get_qzone':this.people&&requestsAvatar(last.text)?'get_person':
-        this.imageClient&&(requestsReferences(last.text)||(c.images&&requestsImage(last.text)))?'list_images':
+        this.imageClient&&(requestsReferences(last.text)||(c.images&&imageIntent))?'list_images':
         /累不累|累了吗|累吗|精力|额度|限额|还能.{0,12}(?:图|张)|剩.{0,12}(?:图|张)|token/i.test(last.text)?'get_quota':undefined;
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,qzoneRead=false;
-      const maxRounds=this.imageClient&&requestsImage(last.text)?6:4,maxCalls=maxRounds;
+      const maxRounds=this.imageClient&&imageIntent?6:4,maxCalls=maxRounds;let repaired=false;
       const tracePath='runtime/logs/qq/'+randomUUID()+'.json';makeDir(this.root,'runtime/logs/qq');
       try{
         for(let round=0;round<maxRounds;round++){
-          const completion=await this.model.complete(last.group,last.user,messages,{tools,toolChoice:round===0?requestedTool:undefined,final:round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});
-          trace.push({round,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage});
+          let completion=await this.model.complete(last.group,last.user,messages,{tools,toolChoice:round===0?requestedTool:undefined,final:round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});
+          trace.push({round,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
+          if(hasToolMarkup(completion.text)){
+            if(!completion.tool_calls?.length){
+              const tool=tools.find(t=>completion.text.includes(t.function.name));
+              if(repaired||!tool||round===maxRounds-1||calls>=maxCalls)throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');
+              repaired=true;trace.push({protocolRepair:{tool:tool.function.name}});
+              // Re-request native JSON using an already allowed tool. Never
+              // parse or execute the model's textual protocol as a command.
+              completion=await this.model.complete(last.group,last.user,messages,{tools,toolChoice:tool.function.name,signal:this.controller.signal});
+              trace.push({round,repair:true,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
+              if(!completion.tool_calls?.some(call=>call.function.name===tool.function.name))throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');
+            }
+            if(hasToolMarkup(completion.text))completion={...completion,text:''};
+          }
           if(round===0&&requestedTool&&!completion.tool_calls?.some(call=>call.function.name===requestedTool))throw new FishError('QQ_TOOL_REQUIRED');
           if(!completion.tool_calls?.length){if(!completion.text.trim())throw new FishError('DEEPSEEK_EMPTY_RESPONSE');await this.send(last,completion.text);break;}
           if(round===maxRounds-1||calls+completion.tool_calls.length>maxCalls)throw new FishError('QQ_TOOL_LIMIT');
@@ -122,11 +139,11 @@ export class Bot {
                 if(Object.keys(args).length)throw new FishError('INVALID_TOOL_ARGS');
                 result=this.imageClient?await this.imageClient.status(last,this.controller.signal):qqResources(this.cfg(),this.ledger,last.group,last.user);
               }else{
-                const remark=completion.text.trim()||args.remark;
-                if(typeof remark!=='string'||!remark.trim()||remark.length>this.cfg().maxChars)throw new FishError('INVALID_TOOL_REMARK');
+                const remark=completion.text.trim()||(typeof args.remark==='string'?args.remark.trim():'');
+                if(args.remark!==undefined&&typeof args.remark!=='string'||remark.length>this.cfg().maxChars||hasToolMarkup(remark))throw new FishError('INVALID_TOOL_REMARK');
                 if(call.function.name==='get_person'){
                   if(!this.people||!['avatar','profile'].includes(args.view)||Object.keys(args).some(k=>!['view','remark'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
-                  if(!said){await this.send(last,remark);said=true;}
+                  if(!said&&remark){await this.send(last,remark);said=true;}
                   const snapshot=await this.people.refresh(last.user,last.group,true);
                   result={source:'qq_profile',...personContext(snapshot),errors:snapshot.errors};media=this.people.images(snapshot);
                 }else if(call.function.name==='get_qzone'){
@@ -135,14 +152,14 @@ export class Bot {
                   const cursor=JSON.parse(this.store.getMeta(cursorKey)??'{}');
                   const previous=Number(cursor.at)>=dayStart()-86400000?Number(cursor.index)||1:1;
                   const exact=!qzoneRead?qzoneSelection(last.text,previous,Number(cursor.nextIndex)||undefined):undefined;
-                  if(!said){await this.send(last,remark);said=true;}
+                  if(!said&&remark){await this.send(last,remark);said=true;}
                   const snapshot=await this.qzone.read(last.user,last.group,exact??{index:args.index,count:args.count});qzoneRead=true;
                   this.store.setMeta(cursorKey,JSON.stringify({index:snapshot.index,nextIndex:snapshot.nextIndex,at:Date.now()}));
                   result=this.qzone.context(snapshot);media=this.qzone.images(snapshot);
                 }else if(call.function.name==='generate_image'){
-                  if(!this.imageClient||!this.cfg().images||!requestsImage(last.text)||imageRequested)throw new FishError('QQ_IMAGE_REQUEST_REQUIRED');
+                  if(!this.imageClient||!this.cfg().images||!imageIntent||imageRequested)throw new FishError('QQ_IMAGE_REQUEST_REQUIRED');
                   const {remark:_remark,referenceIds=[],...values}=args,plan=validateImagePlan(values);imageRequested=true;
-                  if(!said){await this.send(last,remark);said=true;}
+                  if(!said&&remark){await this.send(last,remark);said=true;}
                   const image=await this.imageClient.generate(last,plan,this.cfg().codexTimeoutMs,this.controller.signal,referenceIds);
                   const file=this.imageClient.verifiedImage(image.imageId,image.manifest,this.cfg().maxArtifactBytes);
                   this.controller.signal.throwIfAborted();
@@ -157,13 +174,14 @@ export class Bot {
           }
           if(roundMedia.length)messages.push({role:'user',content:[{type:'text',text:'工具返回的原图，图片ID、来源或说说ID标在各图前'},...roundMedia]});
         }
-      }finally{writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,trace},null,2)));}
+      }finally{writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));}
       this.gate.record(last.group);this.store.audit('speech',last.group,reason);
     }catch(e){this.store.audit('error',last.group,codeOf(e));if(!spontaneous&&this.accepting)await this.send(last,'当前无法回答：'+codeOf(e));}
     finally{if(lease)this.ledger.settle(lease);}
   }
   private async send(m:Message,text:string):Promise<void>{
     if(!this.cfg().enabled||!conversationAllowed(this.cfg(),m.group))return;
+    if(hasToolMarkup(text))throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');
     const sent=redact(text).slice(0,this.cfg().maxChars);
     await this.transport.send(m,sent);
     const id='assistant:'+randomUUID();
