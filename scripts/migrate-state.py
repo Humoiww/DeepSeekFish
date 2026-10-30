@@ -64,7 +64,9 @@ if args.action == 'export':
         if config.is_file():
             no_links(config)
             content = json.loads(config.read_text())
-            if any(any(s in k.lower() for s in ['secret', 'token', 'password', 'apikey', 'api_key', 'credential']) for k in content):
+            token_budgets = {'dailyTokens', 'groupDailyTokens', 'maxOutputTokens'}
+            if any(any(s in k.lower() for s in ['secret', 'token', 'password', 'apikey', 'api_key', 'credential'])
+                   and not (k in token_budgets and type(v) is int and v >= 0) for k, v in content.items()):
                 raise SystemExit('Secret-like field in config/local.json; move it into private credential storage first.')
             target = stage / 'config/local.json'; target.parent.mkdir(parents=True, exist_ok=True);target.write_text(json.dumps(content, ensure_ascii=False, indent=2) + '\n');files.append(target)
         for tree in trees:
