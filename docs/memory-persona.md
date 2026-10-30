@@ -22,7 +22,7 @@ QQ 中说「评判一下我最新动态」会读取当前说话者的 QQ 资料�
 
 观察 JSON、头像、配图和真实空间页截图在 `runtime/memory/people/QQ号/YYYY-MM-DD/观察UUID/`，SQLite 保存索引，文件中使用可迁移的项目相对路径。昵称、签名、地域、兴趣等取实际返回字段，不从头像推断现实身份或敏感属性。
 
-只读 CGI 用法参考 [qzone-sdk](https://github.com/Eganchiyu/qzone-sdk)。登录态由 NapCat `get_cookies(qzone.qq.com)` 在可信代码获取，仅在进程中暂存，并经本机私有 Unix socket 交给截图 worker；不进入模型、人物 JSON、聊天归档或日志。不发表说说、不点赞、不在空间评论。
+只读 CGI 用法参考 [qzone-sdk](https://github.com/Eganchiyu/qzone-sdk)。登录态由 NapCat `get_cookies(qzone.qq.com)` 在可信代码获取，仅在进程中暂存，并经本机私有 Unix socket 交给截图 worker；不进入模型、人物 JSON、聊天归档或日志。日常读取工具不点赞、不评论。主人另外启用的每日图文动态由独立定时任务发布到机器人自己的空间，见 [每日空间日常](daily-qzone.md)。
 
 截图 worker 使用独立 fishview UID、固定浏览器和原生 Chromium sandbox，仅监听 `/run/deepseekfish-capture.sock`，不开放 TCP 端口。它不能读取主服务数据、Codex、SSH 或 NapCat 登录目录。地址固定为对应 QQ 空间，资源限 QQ 所需域名；没有关闭 AppArmor/User Namespace 限制，也没有使用 `--no-sandbox`。
 

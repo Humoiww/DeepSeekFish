@@ -24,7 +24,7 @@
 
 Codex 调用前预留 timeout+5 秒收尾时间，按实际耗时结算；剩余额度不足最坏时长则拒绝，所以两个接近超时的任务不保证都能获准。搜索/图片/任务的失败尝试保留次数，避免重试绕过预算。未知模型 usage 保留上界费用。`requests` 统计模型回合，因此一次任务的规划与摘要计两次。
 
-所有自然日按 Asia/Shanghai（UTC+8）结算。调低预算到已用额度以下不会退款，后续调用被拒绝。不要在运行时手工编辑 SQLite；`BUDGET_USAGE_FAULT` 表示提供商 usage 与预留上界不符，应先排查服务协议再调整实现。
+所有自然日按 Asia/Hong_Kong（UTC+8）结算。调低预算到已用额度以下不会退款，后续调用被拒绝。不要在运行时手工编辑 SQLite；`BUDGET_USAGE_FAULT` 表示提供商 usage 与预留上界不符，应先排查服务协议再调整实现。
 
 `status` 展示最后一次模型调用结果，不自动做计费健康探测。QQ 断线状态来自 SDK ready/resumed/disconnected；仅 SDK 接收的原生普通事件可标记普通消息 observed。管理页不展示秘密环境变量。
 

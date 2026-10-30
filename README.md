@@ -246,3 +246,5 @@ runtime/research/   本次官方接口调查和生成的协议 schema（不提�
 QQ 的精简人格、精力查询和自然语言生图见 [QQ 人格与工具](docs/qq-personality-tools.md)。
 
 QQ 登录状态复用见 [QQ 接入](docs/qq-onebot.md)，说说序号与配图来源见 [QQ空间读取](docs/qzone-reading.md)。
+
+每日图文空间日常：可按香港时间每天 00:00 发布，沿用现有人格、当天记忆和生图能力。需要主人明确启用，部署与状态检查见 [每日 QQ 空间日常](docs/daily-qzone.md)。

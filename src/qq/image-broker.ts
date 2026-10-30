@@ -15,6 +15,7 @@ import { isCharacterPortrait } from '../image/character-reference.js';
 import { CodexQuotaMonitor } from '../codex/quota.js';
 import { CodexRateLimitError } from '../codex/rate-limit.js';
 import { QQImageLibrary } from './image-library.js';
+import { authorizedDailyImage } from './daily-qzone.js';
 
 /** Only the trusted QQ process can reach this private socket. No shell, paths,
  * login data, quota resets or ordinary Codex tasks are accepted. */
@@ -55,7 +56,7 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
         const claimed=store.db.prepare('INSERT OR IGNORE INTO qq_image_requests VALUES (?,?,?,?,?)').run(body.conversation,body.messageId,'claimed','','').changes;
         if(!claimed){res.end(JSON.stringify({...existing(),alreadyRequested:true,resources:qqResources(c,ledger,body.conversation,body.user)}));return;}
         try{
-          const before=await quota.beforeImage(false);
+          const before=await quota.beforeImage(authorizedDailyImage(root,store,body.conversation,body.user,body.messageId));
           const prompt='用户这次想画：'+body.request+'\n'+Object.entries(imageFields).map(([k,label])=>label+'：'+plan[k as keyof typeof plan]).join('\n');
           const character=isCharacterPortrait(body.request)||selected.some(i=>i.id==='character');
           const result=await runCodexImage(root,prompt,{cfg:c,ledger,group:body.conversation,signal:controller.signal,mock,character,references:selected.filter(i=>i.id!=='character'),runner});

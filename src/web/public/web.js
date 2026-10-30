@@ -12,7 +12,7 @@ async function api(path,value){
 }
 function setMode(next){mode=next;for(const key of ['chat','agent','image']){const button=$('mode-'+key);button.classList.toggle('selected',next===key);button.setAttribute('aria-pressed',String(next===key));}$('mode-label').textContent=({chat:'聊天',agent:'受限助手',image:'画图'})[next];$('mode-note').textContent=next==='image'?'发送即授权本次一张：DeepSeek 设计 → Codex 生图，可随时停止。':next==='agent'?'可操作会话文件；明确画图请求会自动进入单张生图流程。':'明确请求画图时，小鱼会设计方案并交给 Codex 生成一张。';}
 
-function quotaTime(seconds){return Number.isFinite(seconds)?new Date(seconds*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'未提供';}
+function quotaTime(seconds){return Number.isFinite(seconds)?new Date(seconds*1000).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'未提供';}
 function renderCodexQuota(q){
   const content=$('codex-quota-content');content.replaceChildren();if(!q){content.append(node('p','muted','等待服务端提供额度…'));return;}
   const all=q.pools.flatMap(p=>p.windows.map(w=>({...w,pool:p.name}))),weekly=all.filter(w=>w.windowDurationMins===10080);
@@ -45,7 +45,7 @@ function formatted(text){const box=node('div','assistant-answer');const pieces=S
 function toolEvent(event){if(event.name==='codex_record'){
   const box=node('details','tool-event codex-record');box.open=event.state==='failed';box.append(node('summary','','Codex 调用记录'));
   try{const r=JSON.parse(event.result),count=(r.images||[]).filter(i=>i.status==='completed').length;
-    box.append(node('p','',new Date(r.startedAt).toLocaleString('zh-CN')+' · '+((r.events||[]).some(e=>e.method==='turn-requested')?'已提交 Codex 回合':'尚未提交模型回合')+' · 图片完成事件 '+count+' 个'),node('small','','记录 ID：'+r.id));
+    box.append(node('p','',new Date(r.startedAt).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong'})+' · '+((r.events||[]).some(e=>e.method==='turn-requested')?'已提交 Codex 回合':'尚未提交模型回合')+' · 图片完成事件 '+count+' 个'),node('small','','记录 ID：'+r.id));
     const text=r.finalText||(r.messages||[]).map(m=>m.text).filter(Boolean).join('\n\n');
     box.append(node('strong','','Codex 返回文字'),node('pre','codex-reply',text||'未收到文字回复。请查看下方事件和错误记录。'));
     if(r.delivery?.error||r.error)box.append(node('p','',r.delivery?.error||r.error));

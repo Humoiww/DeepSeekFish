@@ -63,3 +63,5 @@ API Key、QQ 登录状态、OneBot Token、Codex 登录、管理会话令牌、S
 需要恢复 QQ 中的自然语言生图时，在 QQ 服务和 Codex 生图均可用后运行 `sudo bash scripts/enable-qq-images.sh`。broker socket 在新机重建，登录凭据不随归档迁移，额度和去重记录仍在原有 SQLite 中。
 
 NapCat 安装器包含登录持久化适配；私人 login-secrets.json 属于 QQ 登录凭据，不进普通迁移包，新机首次密码登录成功后重新建立。头像和说说索引均在既有 SQLite/人物记忆目录内随状态迁移。
+
+每日空间动态的非秘密 daily-qzone.json、SQLite 任务状态和诊断随私有状态迁移；新机还需运行 scripts/enable-daily-qzone.sh 安装香港时间定时器，见 [每日空间日常](daily-qzone.md)。已发日期不会因重启或迁移自动重发。

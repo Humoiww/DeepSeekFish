@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { makeDir,safePath } from '../paths.js';
 import { Store,redact } from '../storage/db.js';
 import type { Message } from '../types.js';
+import { PROJECT_TIMEZONE } from '../time.js';
 
 const DAY=86400000,OFFSET=8*3600000;
 export function memoryDay(at=Date.now()):string{return new Date(at+OFFSET).toISOString().slice(0,10);}
@@ -61,6 +62,6 @@ export class MemoryJournal {
     const rows=this.store.db.prepare(`SELECT event_id AS id,actor,role,text,observed AS at,source FROM memory_events WHERE ${where} ORDER BY observed DESC,seq DESC LIMIT 80`).all(...params) as any[];
     const skipped=new Set(exclude.map(m=>m.id)),selected:any[]=[];let bytes=0;
     for(const row of rows){if(skipped.has(row.id))continue;const text=String(row.text).slice(0,2000),cost=Buffer.byteLength(text)+160;if(bytes+cost>12000)continue;bytes+=cost;selected.push({...row,text});}
-    return {timezone:'Asia/Shanghai',...scope,events:selected.reverse(),archiveRetained:true};
+    return {timezone:PROJECT_TIMEZONE,...scope,events:selected.reverse(),archiveRetained:true};
   }
 }

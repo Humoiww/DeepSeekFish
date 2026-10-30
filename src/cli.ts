@@ -17,7 +17,11 @@ import { codexImageSmoke } from './image/codex-smoke.js';
 import { createWebApp } from './web/app.js';
 import { webServer } from './web/server.js';
 import { openLocalBrowser } from './web/browser.js';
+import { PROJECT_TIMEZONE } from './time.js';
+import { DailyQzone,dailyStatus } from './qq/daily-qzone.js';
+import { QzonePublisher } from './qq/qzone-publish.js';
 
+process.env.TZ=PROJECT_TIMEZONE;
 const root=projectRoot();prepare(root);loadSecrets(root);
 const [command='help',...args]=process.argv.slice(2);
 function print(value:unknown):void{console.log(typeof value==='string'?value:JSON.stringify(value,null,2));}
@@ -30,7 +34,20 @@ async function api(route:string,value?:unknown,approval?:string):Promise<any>{
   const data=await res.json();if(!res.ok)throw new FishError(data.error??'LOCAL_API_ERROR');return data;
 }
 async function main():Promise<void>{
-  if(command==='webui'){
+  if(command==='daily-qzone'){
+    const action=args[0]??'status';if(args.length>1||!['status','run','prepare','preview'].includes(action))throw new FishError('USAGE_DAILY_QZONE_STATUS_RUN_PREPARE_PREVIEW');
+    const app=createApp(root,false);
+    try{
+      if(action==='status'){print(dailyStatus(root,app.store));return;}
+      if(!(app.transport instanceof OneBotTransport))throw new FishError('DAILY_QZONE_NEEDS_ONEBOT');
+      // This short-lived worker only runs the owner's schedule, never receives QQ events.
+      const qq=new OneBotTransport(root,app.cfg().onebotUrl,onebotCredential(root),app.store,async()=>{},()=>false);
+      try{
+        const {self}=await qq.inspect(),daily=new DailyQzone(root,app.store,app.cfg,app.model,new QzonePublisher(qq,self));
+        print(action==='preview'?await daily.preview():await daily.run(action==='prepare'));
+      }finally{qq.stop();}
+    }finally{await app.bot.stop();app.store.close();}
+  }else if(command==='webui'){
     if(args.some(a=>!['--mock','--no-open'].includes(a)))throw new FishError('USAGE_WEBUI_MOCK_NO_OPEN');
     const app=createWebApp(root,args.includes('--mock'));let closing=false;
     const stop=()=>{if(closing)return;closing=true;void(async()=>{await app.close();server.close();await once(server,'close');})();};
@@ -128,6 +145,6 @@ async function main():Promise<void>{
     await app.bot.receive({...m,id:randomUUID(),text:'/fish image 测试图片'});
     print({messages:(app.transport as any).sent,files:(app.transport as any).files,task:app.tasks.get(task.id),budget:app.ledger.snapshot()});
     await app.bot.stop();app.store.close();
-  }else print(`DeepSeekFish\n  npm run build / npm test\n  npm run mock / npm start / npm run demo\n  npm run cli -- status|tasks|history GROUP|clear GROUP|cancel ID|stop\n  npm run cli -- set autonomous false\n  npm run cli -- approve ID --reviewed\n  npm run cli -- say "你好小鱼"  (Mock only)\n  npm run bind / npm run cli -- codex-login [--device-auth]\n  npm run doctor / npm run cli -- sandbox-check (keyless, no model turn)\n  npm run cli -- codex-image --reviewed "one-image prompt" (real Codex subscription smoke test)\n  ./start.sh / start.bat (WebUI)\n  npm run cli -- webui [--mock] [--no-open]\n  npm run cli -- web-status|web-stop|web-approve ID --reviewed`);
+  }else print(`DeepSeekFish\n  npm run build / npm test\n  npm run mock / npm start / npm run demo\n  npm run cli -- status|tasks|history GROUP|clear GROUP|cancel ID|stop\n  npm run cli -- set autonomous false\n  npm run cli -- approve ID --reviewed\n  npm run cli -- say "你好小鱼"  (Mock only)\n  npm run bind / npm run cli -- codex-login [--device-auth]\n  npm run cli -- daily-qzone status|preview|prepare|run\n  npm run doctor / npm run cli -- sandbox-check (keyless, no model turn)\n  npm run cli -- codex-image --reviewed "one-image prompt" (real Codex subscription smoke test)\n  ./start.sh / start.bat (WebUI)\n  npm run cli -- webui [--mock] [--no-open]\n  npm run cli -- web-status|web-stop|web-approve ID --reviewed`);
 }
 main().catch(e=>{console.error('DeepSeekFish: '+codeOf(e));process.exitCode=1;});

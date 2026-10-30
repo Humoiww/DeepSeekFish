@@ -19,6 +19,8 @@ import { boundaryStatus } from './codex/platform.js';
 import { QQImageClient } from './qq/image-client.js';
 import { QzoneMemory } from './memory/qzone.js';
 import { QQMedia } from './qq/media.js';
+import { PROJECT_TIMEZONE } from './time.js';
+import { dailyStatus } from './qq/daily-qzone.js';
 
 export function createApp(root:string,mock:boolean,override:Partial<Config>={},demo=false){
   prepare(root);loadSecrets(root);
@@ -63,7 +65,8 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
     try{return fs.existsSync(safePath(root,'runtime/codex-home/auth.json'));}catch{return false;}
   }
   const status=()=>({mode:mock?'mock':'live',enabled:cfg().enabled,qq:transport.status,privateUsers:cfg().privateUsers,
-    memory:{archive:'runtime/memory/days',automaticDays:2,timezone:'Asia/Shanghai',events:(store.db.prepare('SELECT count(*) AS n FROM memory_events').get() as any).n,persona:'personas/active.json'},
+    dailyQzone:dailyStatus(root,store),
+    memory:{archive:'runtime/memory/days',automaticDays:2,timezone:PROJECT_TIMEZONE,events:(store.db.prepare('SELECT count(*) AS n FROM memory_events').get() as any).n,persona:'personas/active.json'},
     qqTransport:config.qqTransport,
     deepseek:{provider:provider.kind,model:config.model,credentialPresent:!!key,status:store.getMeta('modelStatus')??'not probed'},
     codex:{enabled:config.codex,provider:mock?'mock':'official-app-server',unattended:false,localApprovalRequired:true,
