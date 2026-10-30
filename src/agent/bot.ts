@@ -243,13 +243,11 @@ export class Bot {
             roundMedia.push(...media);
           }
           if(finished)break;
-          if(classified&&completion.tool_calls.every(call=>call.function.name==='remember_images')){
-            // Classification is background memory, not a conversational script.
-            // Keep the actual pixels and the user's words, drop the filing exchange.
-            messages.splice(0,messages.length,{role:'system',content:SYSTEM},
-              {role:'user',content:JSON.stringify({...context,...this.media!.context(last.group)})},
-              {role:'user',content:this.media!.parts(last.group,incoming)},...dialogue);
-            trace.push({classificationStored:true,conversationResumed:true});saveTrace();
+          if(classified){
+            // Refresh memory without forgetting the operation just completed.
+            const background=JSON.parse(String(messages[1].content));
+            messages[1]={role:'user',content:JSON.stringify({...background,...this.media!.context(last.group)})};
+            trace.push({classificationStored:true,nativeResultsRetained:true});saveTrace();
           }
           if(roundMedia.length)messages.push({role:'user',content:[{type:'text',text:'工具返回的原图，图片ID、来源或说说ID标在各图前'},...roundMedia]});
           for(const id of viewedIds)visibleImages.add(id);

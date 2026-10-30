@@ -85,7 +85,7 @@ test('bot sees actual images, classifies memes automatically, and later chooses 
       storedId=(options!.tools!.find(t=>t.function.name==='remember_images')!.function.parameters.properties as any).images.items.properties.id.enum[0];
       return {text:'',tool_calls:[call('remember_images',{images:[{id:storedId,description:'黑色逐渐变白的惊讶表情',tags:['惊讶'],meme:true}]})],usage:{input:200,output:70}};
     }
-    if(round===2){assert.ok(messages.every(m=>m.role!=='tool'&&!m.tool_calls));assert.ok(JSON.stringify(messages).includes('黑色逐渐变白'));return {text:'这反应也太真实了。',usage:{input:200,output:20}};}
+    if(round===2){assert.equal(messages.filter(m=>m.role==='tool').length,1);assert.ok(messages.some(m=>m.tool_calls?.some(c=>c.function.name==='remember_images')));assert.ok(JSON.stringify(messages).includes('黑色逐渐变白'));return {text:'这反应也太真实了。',usage:{input:200,output:20}};}
     if(round===3){assert.equal(options?.toolChoice,undefined);return {text:'',tool_calls:[call('send_meme',{id:storedId})],usage:{input:100,output:20}};}
     return {text:'',usage:{input:100,output:1}};
   }};
