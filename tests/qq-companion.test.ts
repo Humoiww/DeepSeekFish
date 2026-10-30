@@ -21,6 +21,7 @@ import { hasToolMarkup } from '../src/agent/tool-protocol.js';
 
 const call=(name:string,args:unknown):ToolCall=>({id:'tool-'+name,type:'function',function:{name,arguments:JSON.stringify(args)}});
 const plan={subject:'一条蓝色的小鱼',scene:'服务器旁边',style:'柔和插画',composition:'主体居中',lighting:'暖光',palette:'蓝白',details:'没有文字'};
+const replyImage=(messages:any[])=>JSON.parse(messages.at(-1).content.find((p:any)=>p.type==='text').text.replace(/^本轮图片结果：/,'')).image;
 function setup(provider:Model,people?:PersonMemory,client?:QQImageClient,qzone?:QzoneMemory){
   const f=fixture({qqTransport:'onebot',privateUsers:['20002'],admins:['20002'],images:true,bufferMs:10000});
   const tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),transport=new MockTransport();
@@ -69,7 +70,9 @@ test('QQ browses originals and passes model-selected image IDs through to GPT',a
       assert.ok(Array.isArray(messages.at(-1)!.content));assert.ok((messages.at(-1)!.content as any[]).some(p=>p.type==='image_url'));
       return {text:'把这张设定图一起丢给她。',tool_calls:[call('generate_image',{remark:'把这张设定图一起丢给她。',referenceIds:['character'],...plan})],usage:{input:100,output:80}};
     }
-    const result=JSON.parse(String(messages.at(-1)!.content));assert.equal(result.references[0].id,'character');
+    const result=replyImage(messages);assert.equal(result.referenceIds[0],'character');assert.equal(result.delivery,'sent');
+    assert.equal(options?.tools,undefined);assert.ok(messages.every(m=>m.role!=='tool'&&!m.tool_calls));assert.equal(messages.at(-1)?.role,'user');
+    assert.ok((messages.at(-1)?.content as any[]).some(p=>p.type==='image_url'));assert.ok(!JSON.stringify(messages).includes(plan.lighting));
     return {text:'这次她照着原图画的。',usage:{input:100,output:20}};
   }};
   f=setup(provider,undefined,client);
@@ -164,11 +167,12 @@ test('image delivery failure preserves the generated artifact for the model and 
     turns++;
     if(turns===1)return {text:'',tool_calls:[call('list_images',{})],usage:{input:100,output:20}};
     if(turns===2)return {text:'',tool_calls:[call('generate_image',plan)],usage:{input:100,output:20}};
-    const result=JSON.parse(String(messages.at(-1)!.content));
-    assert.equal(result.created,true);assert.equal(result.delivered,false);assert.equal(result.deliveryStatus,'unconfirmed');assert.equal(result.imageId,'finished-artifact');assert.ok(result.error);
+    const result=replyImage(messages);
+    assert.equal(result.created,true);assert.equal(result.delivery,'unconfirmed');assert.equal(result.retryScheduled,false);
+    assert.ok(!JSON.stringify(messages).includes('upload timeout'));assert.ok(messages.every(m=>m.role!=='tool'&&!m.tool_calls));
     return {text:'画好了，传图那边还没确认收到。',usage:{input:100,output:20}};
   }};
-  f=setup(provider,undefined,client);f.transport.file=async()=>{throw Error('upload timeout');};
+  f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');f.transport.file=async()=>{throw Error('upload timeout');};
   try{await f.bot.receive(message('可以画吗',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(generated,1);assert.equal(turns,3);assert.match(f.transport.sent[0].text,/画好了/);}
   finally{await f.bot.stop();f.cleanup();}
 });

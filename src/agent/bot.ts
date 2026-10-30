@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { conversationAllowed,type Config } from '../config.js';
 import { Store, redact } from '../storage/db.js';
@@ -86,7 +87,7 @@ export class Bot {
       memory.events=memory.events.filter(event=>event.role!=='assistant'||!hasToolMarkup(event.text));
       if(this.people&&!requestsQzone(last.text)&&!requestsAvatar(last.text))void this.people.refresh(last.user,last.group).catch(e=>this.store.audit('profile-error',last.group,codeOf(e)));
       const savedQzone=this.qzone?.remembered(last.user,last.group,memory);
-      const payload=JSON.stringify({memory:{events:memory.events,needsReference:memory.needsReference},person:personContext(person),qzone:savedQzone?this.qzone!.context(savedQzone):null,character:{appearance:CHARACTER_APPEARANCE,referenceId:'character'},...qqResources(c,this.ledger,last.group,last.user)});
+      const context={memory:{events:memory.events,needsReference:memory.needsReference},person:personContext(person),qzone:savedQzone?this.qzone!.context(savedQzone):null,character:{appearance:CHARACTER_APPEARANCE,referenceId:'character'},...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
       const dialogue:ChatMessage[]=history.map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:m.user==='DeepSeekFish'||last.group.startsWith('private:')?m.text:'['+m.user+'] '+m.text}));
       if(history.at(-1)?.id!==last.id)dialogue.push({role:'user',content:last.text});
       const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
@@ -96,6 +97,8 @@ export class Bot {
         this.imageClient&&(requestsReferences(last.text)||(c.images&&imageIntent))?'list_images':
         /累不累|累了吗|累吗|精力|额度|限额|还能.{0,12}(?:图|张)|剩.{0,12}(?:图|张)|token/i.test(last.text)?'get_quota':undefined;
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,qzoneRead=false;
+      let imageReply:ChatMessage[]|undefined;
+      let imagePreview:ChatPart[]=[];
       const maxRounds=this.imageClient&&imageIntent?6:4,maxCalls=maxRounds;let repaired=false;
       const tracePath='runtime/logs/qq/'+randomUUID()+'.json';makeDir(this.root,'runtime/logs/qq');
       const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,imageIntent,imageRequested,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
@@ -104,8 +107,10 @@ export class Bot {
         for(let round=0;round<maxRounds;round++){
           // Leave a real dispatch slot after browsing, plus a final reply slot.
           const imageDue=imageIntent&&!imageRequested&&!!this.imageClient&&c.images&&(round===maxRounds-2||calls===maxCalls-1);
-          let completion=await this.model.complete(last.group,last.user,messages,{tools,toolChoice:imageDue?'generate_image':round===0?requestedTool:undefined,final:round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});
-          trace.push({round,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
+          const replyOnly=!!imageReply;
+          let completion=await this.model.complete(last.group,last.user,imageReply??messages,{tools:replyOnly?undefined:tools,toolChoice:replyOnly?undefined:imageDue?'generate_image':round===0?requestedTool:undefined,final:replyOnly||round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});
+          trace.push({round,replyOnly,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
+          if(replyOnly&&(hasToolMarkup(completion.text)||completion.tool_calls?.length))throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');
           if(hasToolMarkup(completion.text)){
             if(!completion.tool_calls?.length){
               const tool=tools.find(t=>completion.text.includes(t.function.name));
@@ -180,6 +185,7 @@ export class Bot {
                   trace.push({tool:'generate_image',phase:'generated',at:Date.now(),imageId:image.imageId});saveTrace();
                   result={created:true,delivered:false,deliveryStatus:'unconfirmed',imageId:image.imageId,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
                   const file=this.imageClient.verifiedImage(image.imageId,image.manifest,this.cfg().maxArtifactBytes);
+                  imagePreview=[{type:'image_url',image_url:{url:'data:image/png;base64,'+fs.readFileSync(file).toString('base64'),detail:'high'}}];
                   this.controller.signal.throwIfAborted();
                   if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
                   await this.transport.file(last,file);result={...result as Record<string,unknown>,delivered:true,deliveryStatus:'confirmed'};
@@ -187,6 +193,18 @@ export class Bot {
               }
             }catch(e){result={...(result&&typeof result==='object'?result:{}),error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};}
             trace.push({tool:call.function.name,result,images:media.filter(p=>p.type==='image_url').length});
+            if(call.function.name==='generate_image'&&imageRequested&&!imageReply){
+              const outcome=result as any;
+              const image={created:outcome.created===true,delivery:outcome.created?outcome.delivered?'sent':'unconfirmed':'not_sent',retryScheduled:false,
+                referenceIds:(outcome.references??[]).map((r:{id:string})=>r.id),...(!outcome.created&&outcome.error?{error:outcome.error}:{})};
+              // Return to the human conversation. The full plan, native calls
+              // and transport diagnostics stay in the private trace; they are
+              // not a script for the character's next message.
+              const {character:_appearance,...chatContext}=context;
+              imageReply=[messages[0],{role:'user',content:JSON.stringify({...chatContext,...qqResources(this.cfg(),this.ledger,last.group,last.user)})},...dialogue,
+                {role:'user',content:[{type:'text',text:'本轮图片结果：'+JSON.stringify({image})},...imagePreview]}];
+              trace.push({replyContext:{image,previewImages:imagePreview.length}});
+            }
             saveTrace();
             messages.push({role:'tool',tool_call_id:call.id,content:JSON.stringify(result)});
             roundMedia.push(...media);
