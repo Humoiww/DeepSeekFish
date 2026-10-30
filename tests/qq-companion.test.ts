@@ -71,8 +71,8 @@ test('QQ browses originals and passes model-selected image IDs through to GPT',a
       return {text:'把这张设定图一起丢给她。',tool_calls:[call('generate_image',{remark:'把这张设定图一起丢给她。',referenceIds:['character'],...plan})],usage:{input:100,output:80}};
     }
     const result=replyImage(messages);assert.equal(result.referenceIds[0],'character');assert.equal(result.delivery,'sent');
-    assert.ok(options?.tools?.some(t=>t.function.name==='generate_image'));assert.ok(messages.every(m=>m.role!=='tool'&&!m.tool_calls));assert.equal(messages.at(-1)?.role,'user');
-    assert.ok(!messages.some(m=>Array.isArray(m.content)));assert.equal(result.catalogId,'generated-fixture');assert.ok(!JSON.stringify(messages).includes(plan.lighting));
+    assert.ok(options?.tools?.some(t=>t.function.name==='generate_image'));assert.ok(messages.some(m=>m.role==='tool'));assert.equal(messages.at(-1)?.role,'tool');
+    assert.equal(result.catalogId,'generated-fixture');assert.equal(JSON.parse(String(messages.at(-1)?.content)).delivered,true);
     return {text:'这次她照着原图画的。',usage:{input:100,output:20}};
   }};
   f=setup(provider,undefined,client);
@@ -154,7 +154,7 @@ test('image delivery failure preserves the generated artifact for the model and 
     if(turns===2)return {text:'',tool_calls:[call('generate_image',plan)],usage:{input:100,output:20}};
     const result=replyImage(messages);
     assert.equal(result.created,true);assert.equal(result.delivery,'unconfirmed');assert.equal(result.retryScheduled,false);
-    assert.ok(!JSON.stringify(messages).includes('upload timeout'));assert.ok(messages.every(m=>m.role!=='tool'&&!m.tool_calls));
+    assert.ok(!JSON.stringify(messages).includes('upload timeout'));assert.ok(messages.some(m=>m.role==='tool'));
     return {text:'画好了，传图那边还没确认收到。',usage:{input:100,output:20}};
   }};
   f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');f.transport.file=async()=>{throw Error('upload timeout');};
@@ -169,7 +169,7 @@ test('private image broker accepts model-selected drawings, shares quotas and de
   try{
     const m=message('总算能画了呀',{group:'private:20002',user:'20002'}),image=await client.generate(m,plan,1000);
     assert.equal(image.mock,true);assert.ok(fs.existsSync(f.root+'/runtime/outputs/'+image.imageId+'/image.png'));
-    await assert.rejects(client.generate(m,plan,1000),/QQ_IMAGE_ALREADY_REQUESTED/);
+    const same=await client.generate(m,plan,1000);assert.equal(same.alreadyRequested,true);assert.equal(same.state,'completed');assert.equal(same.imageId,image.imageId);
     const optional=await client.generate({...m,id:'ordinary',text:'这个样子好好笑'},plan,1000);assert.ok(optional.imageId);
     await assert.rejects(client.status({...m,group:'private:30003',user:'30003'}),/TARGET_DENIED/);
     const status=await client.status(m);assert.equal(status.images.used,2);assert.equal(status.images.remaining,18);assert.equal(status.gpt.remainingImages,null);
@@ -197,4 +197,19 @@ test('the provider lets QQ choose any capability including reply, without naming
     const result=await provider.complete([{role:'user',content:'在吗'}],256,{requireTool:true,tools:[{type:'function',function:{name:'reply',description:'回复',parameters:{type:'object'}}}]});
     assert.equal(result.tool_calls?.[0].function.name,'reply');
   }finally{f.cleanup();}
+});
+
+test('repeated image calls return confirmed success without generating or sending again',async()=>{
+  let round=0,generated=0,f:ReturnType<typeof setup>;
+  const client={generate:async()=>{generated++;return {imageId:'fixture',manifest:{},mock:true};},verifiedImage:()=>f.root+'/runtime/outputs/mock.png'} as unknown as QQImageClient;
+  const provider:Model={kind:'fixture',async complete(messages){
+    round++;
+    if(round===1)return {text:'',tool_calls:[{...call('generate_image',plan),id:'first'}],usage:{input:100,output:50}};
+    const result=JSON.parse(String(messages.at(-1)?.content));assert.equal(result.created,true);assert.equal(result.delivered,true);assert.equal(result.error,undefined);
+    if(round===2)return {text:'',tool_calls:[{...call('generate_image',{...plan,remark:'不要重复发这句'}),id:'retry'}],usage:{input:100,output:50}};
+    assert.equal(result.reused,true);return {text:'',tool_calls:[call('reply',{text:'笑得真欠。'})],usage:{input:100,output:20}};
+  }};
+  f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
+  try{await f.bot.receive(message('整一个你的版本',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(generated,1);assert.equal(f.transport.files.length,1);assert.deepEqual(f.transport.sent.map(m=>m.text),['笑得真欠。']);assert.equal(JSON.parse(f.store.getMeta('qq-image-result:fixture')!).delivered,true);}
+  finally{await f.bot.stop();f.cleanup();}
 });

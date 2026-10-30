@@ -46,11 +46,14 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
         if(body.op==='list'){res.end(JSON.stringify(library.list(body.conversation,body.user,body.source,body.offset)));return;}
         if(body.op==='view'){res.end(JSON.stringify(library.view(body.conversation,body.user,body.referenceIds)));return;}
         if(body.op!=='image'||!c.images)throw new FishError('IMAGE_DISABLED');
-        if(typeof body.messageId!=='string'||body.messageId.length>200||typeof body.request!=='string'||body.request.length>2000||!body.request.trim())throw new FishError('QQ_IMAGE_REQUEST_REQUIRED');
+        if(typeof body.messageId!=='string'||!body.messageId.trim()||body.messageId.length>200||typeof body.request!=='string'||body.request.length>2000||!body.request.trim())throw new FishError('INVALID_QQ_IMAGE_REQUEST');
+        const existing=()=>store.db.prepare('SELECT state,image_id AS imageId,error FROM qq_image_requests WHERE conversation=? AND message_id=?').get(body.conversation,body.messageId);
+        const previous=existing();
+        if(previous){res.end(JSON.stringify({...previous,alreadyRequested:true,resources:qqResources(c,ledger,body.conversation,body.user)}));return;}
         const plan=validateImagePlan(body.plan);
         const selected=library.select(body.conversation,body.user,body.referenceIds??[]);
         const claimed=store.db.prepare('INSERT OR IGNORE INTO qq_image_requests VALUES (?,?,?,?,?)').run(body.conversation,body.messageId,'claimed','','').changes;
-        if(!claimed)throw new FishError('QQ_IMAGE_ALREADY_REQUESTED');
+        if(!claimed){res.end(JSON.stringify({...existing(),alreadyRequested:true,resources:qqResources(c,ledger,body.conversation,body.user)}));return;}
         try{
           const before=await quota.beforeImage(false);
           const prompt='用户这次想画：'+body.request+'\n'+Object.entries(imageFields).map(([k,label])=>label+'：'+plan[k as keyof typeof plan]).join('\n');

@@ -96,7 +96,9 @@ export class Bot {
       const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
       if(incoming.length)messages.push({role:'user',content:this.media!.parts(last.group,incoming)});
       const tools=[...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
-      const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeAttempted=false,memeSent=false;
+      const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeSent=false;
+      let imageOutcome:Record<string,unknown>|undefined;const memeResults=new Map<string,Record<string,unknown>>();
+      const visibleImages=new Set(mediaIds);
       const maxRounds=8,maxCalls=8;let repaired=false;
       const tracePath='runtime/logs/qq/'+randomUUID()+'.json';makeDir(this.root,'runtime/logs/qq');
       const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,toolPolicy:'model-choice',imageRequested,received:incoming,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
@@ -122,7 +124,7 @@ export class Bot {
           if(!completion.tool_calls?.length){if(!completion.text.trim()){if(memeSent)break;throw new FishError('DEEPSEEK_EMPTY_RESPONSE');}await this.send(last,completion.text);break;}
           if(round===maxRounds-1||calls+completion.tool_calls.length>maxCalls)throw new FishError('QQ_TOOL_LIMIT');
           messages.push({role:'assistant',content:completion.text,tool_calls:completion.tool_calls});
-          let said=false;const roundMedia:ChatPart[]=[];let conversationResume:ChatMessage[]|undefined;let classified=false;let finished=false;
+          let said=false;const roundMedia:ChatPart[]=[];const viewedIds:string[]=[];let classified=false;let finished=false;
           for(const call of completion.tool_calls){
             if(used.has(call.id))throw new FishError('DUPLICATE_TOOL_CALL');used.add(call.id);calls++;
             let result:unknown,media:ReturnType<PersonMemory['images']>=[];let imageAttempt=false;
@@ -141,18 +143,37 @@ export class Bot {
                   const source=incoming.find(m=>m.id===item.id)!,owner=batch.find(m=>m.id===source.messageId)!;
                   this.memory.record({id:'media:'+owner.id+':'+item.id,conversation:last.group,actor:owner.user,role:'user',text:JSON.stringify({imageId:item.id,description:item.description,animated:item.animated,meme:item.meme,tags:item.tags}),at:owner.at,source:'qq-image-observation'});
                 }
+              }else if(call.function.name==='collect_meme'){
+                if(!this.media||!this.imageClient||typeof args.imageId!=='string'||Object.keys(args).some(k=>!['imageId','description','tags'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
+                const selected=await this.imageClient.view(last,[args.imageId],this.controller.signal);
+                const source=selected.images?.[0];if(source?.id!==args.imageId||typeof source.data!=='string')throw new FishError('IMAGE_REFERENCE_NOT_AVAILABLE');
+                if(!visibleImages.has(args.imageId)){
+                  result={saved:false,phase:'preview',imageId:args.imageId,next:'原图已返回；看图后调用 collect_meme 保存描述和标签。'};
+                  media=[{type:'text',text:JSON.stringify({imageId:source.id,source:source.label})},{type:'image_url',image_url:{url:'data:'+source.mime+';base64,'+source.data,detail:'high'}}];viewedIds.push(source.id);
+                }else result={saved:true,meme:await this.media.collect(last.group,args.imageId,Buffer.from(source.data,'base64'),args.description,args.tags)};
               }else if(call.function.name==='find_memes'){
-                if(!this.media||Object.keys(args).some(k=>k!=='query'))throw new FishError('INVALID_TOOL_ARGS');
-                result={memes:this.media.find(last.group,args.query)};
+                if(!this.media||Object.keys(args).some(k=>!['query','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
+                result=this.media.browse(last.group,args.query,args.offset??0);
               }else if(call.function.name==='send_meme'){
-                if(!this.media||!this.transport.meme||typeof args.id!=='string'||Object.keys(args).some(k=>k!=='id')||memeAttempted)throw new FishError('QQ_MEME_SEND_UNAVAILABLE');
-                const original=this.media.original(last.group,args.id);memeAttempted=true;
-                trace.push({tool:'send_meme',phase:'submitted',id:args.id});saveTrace();
-                if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
-                result={sent:false,deliveryStatus:'unconfirmed',retryScheduled:false,id:args.id};
-                await this.transport.meme(last,original);memeSent=true;this.media.sent(last.group,args.id);
-                const item=this.media.describe(last.group,args.id);result={sent:true,deliveryStatus:'confirmed',id:args.id,animated:item.animated};
-                this.memory.record({id:'meme:'+randomUUID(),conversation:last.group,actor:'DeepSeekFish',role:'assistant',text:'[发送表情包] '+item.description,at:Date.now(),source:'qq-meme-sent'});
+                if(!this.media||!this.transport.meme)throw new FishError('QQ_MEME_TRANSPORT_UNAVAILABLE');
+                const ids=args.ids??[args.id];
+                if(Object.keys(args).some(k=>!['id','ids'].includes(k))||args.ids!==undefined&&args.id!==undefined||!Array.isArray(ids)||!ids.length||ids.length>12||ids.some(id=>typeof id!=='string'))throw new FishError('INVALID_TOOL_ARGS');
+                const delivered:Record<string,unknown>[]=[];
+                for(const id of ids){
+                  const prior=memeResults.get(id);if(prior){delivered.push({...prior,reused:true});continue;}
+                  let outcome:Record<string,unknown>={id,sent:false,deliveryStatus:'not_attempted',retryScheduled:false};
+                  try{
+                    const original=this.media.original(last.group,id);
+                    if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
+                    outcome={...outcome,deliveryStatus:'unconfirmed'};memeResults.set(id,outcome);
+                    trace.push({tool:'send_meme',phase:'submitted',id});saveTrace();
+                    await this.transport.meme(last,original);memeSent=true;this.media.sent(last.group,id);
+                    const item=this.media.describe(last.group,id);outcome={id,sent:true,deliveryStatus:'confirmed',animated:item.animated};
+                    this.memory.record({id:'meme:'+randomUUID(),conversation:last.group,actor:'DeepSeekFish',role:'assistant',text:'[发送表情包] '+item.description,at:Date.now(),source:'qq-meme-sent'});
+                  }catch(e){outcome={...outcome,error:codeOf(e)};}
+                  memeResults.set(id,outcome);delivered.push(outcome);
+                }
+                result=args.ids?{images:delivered}:delivered[0];
               }else if(call.function.name==='list_images'){
                 if(!this.imageClient||Object.keys(args).some(k=>!['source','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
                 result=await this.imageClient.list(last,args.source??'all',args.offset??0,this.controller.signal);
@@ -160,6 +181,7 @@ export class Bot {
                 if(!this.imageClient||Object.keys(args).some(k=>k!=='imageIds')||!Array.isArray(args.imageIds)||!args.imageIds.length)throw new FishError('INVALID_TOOL_ARGS');
                 const viewed=await this.imageClient.view(last,args.imageIds,this.controller.signal);
                 result={images:viewed.images.map(({data,...image}:any)=>image)};
+                viewedIds.push(...viewed.images.map((image:any)=>image.id));
                 media=viewed.images.flatMap((image:any)=>[{type:'text',text:JSON.stringify({imageId:image.id,source:image.label})},{type:'image_url',image_url:{url:'data:'+image.mime+';base64,'+image.data,detail:'high'}}]);
               }else if(call.function.name==='get_quota'){
                 if(Object.keys(args).length)throw new FishError('INVALID_TOOL_ARGS');
@@ -180,30 +202,40 @@ export class Bot {
                   this.store.setMeta(cursorKey,JSON.stringify({index:snapshot.index,nextIndex:snapshot.nextIndex,at:Date.now()}));
                   result=this.qzone.context(snapshot);media=this.qzone.images(snapshot);
                 }else if(call.function.name==='generate_image'){
-                  if(!this.imageClient||!this.cfg().images||imageRequested)throw new FishError('QQ_IMAGE_REQUEST_REQUIRED');
+                  if(!this.imageClient||!this.cfg().images)throw new FishError('IMAGE_DISABLED');
+                  if(imageRequested){result={...imageOutcome,reused:true};}
+                  else{
                   const {remark:_remark,referenceIds=[],...values}=args,plan=validateImagePlan(values);imageRequested=true;imageAttempt=true;
                   if(!said&&remark){await this.send(last,remark);said=true;}
                   trace.push({tool:'generate_image',phase:'submitted',at:Date.now(),referenceIds});saveTrace();
                   const image=await this.imageClient.generate(last,plan,this.cfg().codexTimeoutMs,this.controller.signal,referenceIds);
-                  trace.push({tool:'generate_image',phase:'generated',at:Date.now(),imageId:image.imageId});saveTrace();
-                  result={created:true,delivered:false,deliveryStatus:'unconfirmed',imageId:image.imageId,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
+                  trace.push({tool:'generate_image',phase:image.alreadyRequested?'existing':'generated',state:image.state,at:Date.now(),imageId:image.imageId});saveTrace();
+                  if(image.alreadyRequested){
+                    result={created:image.state==='completed',imageId:image.imageId,deliveryStatus:'unconfirmed',...JSON.parse(this.store.getMeta('qq-image-result:'+image.imageId)??'{}'),reused:true,state:image.state,...(image.error?{error:image.error}:{})};
+                  }else{
+                  result={created:true,delivered:false,deliveryStatus:'unconfirmed',imageId:image.imageId,catalogId:'generated-'+image.imageId,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
                   const file=this.imageClient.verifiedImage(image.imageId,image.manifest,this.cfg().maxArtifactBytes);
                   this.controller.signal.throwIfAborted();
                   if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
                   await this.transport.file(last,file);result={...result as Record<string,unknown>,delivered:true,deliveryStatus:'confirmed'};
+                  }
+                  }
                 }
               }
             }catch(e){result={...(result&&typeof result==='object'?result:{}),error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};}
             trace.push({tool:call.function.name,result,images:media.filter(p=>p.type==='image_url').length});
             if(imageAttempt){
-              const outcome=result as any;
+              imageOutcome=result as Record<string,unknown>;
+              const outcome=imageOutcome;
               const image={created:outcome.created===true,delivery:outcome.created?outcome.delivered?'sent':'unconfirmed':'not_sent',retryScheduled:false,
-                referenceIds:(outcome.references??[]).map((r:{id:string})=>r.id),...(outcome.created?{catalogId:'generated-'+outcome.imageId}:{}),...(!outcome.created&&outcome.error?{error:outcome.error}:{})};
-              // Return to the human conversation. The full plan, native calls
-              // and transport diagnostics stay in the private trace; they are
-              // not a script for the character's next message.
+                referenceIds:((outcome.references??[]) as {id:string}[]).map(r=>r.id),...(outcome.created?{catalogId:'generated-'+outcome.imageId}:{}),...(!outcome.created&&outcome.error?{error:outcome.error}:{})};
+              if(outcome.created&&outcome.imageId){
+                const {resources:_resources,...receipt}=outcome;this.store.setMeta('qq-image-result:'+outcome.imageId,JSON.stringify(receipt));
+              }
+              // Preserve the native call/result chain so completion cannot be
+              // mistaken for a new request. Keep current facts in the background.
               const {character:_appearance,...chatContext}=context;
-              conversationResume=[messages[0],{role:'user',content:JSON.stringify({...chatContext,actions:{...qqImageActivity(this.ledger,last.group,last.id),lastImage:image},...qqResources(this.cfg(),this.ledger,last.group,last.user)})},...dialogue];
+              messages[1]={role:'user',content:JSON.stringify({...chatContext,actions:{...qqImageActivity(this.ledger,last.group,last.id),lastImage:image},...qqResources(this.cfg(),this.ledger,last.group,last.user)})};
               trace.push({replyContext:{image,previewImages:0}});
             }
             saveTrace();
@@ -211,8 +243,7 @@ export class Bot {
             roundMedia.push(...media);
           }
           if(finished)break;
-          if(conversationResume)messages.splice(0,messages.length,...conversationResume);
-          else if(classified&&completion.tool_calls.every(call=>call.function.name==='remember_images')){
+          if(classified&&completion.tool_calls.every(call=>call.function.name==='remember_images')){
             // Classification is background memory, not a conversational script.
             // Keep the actual pixels and the user's words, drop the filing exchange.
             messages.splice(0,messages.length,{role:'system',content:SYSTEM},
@@ -221,6 +252,7 @@ export class Bot {
             trace.push({classificationStored:true,conversationResumed:true});saveTrace();
           }
           if(roundMedia.length)messages.push({role:'user',content:[{type:'text',text:'工具返回的原图，图片ID、来源或说说ID标在各图前'},...roundMedia]});
+          for(const id of viewedIds)visibleImages.add(id);
         }
       }catch(e){trace.push({error:codeOf(e)});throw e;}finally{saveTrace();}
       this.gate.record(last.group);this.store.audit('speech',last.group,reason);

@@ -49,6 +49,28 @@ export class QQMedia {
     finally{await reader.cancel().catch(()=>{});}
     return Buffer.concat(chunks);
   }
+  private async keepOriginal(conversation:string,sender:string,bytes:Buffer,at:number,sourceImageId?:string){
+    const id='media-'+createHash('sha256').update(conversation+'\0').update(bytes).digest('hex').slice(0,32);
+    const known=this.store.db.prepare('SELECT id FROM qq_media WHERE id=? AND conversation=?').get(id,conversation);
+    if(known){this.store.db.prepare('UPDATE qq_media SET observed=? WHERE id=?').run(at,id);return id;}
+    const size=(this.store.db.prepare('SELECT coalesce(sum(bytes),0) AS n FROM qq_media').get() as {n:number}).n;
+    if(size+bytes.length>536870912)throw new FishError('QQ_MEDIA_STORAGE_FULL');
+    const decoded=await decodeMedia(bytes),folder='runtime/memory/media/'+id;makeDir(this.root,folder);
+    const relative=folder+'/original.'+decoded.mime.split('/')[1],{frames,...meta}=decoded;
+    try{
+      fs.writeFileSync(safePath(this.root,relative),bytes,{flag:'wx',mode:0o600});
+      for(const frame of frames)fs.writeFileSync(safePath(this.root,folder+'/frame-'+frame.index+'.png'),frame.png,{flag:'wx',mode:0o600});
+      const info={...meta,frames:frames.map(({png,...frame})=>frame),...(sourceImageId?{sourceImageId}:{})};
+      this.store.db.prepare('INSERT INTO qq_media VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id,conversation,sender,relative,bytes.length,JSON.stringify(info),at,0,'','[]',0);
+    }catch(e){fs.rmSync(safePath(this.root,folder),{recursive:true,force:true});throw e;}
+    return id;
+  }
+  async collect(conversation:string,imageId:string,bytes:Buffer,description:unknown,tags:unknown){
+    // The caller obtains bytes by resolving an opaque, conversation-scoped catalog ID.
+    if(typeof imageId!=='string'||!imageId||imageId.length>180||typeof description!=='string'||!description.trim()||description.length>300||!Array.isArray(tags)||tags.length>6||tags.some(t=>typeof t!=='string'||!t.trim()||t.length>30))throw new FishError('QQ_MEDIA_DESCRIPTION_INVALID');
+    const id=await this.keepOriginal(conversation,'DeepSeekFish',bytes,Date.now(),imageId);
+    return this.remember(conversation,[{id,description,tags,meme:true}],[id])[0];
+  }
   async ingest(batch:Message[],signal?:AbortSignal):Promise<ReceivedMedia[]>{
     const result:ReceivedMedia[]=[];
     for(const m of batch)for(const [position,attachment] of (m.images??[]).entries()){
@@ -60,21 +82,7 @@ export class QQMedia {
         let bytes:Buffer;
         try{if(!attachment.url)throw new FishError('QQ_IMAGE_URL_MISSING');bytes=await this.download(attachment.url,signal);}
         catch(e){if(!attachment.file||!this.fallback||signal?.aborted)throw e;bytes=await this.download(await this.fallback(attachment.file),signal);}
-        const id='media-'+createHash('sha256').update(m.group+'\0').update(bytes).digest('hex').slice(0,32);
-        const known=this.store.db.prepare('SELECT id FROM qq_media WHERE id=? AND conversation=?').get(id,m.group);
-        if(!known){
-          const size=(this.store.db.prepare('SELECT coalesce(sum(bytes),0) AS n FROM qq_media').get() as {n:number}).n;
-          if(size+bytes.length>536870912)throw new FishError('QQ_MEDIA_STORAGE_FULL');
-          const decoded=await decodeMedia(bytes),folder='runtime/memory/media/'+id;makeDir(this.root,folder);
-          const relative=folder+'/original.'+decoded.mime.split('/')[1];
-          const {frames,...meta}=decoded;
-          try{
-            fs.writeFileSync(safePath(this.root,relative),bytes,{flag:'wx',mode:0o600});
-            for(const frame of frames)fs.writeFileSync(safePath(this.root,folder+'/frame-'+frame.index+'.png'),frame.png,{flag:'wx',mode:0o600});
-            const info={...meta,frames:frames.map(({png,...frame})=>frame)};
-            this.store.db.prepare('INSERT INTO qq_media VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id,m.group,m.user,relative,bytes.length,JSON.stringify(info),m.at,0,'','[]',0);
-          }catch(e){fs.rmSync(safePath(this.root,folder),{recursive:true,force:true});throw e;}
-        }else this.store.db.prepare('UPDATE qq_media SET observed=? WHERE id=?').run(m.at,id);
+        const id=await this.keepOriginal(m.group,m.user,bytes,m.at);
         this.store.db.prepare('INSERT INTO qq_media_messages VALUES (?,?,?,?)').run(m.group,m.id,position,id);
         result.push({messageId:m.id,position,id,stickerHint:attachment.stickerHint});
       }catch(e){result.push({messageId:m.id,position,error:codeOf(e)});this.store.audit('media-error',m.group,codeOf(e));}
@@ -85,7 +93,7 @@ export class QQMedia {
     const row=this.store.db.prepare('SELECT * FROM qq_media WHERE id=? AND conversation=?').get(id,conversation) as unknown as MediaRow|undefined;
     if(!row||memeOnly&&!row.meme)throw new FishError('QQ_MEDIA_NOT_AVAILABLE');return row;
   }
-  describe(conversation:string,id:string){const r=this.row(conversation,id),m=JSON.parse(r.meta);return {id,animated:m.pages>1,frames:m.pages,sampledFrames:m.frames.map((f:any)=>f.index+1),durationMs:m.durationMs,description:r.description,tags:JSON.parse(r.tags),meme:!!r.meme};}
+  describe(conversation:string,id:string){const r=this.row(conversation,id),m=JSON.parse(r.meta);return {id,sourceImageId:m.sourceImageId,animated:m.pages>1,frames:m.pages,sampledFrames:m.frames.map((f:any)=>f.index+1),durationMs:m.durationMs,description:r.description,tags:JSON.parse(r.tags),meme:!!r.meme};}
   parts(conversation:string,media:ReceivedMedia[]):ChatPart[]{
     const parts:ChatPart[]=[],seen=new Set<string>();
     const allowance=Math.max(1,Math.floor(8/Math.max(1,new Set(media.flatMap(m=>m.id?[m.id]:[])).size)));
@@ -116,11 +124,13 @@ export class QQMedia {
     const rows=this.store.db.prepare('SELECT id FROM qq_media WHERE conversation=? AND observed>=? ORDER BY observed DESC LIMIT 6').all(conversation,dayStart()-86400000) as {id:string}[];
     return {recentImages:rows.map(r=>this.describe(conversation,r.id)),memes:this.find(conversation,'').slice(0,6)};
   }
-  find(conversation:string,query:string){
-    if(typeof query!=='string'||query.length>100)throw new FishError('QQ_MEME_QUERY_INVALID');
+  find(conversation:string,query:string){return this.browse(conversation,query).memes;}
+  browse(conversation:string,query:string,offset=0){
+    if(typeof query!=='string'||query.length>100||!Number.isInteger(offset)||offset<0||offset>10000)throw new FishError('QQ_MEME_QUERY_INVALID');
     const rows=this.store.db.prepare('SELECT id,description,tags,last_sent FROM qq_media WHERE conversation=? AND meme=1 ORDER BY last_sent ASC,observed DESC LIMIT 500').all(conversation) as {id:string;description:string;tags:string;last_sent:number}[];
     const words=query.toLowerCase().split(/[\s,，、]+/).filter(Boolean);
-    return rows.filter(r=>!words.length||words.some(w=>(r.description+r.tags).toLowerCase().includes(w))).slice(0,12).map(r=>({...this.describe(conversation,r.id),lastSent:r.last_sent||null}));
+    const found=rows.filter(r=>!words.length||words.some(w=>(r.description+r.tags).toLowerCase().includes(w)));
+    return {memes:found.slice(offset,offset+12).map(r=>({...this.describe(conversation,r.id),lastSent:r.last_sent||null})),total:found.length,nextOffset:offset+12<found.length?offset+12:null};
   }
   original(conversation:string,id:string):Buffer{
     const r=this.row(conversation,id,true),file=safePath(this.root,r.path),st=fs.lstatSync(file);
@@ -131,6 +141,7 @@ export class QQMedia {
 }
 export function mediaTools(ids:string[]):ModelTool[]{return [
   ...(ids.length?[{type:'function' as const,function:{name:'remember_images',description:'将本次图片的可见内容、文字、动图变化记入后台；识别为表情包则收藏。聊天可以自行接梗。',parameters:{type:'object',properties:{images:{type:'array',minItems:ids.length,maxItems:ids.length,items:{type:'object',properties:{id:{type:'string',enum:ids},description:{type:'string',maxLength:300},meme:{type:'boolean',description:'表达情绪、反应或梗的表情图；普通照片和截图不自动算表情包'},tags:{type:'array',maxItems:6,items:{type:'string',maxLength:30},description:'情绪、含义及适合的聊天场景'}},required:['id','description','meme','tags'],additionalProperties:false}}},required:['images'],additionalProperties:false}}}]:[]),
-  {type:'function',function:{name:'find_memes',description:'按含义或情绪找已收藏的表情包；空查询浏览图库。',parameters:{type:'object',properties:{query:{type:'string',maxLength:100}},required:['query'],additionalProperties:false}}},
-  {type:'function',function:{name:'send_meme',description:'聊天气氛合适时，自选一张收藏表情发给对方；也可以只发图，动图发送原动画。',parameters:{type:'object',properties:{id:{type:'string'}},required:['id'],additionalProperties:false}}}
+  {type:'function',function:{name:'collect_meme',description:'从图库收藏表情，包括自己生成的图。imageId 来自图库或生图结果；本轮没看过原图时先返回图片，看图后再调用保存描述/标签，已有收藏则更新。',parameters:{type:'object',properties:{imageId:{type:'string'},description:{type:'string',maxLength:300},tags:{type:'array',maxItems:6,items:{type:'string',maxLength:30}}},required:['imageId','description','tags'],additionalProperties:false}}},
+  {type:'function',function:{name:'find_memes',description:'按含义或情绪找已收藏的表情包；空查询浏览，nextOffset 可继续下一页。',parameters:{type:'object',properties:{query:{type:'string',maxLength:100},offset:{type:'integer',minimum:0,maximum:10000}},required:['query'],additionalProperties:false}}},
+  {type:'function',function:{name:'send_meme',description:'发送收藏表情；id 发一张，ids 发多张。也可以只发图，动图发送原动画，同一轮重复ID返回已有送达状态。',parameters:{type:'object',properties:{id:{type:'string'},ids:{type:'array',minItems:1,maxItems:12,items:{type:'string'}}},additionalProperties:false}}}
 ];}

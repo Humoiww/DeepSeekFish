@@ -20,5 +20,6 @@ export function qqImageActivity(ledger:Ledger,conversation:string,messageId:stri
   if(!ledger.store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='qq_image_requests'").get())return {messageId,currentImage:null,recentImages:[]};
   const current=ledger.store.db.prepare('SELECT state,image_id AS imageId,error FROM qq_image_requests WHERE conversation=? AND message_id=?').get(conversation,messageId)??null;
   const recent=ledger.store.db.prepare('SELECT message_id AS messageId,state,image_id AS imageId,error FROM qq_image_requests WHERE conversation=? ORDER BY rowid DESC LIMIT 5').all(conversation);
-  return {messageId,currentImage:current,recentImages:recent};
+  const receipt=(row:any)=>row?{...row,...JSON.parse(ledger.store.getMeta('qq-image-result:'+row.imageId)??'{}')}:null;
+  return {messageId,currentImage:receipt(current),recentImages:recent.map(receipt)};
 }

@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
 import { fixture,message } from './helpers.js';
+import type { QQImageClient } from '../src/qq/image-client.js';
 import { QQImageLibrary } from '../src/qq/image-library.js';
 import { QQMedia,decodeMedia,qqImageUrl } from '../src/qq/media.js';
 import { OneBotTransport } from '../src/qq/onebot.js';
@@ -128,4 +129,41 @@ test('received media are real GPT references, scoped by conversation and time, w
     f.store.db.prepare("UPDATE qq_media SET path='runtime/codex-home/auth.json'").run();
     assert.throws(()=>library.select('private:20002','20002',[id]),/NOT_AVAILABLE/);
   }finally{f.cleanup();}
+});
+
+test('the model can collect its generated pictures, then send several originals and deduplicate repeats',async()=>{
+  const f=fixture({qqTransport:'onebot',privateUsers:['20002'],bufferMs:10000}),media=new QQMedia(f.root,f.store);
+  f.store.db.exec('CREATE TABLE qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT)');
+  const sourceIds=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222'],originals:Buffer[]=[];
+  for(const [i,id] of sourceIds.entries()){
+    const bytes=await sharp({create:{width:16,height:16,channels:3,background:i?'red':'blue'}}).png().toBuffer();originals.push(bytes);
+    fs.mkdirSync(f.root+'/runtime/outputs/'+id);fs.writeFileSync(f.root+'/runtime/outputs/'+id+'/image.png',bytes);
+    f.store.db.prepare('INSERT INTO qq_image_requests VALUES (?,?,?,?,?)').run('private:20002','m'+i,'completed',id,'');
+  }
+  const library=new QQImageLibrary(f.root,f.store),catalog=library.list('private:20002','20002','generated');
+  assert.equal(catalog.images[0].position,1);assert.equal(catalog.images[0].messageId,'m1');assert.match(catalog.images[0].label,/最新/);
+  const client={view:async(m:any,ids:string[])=>library.view(m.group,m.user,ids)} as QQImageClient;
+  const transport=new MockTransport() as MockTransport&{meme:(m:any,b:Buffer)=>Promise<void>},sent:Buffer[]=[];transport.meme=async(_m,b)=>{sent.push(b);};
+  let round=0,ids:string[]=[];
+  const provider:Model={kind:'fixture',async complete(messages,_max,options){
+    round++;assert.ok(options?.tools?.some(t=>t.function.name==='collect_meme'));
+    const collection=(i:number)=>call('collect_meme',{imageId:'generated-'+sourceIds[i],description:'自己画的反应表情'+i,tags:['得意']},'collect'+round+'-'+i);
+    if(round===1)return {text:'',tool_calls:[collection(0)],usage:{input:100,output:50}};
+    if(round===2){assert.equal(media.find('private:20002','').length,0);assert.ok(messages.some(m=>m.role==='tool'&&String(m.content).includes('preview')));return {text:'',tool_calls:[call('view_images',{imageIds:sourceIds.map(id=>'generated-'+id)})],usage:{input:100,output:20}};}
+    if(round===3)return {text:'',tool_calls:[collection(0),collection(1)],usage:{input:100,output:80}};
+    if(round===4){ids=messages.slice(-2).map(m=>JSON.parse(String(m.content)).meme.id);return {text:'',tool_calls:[call('send_meme',{ids})],usage:{input:100,output:30}};}
+    if(round===5){const result=JSON.parse(String(messages.at(-1)?.content));assert.ok(result.images.every((m:any)=>m.sent));return {text:'',tool_calls:ids.map((id,i)=>call('send_meme',{id},'retry'+i)),usage:{input:100,output:30}};}
+    for(const m of messages.slice(-2)){const result=JSON.parse(String(m.content));assert.equal(result.sent,true);assert.equal(result.reused,true);}
+    return {text:'',tool_calls:[call('reply',{text:''})],usage:{input:100,output:10}};
+  }};
+  const tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner());
+  const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),tasks,new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport,undefined,client,undefined,media);
+  try{
+    await bot.receive(message('把你自己的表情收藏起来，发给我看看',{group:'private:20002',user:'20002'}));await bot.flush();
+    assert.equal(round,6);assert.equal(sent.length,2);assert.ok(sent.every(b=>originals.some(o=>o.equals(b))));assert.equal(f.ledger.value('image'),0);
+    assert.equal(new QQMedia(f.root,f.store).find('private:20002','得意').length,2);assert.equal(media.find('private:30003','').length,0);
+    assert.equal(library.list('private:20002','20002','collected').total,2);
+    await assert.rejects(client.view({group:'private:30003',user:'30003'} as any,['generated-'+sourceIds[0]]),/NOT_AVAILABLE/);
+    const first=media.find('private:20002','')[0];await media.collect('private:20002',first.sourceImageId,media.original('private:20002',first.id),first.description,first.tags);assert.equal(media.find('private:20002','').length,2);
+  }finally{await bot.stop();f.cleanup();}
 });
