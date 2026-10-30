@@ -52,4 +52,6 @@ sudo bash scripts/enable-qq-images.sh
 
 QQ 记录从请求开始持续更新，包含 imageIntent 与 imageRequested；生图分别记录提交、生成的 imageId 和发送成功结果。尚在生成的任务也能直接查看进度，提前结束后的原生调用恢复另行记录，不再只在整轮结束后落盘。
 
+QQ 图片上传等待回执最多 60 秒，普通文字/API 调用仍为 10 秒。上传超时不等于图片生成失败：工具结果保留 created、imageId 和未确认的 deliveryStatus，不重跑生图或盲目重发；可以根据原 QQ 消息历史核实迟到的图片。
+
 登录持久化修复见 [QQ 接入](qq-onebot.md)。用户实际采用密码登录，不能按扫码推断。缓存失效时优先使用已保存的密码回退，不清空自动登录账号；设备验证仍由 QQ 原有流程完成。

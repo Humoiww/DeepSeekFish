@@ -178,13 +178,14 @@ export class Bot {
                   trace.push({tool:'generate_image',phase:'submitted',at:Date.now(),referenceIds});saveTrace();
                   const image=await this.imageClient.generate(last,plan,this.cfg().codexTimeoutMs,this.controller.signal,referenceIds);
                   trace.push({tool:'generate_image',phase:'generated',at:Date.now(),imageId:image.imageId});saveTrace();
+                  result={created:true,delivered:false,deliveryStatus:'unconfirmed',imageId:image.imageId,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
                   const file=this.imageClient.verifiedImage(image.imageId,image.manifest,this.cfg().maxArtifactBytes);
                   this.controller.signal.throwIfAborted();
                   if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
-                  await this.transport.file(last,file);result={created:true,delivered:true,imageId:image.imageId,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
+                  await this.transport.file(last,file);result={...result as Record<string,unknown>,delivered:true,deliveryStatus:'confirmed'};
                 }
               }
-            }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};}
+            }catch(e){result={...(result&&typeof result==='object'?result:{}),error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};}
             trace.push({tool:call.function.name,result,images:media.filter(p=>p.type==='image_url').length});
             saveTrace();
             messages.push({role:'tool',tool_call_id:call.id,content:JSON.stringify(result)});

@@ -132,7 +132,9 @@ export class OneBotTransport implements Transport {
     const base=safePath(this.root,'runtime/outputs'),relative=path.relative(base,file).split(path.sep).join('/');
     const png=verifyPng(base,relative,10485760);
     const target=this.target(message.group);
-    await this.call(target.action,{...target.params,message:[{type:'image',data:{file:'base64://'+fs.readFileSync(png).toString('base64')}}]});
+    // QQ uploads the image before acknowledging the send; the text/action
+    // timeout is too short for a normal PNG upload on a small VPS.
+    await this.call(target.action,{...target.params,message:[{type:'image',data:{file:'base64://'+fs.readFileSync(png).toString('base64')}}]},60000);
   }
   private target(conversation:string):{action:'send_group_msg'|'send_private_msg';params:Record<string,string>}{
     if(conversation.startsWith('private:')){

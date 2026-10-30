@@ -68,3 +68,25 @@ test('QQ social chat cannot turn on ordinary Codex in image-only deployment',asy
   try{process.env.FISH_CODEX_IMAGE_ONLY='1';app=createApp(f.root,true,{codex:true});assert.equal(app.cfg().codex,false);assert.throws(()=>app!.set('codex',true),/CODEX_IMAGE_ONLY/);}
   finally{if(app)await app.bot.stop();if(app)app.store.close();f.cleanup();if(old===undefined)delete process.env.FISH_CODEX_IMAGE_ONLY;else process.env.FISH_CODEX_IMAGE_ONLY=old;}
 });
+test('image upload acknowledgement can arrive after the ordinary action deadline',async(t)=>{
+  const {WebSocketServer}=createRequire(import.meta.url)('ws');
+  const server=new WebSocketServer({host:'127.0.0.1',port:0});await once(server,'listening');
+  const f=fixture(),out=await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
+  assert.equal(out.status,'ok');
+  let acknowledge:()=>void=()=>{},received!:()=>void;
+  const uploading=new Promise<void>(resolve=>{received=resolve;});
+  server.on('connection',(socket:any)=>socket.on('message',(raw:Buffer)=>{
+    const r=JSON.parse(raw.toString()),reply=(data:unknown)=>socket.send(JSON.stringify({echo:r.echo,status:'ok',retcode:0,data}));
+    if(r.action==='get_login_info')reply({user_id:10001});
+    else if(r.action==='get_group_list')reply([]);
+    else {assert.equal(r.params.message[0].type,'image');acknowledge=()=>reply({message_id:123});received();}
+  }));
+  const transport=new OneBotTransport(f.root,`ws://127.0.0.1:${server.address().port}`,'fixture-token',f.store,async()=>{},()=>true);
+  try{
+    await transport.inspect();t.mock.timers.enable({apis:['setTimeout']});
+    const sent=transport.file({id:'1',group:'private:20002',user:'20002',text:'画张图',at:Date.now(),mentioned:true,event:'mention'},(out as {path:string}).path);
+    let failed=false;void sent.catch(()=>{failed=true;});await uploading;
+    t.mock.timers.tick(25000);await Promise.resolve();assert.equal(failed,false);
+    acknowledge();await sent;
+  }finally{t.mock.timers.reset();transport.stop();for(const client of server.clients)client.terminate();await new Promise<void>(resolve=>server.close(()=>resolve()));f.cleanup();}
+});

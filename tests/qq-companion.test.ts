@@ -157,6 +157,21 @@ test('a model that ignores native dispatch cannot claim a successful image reque
     assert.equal(generated,0);assert.equal(turns,3);assert.equal(f.transport.files.length,0);assert.match(f.transport.sent[0].text,/QQ_IMAGE_NOT_SUBMITTED/);
   }finally{await f.bot.stop();f.cleanup();}
 });
+test('image delivery failure preserves the generated artifact for the model and never regenerates',async()=>{
+  let turns=0,generated=0,f:ReturnType<typeof setup>;
+  const client={list:async()=>({images:[]}),generate:async()=>{generated++;return {imageId:'finished-artifact',manifest:{},mock:true};},verifiedImage:()=>f.root+'/runtime/outputs/mock.png'} as unknown as QQImageClient;
+  const provider:Model={kind:'fixture',async complete(messages){
+    turns++;
+    if(turns===1)return {text:'',tool_calls:[call('list_images',{})],usage:{input:100,output:20}};
+    if(turns===2)return {text:'',tool_calls:[call('generate_image',plan)],usage:{input:100,output:20}};
+    const result=JSON.parse(String(messages.at(-1)!.content));
+    assert.equal(result.created,true);assert.equal(result.delivered,false);assert.equal(result.deliveryStatus,'unconfirmed');assert.equal(result.imageId,'finished-artifact');assert.ok(result.error);
+    return {text:'画好了，传图那边还没确认收到。',usage:{input:100,output:20}};
+  }};
+  f=setup(provider,undefined,client);f.transport.file=async()=>{throw Error('upload timeout');};
+  try{await f.bot.receive(message('可以画吗',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(generated,1);assert.equal(turns,3);assert.match(f.transport.sent[0].text,/画好了/);}
+  finally{await f.bot.stop();f.cleanup();}
+});
 test('private image broker shares quotas, requires a current image request and deduplicates message IDs',async()=>{
   const f=fixture({qqTransport:'onebot',privateUsers:['20002'],admins:['20002'],images:true});
   fs.mkdirSync(f.root+'/config');
