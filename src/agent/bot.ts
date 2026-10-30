@@ -98,9 +98,13 @@ export class Bot {
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,qzoneRead=false;
       const maxRounds=this.imageClient&&imageIntent?6:4,maxCalls=maxRounds;let repaired=false;
       const tracePath='runtime/logs/qq/'+randomUUID()+'.json';makeDir(this.root,'runtime/logs/qq');
+      const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,imageIntent,imageRequested,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
+      saveTrace();
       try{
         for(let round=0;round<maxRounds;round++){
-          let completion=await this.model.complete(last.group,last.user,messages,{tools,toolChoice:round===0?requestedTool:undefined,final:round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});
+          // Leave a real dispatch slot after browsing, plus a final reply slot.
+          const imageDue=imageIntent&&!imageRequested&&!!this.imageClient&&c.images&&(round===maxRounds-2||calls===maxCalls-1);
+          let completion=await this.model.complete(last.group,last.user,messages,{tools,toolChoice:imageDue?'generate_image':round===0?requestedTool:undefined,final:round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});
           trace.push({round,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
           if(hasToolMarkup(completion.text)){
             if(!completion.tool_calls?.length){
@@ -116,6 +120,17 @@ export class Bot {
             if(hasToolMarkup(completion.text))completion={...completion,text:''};
           }
           if(round===0&&requestedTool&&!completion.tool_calls?.some(call=>call.function.name===requestedTool))throw new FishError('QQ_TOOL_REQUIRED');
+          if(imageIntent&&!imageRequested&&this.imageClient&&c.images&&!completion.tool_calls?.length){
+            if(round===maxRounds-1||calls>=maxCalls)throw new FishError('QQ_IMAGE_NOT_SUBMITTED');
+            // An authorised image request is not completed by a promise to draw.
+            // Ask for native arguments without publishing the premature reply.
+            trace.push({imageDispatchRecovery:true});saveTrace();
+            completion=await this.model.complete(last.group,last.user,messages,{tools,toolChoice:'generate_image',signal:this.controller.signal});
+            trace.push({round,dispatchRecovery:true,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
+            if(!completion.tool_calls?.some(call=>call.function.name==='generate_image'))throw new FishError('QQ_IMAGE_NOT_SUBMITTED');
+            if(hasToolMarkup(completion.text))completion={...completion,text:''};
+          }
+          saveTrace();
           if(!completion.tool_calls?.length){if(!completion.text.trim())throw new FishError('DEEPSEEK_EMPTY_RESPONSE');await this.send(last,completion.text);break;}
           if(round===maxRounds-1||calls+completion.tool_calls.length>maxCalls)throw new FishError('QQ_TOOL_LIMIT');
           messages.push({role:'assistant',content:completion.text,tool_calls:completion.tool_calls});
@@ -160,21 +175,24 @@ export class Bot {
                   if(!this.imageClient||!this.cfg().images||!imageIntent||imageRequested)throw new FishError('QQ_IMAGE_REQUEST_REQUIRED');
                   const {remark:_remark,referenceIds=[],...values}=args,plan=validateImagePlan(values);imageRequested=true;
                   if(!said&&remark){await this.send(last,remark);said=true;}
+                  trace.push({tool:'generate_image',phase:'submitted',at:Date.now(),referenceIds});saveTrace();
                   const image=await this.imageClient.generate(last,plan,this.cfg().codexTimeoutMs,this.controller.signal,referenceIds);
+                  trace.push({tool:'generate_image',phase:'generated',at:Date.now(),imageId:image.imageId});saveTrace();
                   const file=this.imageClient.verifiedImage(image.imageId,image.manifest,this.cfg().maxArtifactBytes);
                   this.controller.signal.throwIfAborted();
                   if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
-                  await this.transport.file(last,file);result={created:true,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
+                  await this.transport.file(last,file);result={created:true,delivered:true,imageId:image.imageId,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
                 }
               }
             }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};}
             trace.push({tool:call.function.name,result,images:media.filter(p=>p.type==='image_url').length});
+            saveTrace();
             messages.push({role:'tool',tool_call_id:call.id,content:JSON.stringify(result)});
             roundMedia.push(...media);
           }
           if(roundMedia.length)messages.push({role:'user',content:[{type:'text',text:'工具返回的原图，图片ID、来源或说说ID标在各图前'},...roundMedia]});
         }
-      }finally{writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));}
+      }catch(e){trace.push({error:codeOf(e)});throw e;}finally{saveTrace();}
       this.gate.record(last.group);this.store.audit('speech',last.group,reason);
     }catch(e){this.store.audit('error',last.group,codeOf(e));if(!spontaneous&&this.accepting)await this.send(last,'当前无法回答：'+codeOf(e));}
     finally{if(lease)this.ledger.settle(lease);}

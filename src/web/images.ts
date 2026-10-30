@@ -18,7 +18,11 @@ import { CodexRateLimitError } from '../codex/rate-limit.js';
 export function requestsImage(text:string,conversational=false):boolean{
   if(/(?:不要|别|无需|不用|不需要).{0,12}(?:画|生成|生图|自拍|自画像|头像|立绘)|(?:怎么|如何|教程|提示词|prompt|代码|接口|流程|解释|意思|这句话|引用)/i.test(text))return false;
   if(/(?:不要|别|无需|不用|不需要|不能|无法|没法).{0,35}(?:参考图|设定图|原图|配图)/.test(text))return false;
-  if(conversational&&/(?:^|[，,。!！?？])\s*(?:(?:你|现在|今天|还|那|就|请|麻烦|给我|帮我|能不能|能否|可不可以|可以|可否|能)\s*)+画(?:[吗么呢]|不[？?]?$|画[吗么呢？?])/.test(text))return true;
+  if(conversational&&/(?:(?<!能)不能|(?<!可)不可以|无法|没法|不会|不想).{0,12}(?:画|生图)/.test(text))return false;
+  // QQ follow-ups often have conversational lead-ins and aspect particles.
+  // Match the drawing clause, rather than requiring a fixed sentence prefix.
+  if(conversational&&!/[“”「」『』"《》]|(?:假如|假设|如果|要是|他说|她说|别人|昨天|以前)/.test(text)&&
+    /(?:能不能|能否|可不可以|可以|可否|能|继续|开始)\s*(?:(?:给我|帮我|再)\s*)?(?:画(?:画)?|生图)(?:了)?(?:[吗么呢吧呀啊哦不？?！!。\s]|$)/.test(text))return true;
   if(/(?:^|[，,。!！?？])\s*(?:(?:你|现在|今天|那|就|请|麻烦|给我|帮我|能不能|能否|可不可以|可以|能)\s*)*画(?:一)?(?:张|幅|个|只|下)/.test(text))return true;
   if(/(?:^|[，,。!！])\s*(?:(?:你|就|那|不妨|请|麻烦|帮我|给我|可以|能不能)\s*)*(?:把|用|拿|带上|附上).{0,35}(?:参考图|设定图|原图|配图).{0,20}(?:给|交给|丢给|传给|发给).{0,6}gpt/i.test(text))return true;
   if(/^(?:我)?想要(?:一)?张(?:图|图片|画)(?:[吧呀哦，,。.!！?？\s]|$)/.test(text.trim()))return true;

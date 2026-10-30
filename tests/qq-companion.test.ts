@@ -122,13 +122,48 @@ test('unknown or repeated textual protocol never executes and never reaches QQ',
     finally{await f.bot.stop();f.cleanup();}
   }
 });
+test('an authorised image follow-up cannot finish with only a promise; native dispatch and delivery are recorded',async()=>{
+  let turns=0,generated=0,f:ReturnType<typeof setup>;
+  const promise='我马上把方案交给她。';
+  const client={list:async()=>({images:[]}),generate:async()=>{
+    generated++;
+    const record=JSON.parse(fs.readFileSync(f.root+'/runtime/logs/qq/'+fs.readdirSync(f.root+'/runtime/logs/qq')[0],'utf8'));
+    assert.equal(record.imageIntent,true);assert.ok(record.trace.some((t:any)=>t.phase==='submitted'));
+    return {imageId:'fixture',manifest:{},mock:true};
+  },verifiedImage:()=>f.root+'/runtime/outputs/mock.png'} as unknown as QQImageClient;
+  const provider:Model={kind:'fixture',async complete(_messages,_max,options){
+    turns++;
+    if(turns===1)return {text:'',tool_calls:[call('list_images',{})],usage:{input:100,output:20}};
+    if(turns===2)return {text:promise,usage:{input:100,output:20},finishReason:'stop'};
+    if(turns===3){assert.equal(options?.toolChoice,'generate_image');return {text:'',tool_calls:[call('generate_image',plan)],usage:{input:100,output:20}};}
+    assert.equal(f.transport.files.length,1);return {text:'画好啦。',usage:{input:100,output:20}};
+  }};
+  f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
+  try{
+    await f.bot.receive(message('总算能画了呀',{group:'private:20002',user:'20002'}));await f.bot.flush();
+    assert.equal(generated,1);assert.equal(turns,4);assert.deepEqual(f.transport.sent.map(m=>m.text),['画好啦。']);
+    const record=JSON.parse(fs.readFileSync(f.root+'/runtime/logs/qq/'+fs.readdirSync(f.root+'/runtime/logs/qq')[0],'utf8'));
+    assert.ok(record.trace.some((t:any)=>t.imageDispatchRecovery));assert.ok(record.trace.some((t:any)=>t.result?.delivered&&t.result.imageId==='fixture'));
+  }finally{await f.bot.stop();f.cleanup();}
+});
+test('a model that ignores native dispatch cannot claim a successful image request',async()=>{
+  let turns=0,generated=0;
+  const client={list:async()=>({images:[]}),generate:async()=>{generated++;}} as unknown as QQImageClient;
+  const provider:Model={kind:'fixture',async complete(){
+    turns++;return turns===1?{text:'',tool_calls:[call('list_images',{})],usage:{input:100,output:20}}:{text:'画完了呀。',usage:{input:100,output:20}};
+  }};
+  const f=setup(provider,undefined,client);
+  try{await f.bot.receive(message('那总算可以画了呢',{group:'private:20002',user:'20002'}));await f.bot.flush();
+    assert.equal(generated,0);assert.equal(turns,3);assert.equal(f.transport.files.length,0);assert.match(f.transport.sent[0].text,/QQ_IMAGE_NOT_SUBMITTED/);
+  }finally{await f.bot.stop();f.cleanup();}
+});
 test('private image broker shares quotas, requires a current image request and deduplicates message IDs',async()=>{
   const f=fixture({qqTransport:'onebot',privateUsers:['20002'],admins:['20002'],images:true});
   fs.mkdirSync(f.root+'/config');
   fs.writeFileSync(f.root+'/config/local.json',JSON.stringify(f.cfg()));
   const quota=new CodexQuotaMonitor(f.store,true,{read:async()=>{},close:async()=>{}}),broker=await startQQImageBroker(f.root,f.store,quota,true),client=new QQImageClient(f.root);
   try{
-    const m=message('想要张图',{group:'private:20002',user:'20002'}),image=await client.generate(m,plan,1000);
+    const m=message('总算能画了呀',{group:'private:20002',user:'20002'}),image=await client.generate(m,plan,1000);
     assert.equal(image.mock,true);assert.ok(fs.existsSync(f.root+'/runtime/outputs/'+image.imageId+'/image.png'));
     await assert.rejects(client.generate(m,plan,1000),/QQ_IMAGE_ALREADY_REQUESTED/);
     await assert.rejects(client.generate({...m,id:'question',text:'你还能画多少图？'},plan,1000),/QQ_IMAGE_REQUEST_REQUIRED/);
@@ -136,7 +171,8 @@ test('private image broker shares quotas, requires a current image request and d
     const status=await client.status(m);assert.equal(status.images.used,1);assert.equal(status.images.remaining,19);assert.equal(status.gpt.remainingImages,null);
     assert.equal(f.ledger.value('codex'),1);assert.equal(f.ledger.value('image'),1);
     for(const text of ['想要张图','我想要张图，随便画','来随便画张图','今天可以，能画张么？','你现在能画张吗？'])assert.equal(requestsImage(text),true);
-    for(const text of ['那，可以画吗？','今天还能画么？','可以画不？']){assert.equal(requestsImage(text,true),true);assert.equal(requestsImage(text),false);}
+    for(const text of ['那，可以画吗？','今天还能画么？','可以画不？','总算能画了呀','那总算可以画了呢','现在能帮我画了吧','可以继续生图吗','能不能画呀','可不可以画呀']){assert.equal(requestsImage(text,true),true,text);assert.equal(requestsImage(text),false,text);}
+    for(const text of ['现在能画多少张？','今天还能画几张？','现在不能画了吧','你不可以画图','他说现在可以画了吧','假如现在可以画了呢','解释“能画了吧”','先不用画'])assert.equal(requestsImage(text,true),false,text);
     for(const text of ['不要画图','还有多少张图','解释想要张图这句话','解释“今天可以，能画张么？”这句话'])assert.equal(requestsImage(text),false);
   }finally{await broker.close();await quota.close();f.cleanup();}
 });
