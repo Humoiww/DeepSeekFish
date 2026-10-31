@@ -19,3 +19,5 @@
 - QQ received media uses transient CDN handles, bounded raster decoding and ordered animation samples. Never archive download credentials or pretend sampled frames are a full video. Meme classification is model-driven; keep original animated bytes, conversation scope and the ordinary chat trigger. Saved memes may persist beyond the two-day automatic chat recall window at the user's request.
 
 - QQ tool retries return the recorded outcome: never report a completed image as missing authorization. Keep native call/result pairs after generation. Meme sending supports multiple distinct IDs and deduplicates only repeat sends of the same ID; collect_meme saves scoped catalog originals, including generated work, with provenance.
+
+- Owner authorized autonomous QQ web research through DeepSeek Search/Fetch. Offer both tools every enabled turn; let the model choose without keyword routing or forced calls. Share the existing search switch/budget with WebUI, retain sources and real errors, and keep web content separate from host files, credentials and execution.

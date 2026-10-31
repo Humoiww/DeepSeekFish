@@ -48,3 +48,22 @@ test('image fixture has valid PNG chunk checksums; corrupt image is rejected',as
     const bytes=fs.readFileSync(p);bytes[45]^=1;fs.writeFileSync(p,bytes);assert.throws(()=>verifyPng(out,'mock.png',1000),/INVALID_PNG/);
   }finally{f.cleanup();}
 });
+
+test('official Fetch uses the fixed API, caches long pages and reports real failures',async()=>{
+  const f=fixture({search:true,searchDaily:2});let calls=0;
+  try{
+    const http=(async(url:any,options:any)=>{
+      calls++;assert.equal(url,'https://api.deepseek.com/v1/tools/fetch');assert.equal(options.redirect,'error');
+      const body=JSON.parse(options.body);assert.deepEqual(Object.keys(body),['url']);
+      if(body.url.endsWith('/missing'))return new Response('{}',{status:404});
+      return new Response(JSON.stringify({title:'长文',content:'a'.repeat(6100)}));
+    }) as typeof fetch;
+    const s=new SearchService(new DeepSeekSearchProvider('fixture-key',f.cfg,http),f.ledger,f.cfg);
+    await assert.rejects(s.fetch('http://100.64.0.1/','g','u'),/FETCH_PUBLIC_URL_REQUIRED/);assert.equal(calls,0);
+    const page=await s.fetch('https://example.com/article','g','u');assert.equal(page.content.length,6000);assert.equal(page.nextOffset,6000);
+    const rest=await s.fetch(page.url+'#anchor','g','u',page.nextOffset!);assert.equal(rest.content.length,100);assert.equal(rest.nextOffset,null);assert.equal(rest.truncated,false);assert.equal(calls,1);
+    await assert.rejects(s.fetch('https://example.com/missing','g','u'),/FETCH_HTTP_404/);assert.equal(f.ledger.value('search'),2);
+    await assert.rejects(s.search('later','g','u'),/SEARCH_BUDGET_EXHAUSTED/);
+    f.set({search:false});await assert.rejects(s.fetch(page.url,'g','u'),/SEARCH_DISABLED/);
+  }finally{f.cleanup();}
+});

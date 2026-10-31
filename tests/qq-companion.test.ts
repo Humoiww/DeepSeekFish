@@ -227,3 +227,19 @@ test('QQ picks up persona edits on the next message without rebuilding its Bot',
     assert.equal(seen.length,2);assert.ok(!seen[0].includes('已修改的人格内容'));assert.ok(seen[1].includes('已修改的人格内容'));
   }finally{await f.bot.stop();f.cleanup();}
 });
+
+test('QQ chooses Search and Fetch on ordinary messages, retains source results, and can also simply reply',async()=>{
+  let round=0;const f=setup({kind:'fixture',async complete(messages,_max,options){
+    assert.ok(options?.tools?.some(t=>t.function.name==='search_web'));assert.ok(options?.tools?.some(t=>t.function.name==='fetch_page'));assert.equal(options?.toolChoice,undefined);
+    round++;
+    if(round===1)return {text:'',tool_calls:[call('search_web',{query:'鲸鱼睡觉'})],usage:{input:50,output:10}};
+    if(round===2){const result=JSON.parse(String(messages.at(-1)!.content));assert.equal(result.source,'DeepSeek Search');assert.equal(result.results[0].url,'https://example.com/mock');return {text:'',tool_calls:[call('fetch_page',{url:result.results[0].url})],usage:{input:50,output:10}};}
+    if(round===3){const result=JSON.parse(String(messages.at(-1)!.content));assert.equal(result.source,'DeepSeek Fetch');assert.equal(result.content,'这是离线网页正文。');assert.equal(messages.filter(m=>m.role==='tool').length,2);}
+    return {text:'',tool_calls:[call('reply',{text:round===3?'看完了':'嗯哼'})],usage:{input:50,output:10}};
+  }});
+  try{
+    f.set({search:true});await f.bot.receive(message('突然想到鲸鱼睡觉这件事',{group:'private:20002',user:'20002'}));await f.bot.flush();
+    assert.equal(f.ledger.value('search'),2);assert.equal(f.transport.sent.at(-1)?.text,'看完了');
+    await f.bot.receive(message('那就这样',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(f.ledger.value('search'),2);assert.equal(f.transport.sent.at(-1)?.text,'嗯哼');
+  }finally{await f.bot.stop();f.cleanup();}
+});

@@ -29,7 +29,7 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
   let config=validateConfig({...base,...qqBase,...JSON.parse(store.getMeta('settings')??'{}'),...override});
   if(process.env.FISH_CODEX_IMAGE_ONLY==='1')config.codex=false;
   if(mock)config={...config,groups:config.groups.length?config.groups:['demo-group'],admins:config.admins.length?config.admins:['demo-admin']};
-  const cfg=()=>{const saved=readQQSettings(root),{enabled,...options}=saved;return validateConfig({...config,...options,enabled:config.enabled&&enabled!==false,codex:process.env.FISH_CODEX_IMAGE_ONLY==='1'?false:config.codex});};
+  const cfg=()=>{const saved=readQQSettings(root),{enabled,...options}=saved,shared=JSON.parse(store.getMeta('settings')??'{}');return validateConfig({...config,...options,...(typeof shared.search==='boolean'?{search:shared.search}:{}),enabled:config.enabled&&enabled!==false,codex:process.env.FISH_CODEX_IMAGE_ONLY==='1'?false:config.codex});};
   const key=mock?'':deepseekCredential(root);
   const ledger=new Ledger(store,cfg),provider=mock?new MockModel():new DeepSeekModel(key,cfg);
   const model=new BudgetedModel(provider,ledger,cfg);
@@ -71,7 +71,7 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
     deepseek:{provider:provider.kind,model:config.model,credentialPresent:!!key,status:store.getMeta('modelStatus')??'not probed'},
     codex:{enabled:config.codex,provider:mock?'mock':'official-app-server',unattended:false,localApprovalRequired:true,
       projectLoginPresent:projectLoginPresent(),isolation:mock?'mock only':boundaryStatus(root)},
-    features:{autonomous:config.autonomous,search:config.search,images:config.images},
+    features:{autonomous:config.autonomous,search:cfg().search,images:config.images},web:{enabled:cfg().search,daily:cfg().searchDaily,used:ledger.value('search')},
     budgets:{dailyTokens:config.dailyTokens,maxOutputTokens:config.maxOutputTokens,usage:ledger.snapshot(),fault:store.getMeta('budgetFault')??null},
     groups:config.groups.map(group=>({group,ordinaryMessages:store.getMeta('qqOrdinary:'+group)?'observed':'unverified; mention-only capability assumed'})),
     groupCount:config.groups.length,tasks:tasks.list().map(t=>({id:t.id,group:t.grp,state:t.state,created:t.created,result:t.result})),

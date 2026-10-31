@@ -7,6 +7,7 @@ import { Store,redact } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
 import { Tasks } from '../codex/tasks.js';
 import { AppServerRunner,MockTaskRunner } from '../codex/runner.js';
+import { webTools } from '../search/tools.js';
 import { SearchService,DeepSeekSearchProvider,MockSearchProvider } from '../search/provider.js';
 import { FishError,codeOf } from '../types.js';
 import { SessionWorkspace } from './workspace.js';
@@ -30,7 +31,7 @@ const tool=(name:string,description:string,properties:Record<string,unknown>={},
 const tools=[tool('list_files','列出当前会话工作区内的文件'),
   tool('read_file','读取当前会话工作区的 UTF-8 文本文件，最多 64 KiB',{path:{type:'string'}},['path']),
   tool('write_file','在当前会话工作区创建或更新文本文件，最多 64 KiB；无权访问其他目录',{path:{type:'string'},content:{type:'string'}},['path','content']),
-  tool('search_web','查询公开网页，仅在本机设置开启搜索时可用',{query:{type:'string'}},['query']),
+  ...webTools,
   tool('queue_codex','提出独立 Codex 任务，只进入待审队列，不能执行或批准任务',{task:{type:'string'}},['task'])];
 
 export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imageRunner?:ImageRunner,quotaReader?:QuotaReader){
@@ -53,11 +54,11 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   const sessions=():Session[]=>store.db.prepare('SELECT * FROM web_sessions ORDER BY updated DESC LIMIT 50').all() as unknown as Session[];
   const cfg=():Config=>{
     const {codexQueue,...common}=settings;
-    return validateConfig({...defaults,...loadConfig(root),...common,codex:codexQueue,
+    return validateConfig({...defaults,...loadConfig(root),...common,search:JSON.parse(budgetStore.getMeta('settings')??'{}').search??settings.search,codex:codexQueue,
       groups:sessions().map(s=>'web:'+s.id),admins:['webui-local']});
   };
   const ledger=new Ledger(budgetStore,cfg),model=new WebModel(key,cfg,ledger,mock,http);
-  const search=new SearchService(mock?new MockSearchProvider():{search:(q:string)=>new DeepSeekSearchProvider(key(),cfg,http).search(q)},ledger,cfg);
+  const search=new SearchService(mock?new MockSearchProvider():{search:(q:string)=>new DeepSeekSearchProvider(key(),cfg,http).search(q),fetch:(url:string)=>new DeepSeekSearchProvider(key(),cfg,http).fetch(url)},ledger,cfg);
   const tasks=new Tasks(root,store,ledger,cfg,mock?new MockTaskRunner():new AppServerRunner(root));
   const quota=new CodexQuotaMonitor(store,mock,quotaReader??new AppServerQuotaReader(root));
   const images=new WebImages(root,store,ledger,cfg,mock,quota,imageRunner);
@@ -93,13 +94,14 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       if(typeof input.apiKey!=='string'||input.apiKey.length>256||input.apiKey&&!/^[a-zA-Z0-9_-]{8,256}$/.test(input.apiKey))throw new FishError('INVALID_API_KEY');
       if(input.apiKey){secret=input.apiKey;writePrivate(root,'runtime/data/webui-secrets.json',JSON.stringify({deepseekKey:secret})+'\n');}
     }
+    if(input.search!==undefined)budgetStore.transaction(()=>{const shared=JSON.parse(budgetStore.getMeta('settings')??'{}');shared.search=next.search;budgetStore.setMeta('settings',JSON.stringify(shared));});
     settings=next;store.setMeta('web-settings',JSON.stringify(settings));return status();
   }
-  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings,workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
+  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings:{...settings,search:cfg().search},web:{enabled:cfg().search,daily:cfg().searchDaily,used:ledger.value('search')},workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
     dailyQzone:dailyStatus(root,budgetStore),
     memory:{automaticDays:2,timezone:PROJECT_TIMEZONE,archive:'runtime/memory/days',persona:'personas/active.json'},
     imageLimits:{daily:cfg().imageDaily,codexDaily:cfg().codexDaily},codexQuota:quota.status(),
-    capabilities:['会话文件列表','会话文本读写','明确请求后设计并生成单张图片',...(settings.search?['公开搜索']:[]),...(settings.codexQueue?['提交 Codex 待审任务']:[])],
+    capabilities:['会话文件列表','会话文本读写','明确请求后设计并生成单张图片',...(cfg().search?['公开搜索与网页读取']:[]),...(settings.codexQueue?['提交 Codex 待审任务']:[])],
     budgets:{dailyTokens:settings.dailyTokens,usage:ledger.snapshot(),fault:budgetStore.getMeta('budgetFault')??null},
     tasks:tasks.list().map(t=>({id:t.id,sessionId:t.grp.slice(4),request:t.request,brief:t.brief,state:t.state,result:t.result})),active:active.size};}
   async function execute(s:Session,name:string,args:any){
@@ -114,6 +116,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       case 'read_file':return {path:args.path,content:workspace.read(args.path)};
       case 'write_file':return workspace.write(args.path,args.content);
       case 'search_web':return search.search(args.query,'web:'+s.id,'webui-local');
+      case 'fetch_page':return search.fetch(args.url,'web:'+s.id,'webui-local',args.offset);
       case 'queue_codex':{
         if(typeof args.task!=='string'||args.task.length>1500)throw new FishError('INVALID_TASK_BRIEF');
         const t=tasks.enqueue({id:randomUUID(),group:'web:'+s.id,user:'webui-local',text:'',mentioned:true,at:Date.now(),event:'mention'},args.task,args.task);
@@ -140,7 +143,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     const recalled=memory.recall('web:'+s.id,text,prior.flatMap(t=>[{id:t.id+':user'},{id:t.id+':assistant'}]));
     const memoryContext:WireMessage[]=recalled.events.length||recalled.needsReference?[{role:'user',content:JSON.stringify({memory:recalled})}]:[];
     const current:WireMessage[]=[{role:'user',content:redact(text.trim())}],sent:WireMessage[]=[{role:'system',content:webPrompt(root)},...memoryContext,...history];
-    const offered=mode==='agent'?tools.filter(t=>t.function.name!=='search_web'||settings.search).filter(t=>t.function.name!=='queue_codex'||settings.codexQueue):[];
+    const offered=mode==='agent'?tools.filter(t=>!['search_web','fetch_page'].includes(t.function.name)||cfg().search).filter(t=>t.function.name!=='queue_codex'||settings.codexQueue):[];
     store.db.prepare('INSERT INTO web_turns VALUES (?,?,?,?,?,?,?,?)').run(turnId,s.id,current[0].content,'','[]','[]','running',Date.now());
     store.db.prepare('UPDATE web_sessions SET title=?,updated=? WHERE id=?').run(s.title==='新的对话'?redact(text.trim()).slice(0,26):s.title,Date.now(),s.id);
     let answer='',calls=0;

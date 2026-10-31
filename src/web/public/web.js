@@ -31,7 +31,7 @@ function renderStatus(s){renderCodexQuota(s.codexQuota);$('reset-images').disabl
   $('demo-banner').hidden=!s.mock;$('setup-banner').hidden=s.mock||s.credentialPresent;
   const count=s.budgets.usage.find(x=>x.metric==='tokens'&&x.scope==='*')?.value||0,limit=s.budgets.dailyTokens;
   $('budget-text').textContent=Math.round(count/limit*100)+'%';$('budget-detail').textContent=count.toLocaleString()+' / '+limit.toLocaleString()+' tokens';$('budget-bar').style.width=Math.min(100,count/limit*100)+'%';
-  $('search-state').textContent=s.settings.search?'已允许':'未开启';$('search-dot').textContent=s.settings.search?'✓':'○';$('codex-state').textContent=s.settings.codexQueue?'仅排队':'未开启';$('codex-dot').textContent=s.settings.codexQueue?'✓':'○';
+  $('search-state').textContent=s.settings.search?'自主调用 · 今日 '+(s.web?.used??0)+' / '+(s.web?.daily??20):'未开启';$('search-dot').textContent=s.settings.search?'✓':'○';$('codex-state').textContent=s.settings.codexQueue?'仅排队':'未开启';$('codex-dot').textContent=s.settings.codexQueue?'✓':'○';
   const tasks=s.tasks.filter(t=>t.sessionId===currentId);$('task-count').textContent=String(tasks.length);$('tasks').replaceChildren();
   if(!tasks.length)$('tasks').append(node('p','muted','暂时没有待审任务'));
   for(const t of tasks){const card=node('div','task-card');card.append(node('strong','',t.request),node('small','',({waiting:'等待本机终端审核',running:'正在执行',succeeded:'已完成',cancelled:'已取消',failed:'未完成',timed_out:'已超时'})[t.state]||t.state));

@@ -10,6 +10,7 @@ export function qqResources(cfg:Config,ledger:Ledger,conversation:string,user:st
     energy:{unit:'token',daily:cfg.dailyTokens,used,remaining:Math.max(0,cfg.dailyTokens-used),
       conversationDaily,conversationRemaining:Math.max(0,Math.min(cfg.dailyTokens-used,conversationDaily-conversationUsed)),
       requestsRemaining:Math.max(0,cfg.userDailyRequests-ledger.value('requests','u:'+user))},
+    web:{enabled:cfg.search,daily:cfg.searchDaily,used:ledger.value('search'),remaining:Math.max(0,cfg.searchDaily-ledger.value('search'))},
     images:{collaborator:'GPT小姐',enabled:cfg.images,daily:cfg.imageDaily,used:imagesUsed,
       remaining:dailyRemaining,
       busy:!!ledger.store.db.prepare("SELECT id FROM reservations WHERE kind='codex' AND state='held'").get()}};

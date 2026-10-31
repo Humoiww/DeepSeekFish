@@ -9,6 +9,7 @@ import { BudgetedModel } from './model.js';
 import { FishError, codeOf, type Message, type Transport,type ChatMessage,type ChatPart } from '../types.js';
 import { Tasks, type Task } from '../codex/tasks.js';
 import type { SearchService } from '../search/provider.js';
+import { webTools } from '../search/tools.js';
 import { makeDir, safePath } from '../paths.js';
 import { verifyPng, type ImageProvider } from '../image/provider.js';
 import { echoKey } from '../qq/adapter.js';
@@ -101,7 +102,7 @@ export class Bot {
       if(history.at(-1)?.id!==last.id)dialogue.push({role:'user',content:last.text});
       const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
       if(incoming.length)messages.push({role:'user',content:this.media!.parts(last.group,incoming)});
-      const tools=[...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
+      const tools=[...(c.search?webTools:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeSent=false;
       let imageOutcome:Record<string,unknown>|undefined;const memeResults=new Map<string,Record<string,unknown>>();
       const visibleImages=new Set(mediaIds);
@@ -142,6 +143,12 @@ export class Bot {
                 if(typeof args.text!=='string'||Object.keys(args).some(k=>k!=='text')||completion.tool_calls.length!==1)throw new FishError('INVALID_TOOL_ARGS');
                 if(args.text.trim())await this.send(last,args.text);
                 result={sent:!!args.text.trim()};finished=true;
+              }else if(call.function.name==='search_web'){
+                if(typeof args.query!=='string'||Object.keys(args).some(k=>k!=='query'))throw new FishError('INVALID_TOOL_ARGS');
+                result={source:'DeepSeek Search',results:await this.search.search(args.query,last.group,last.user)};
+              }else if(call.function.name==='fetch_page'){
+                if(typeof args.url!=='string'||Object.keys(args).some(k=>!['url','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
+                result={source:'DeepSeek Fetch',...await this.search.fetch(args.url,last.group,last.user,args.offset)};
               }else if(call.function.name==='remember_images'){
                 if(!this.media||Object.keys(args).some(k=>k!=='images'))throw new FishError('INVALID_TOOL_ARGS');
                 const remembered=this.media.remember(last.group,args.images,mediaIds);result={images:remembered};classified=true;

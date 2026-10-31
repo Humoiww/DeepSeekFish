@@ -60,6 +60,9 @@ test('phone owner gateway loads every prompt and saves persona through the real 
     const saved=await call('persona',{...config.body,blocks:[{title:'人格',text:'通过手机入口保存的设定'}]});assert.equal(saved.status,200);
     const next=await call('prompts');for(const system of Object.values(next.body.systems))assert.ok(String(system).includes('通过手机入口保存的设定'));
     assert.ok(!JSON.stringify(next.body).includes(app.token));assert.equal((await call('prompts',{})).status,403);
+    const settings=await call('settings',{search:true});assert.equal(settings.status,200);assert.equal(settings.body.settings.search,true);assert.equal(settings.body.web.enabled,true);
+    const {Store}=await import('../src/storage/db.js');const budgetStore=new Store(f.root,'webui-mock-budget.sqlite');
+    try{const shared=JSON.parse(budgetStore.getMeta('settings')??'{}');assert.equal(shared.search,true);}finally{budgetStore.close();}
     owner=false;assert.equal((await call('persona')).status,403);assert.equal((await call('prompts')).status,403);assert.equal((await call('persona',saved.body)).status,403);
   }finally{
     gateway.closeAllConnections();upstream.closeAllConnections();await Promise.all([new Promise<void>(r=>gateway.close(()=>r())),new Promise<void>(r=>upstream.close(()=>r()))]);await app.close();f.cleanup();
