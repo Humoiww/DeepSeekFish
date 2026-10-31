@@ -9,7 +9,7 @@ mkdir -p runtime/deployment
 tar -czf runtime/deployment/deepseekfish-release.tar.gz \
   --exclude='config/local.json' --exclude='*.log' \
   AGENTS.md README.md package.json package-lock.json tsconfig.json .npmrc \
-  start.sh start.bat .env.example src dist scripts deploy docs config/example.json config/onebot.example.json prompts personas assets node_modules runtime/tools/node
+  start.sh start.bat .env.example src dist scripts deploy docs config/example.json config/onebot.example.json prompts personas assets node_modules runtime/tools/node runtime/tools/tokenizer
 cd runtime/deployment
 sha256sum deepseekfish-release.tar.gz > deepseekfish-release.sha256
 echo 'Prepared existing build only; no credentials, databases, tokens, or workspaces included.'

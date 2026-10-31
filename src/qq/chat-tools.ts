@@ -14,7 +14,7 @@ export function qqChatTools(profile:boolean,image:boolean,qzone=false):ModelTool
   ];
 }
 export function imageLibraryTools():ModelTool[]{return [
-  {type:'function',function:{name:'list_images',description:'图库：设定图、收到的图片/空间配图/头像、收藏表情、生成图。生成图按新到旧排列，position=1 是最新；可收藏或交给GPT。',parameters:{type:'object',properties:{source:{type:'string',enum:['all','character','qzone','avatar','generated','received','collected']},offset:{type:'integer',minimum:0,maximum:1000}},additionalProperties:false}}},
+  {type:'function',function:{name:'list_images',description:'图库：设定图、收到的图片/空间配图/头像、收藏表情、生成图、网页下载图。生成图按新到旧排列，position=1 是最新；可收藏或交给GPT。',parameters:{type:'object',properties:{source:{type:'string',enum:['all','character','qzone','avatar','generated','received','collected','web']},offset:{type:'integer',minimum:0,maximum:1000}},additionalProperties:false}}},
   {type:'function',function:{name:'view_images',description:'查看所选ID的原图，可作为GPT生图参考。',parameters:{type:'object',properties:{imageIds:{type:'array',items:{type:'string'},minItems:1,maxItems:3}},required:['imageIds'],additionalProperties:false}}}
 ];}
 export function requestsReferences(text:string):boolean{return /参考图|设定图|设定集|参考原图|图片库/.test(text);}

@@ -65,6 +65,13 @@ export class QQMedia {
     }catch(e){fs.rmSync(safePath(this.root,folder),{recursive:true,force:true});throw e;}
     return id;
   }
+  async fromWeb(conversation:string,bytes:Buffer,url:string){
+    const id=await this.keepOriginal(conversation,'DeepSeekFish',bytes,Date.now());
+    this.store.transaction(()=>{
+      const meta=JSON.parse(this.row(conversation,id).meta);meta.web={url,downloadedAt:Date.now()};
+      this.store.db.prepare('UPDATE qq_media SET meta=? WHERE id=? AND conversation=?').run(JSON.stringify(meta),id,conversation);
+    });return this.describe(conversation,id);
+  }
   async collect(conversation:string,imageId:string,bytes:Buffer,description:unknown,tags:unknown){
     // The caller obtains bytes by resolving an opaque, conversation-scoped catalog ID.
     if(typeof imageId!=='string'||!imageId||imageId.length>180||typeof description!=='string'||!description.trim()||description.length>300||!Array.isArray(tags)||tags.length>6||tags.some(t=>typeof t!=='string'||!t.trim()||t.length>30))throw new FishError('QQ_MEDIA_DESCRIPTION_INVALID');
@@ -93,7 +100,7 @@ export class QQMedia {
     const row=this.store.db.prepare('SELECT * FROM qq_media WHERE id=? AND conversation=?').get(id,conversation) as unknown as MediaRow|undefined;
     if(!row||memeOnly&&!row.meme)throw new FishError('QQ_MEDIA_NOT_AVAILABLE');return row;
   }
-  describe(conversation:string,id:string){const r=this.row(conversation,id),m=JSON.parse(r.meta);return {id,sourceImageId:m.sourceImageId,animated:m.pages>1,frames:m.pages,sampledFrames:m.frames.map((f:any)=>f.index+1),durationMs:m.durationMs,description:r.description,tags:JSON.parse(r.tags),meme:!!r.meme};}
+  describe(conversation:string,id:string){const r=this.row(conversation,id),m=JSON.parse(r.meta);return {id,sourceImageId:m.sourceImageId,sourceUrl:m.web?.url,animated:m.pages>1,frames:m.pages,sampledFrames:m.frames.map((f:any)=>f.index+1),durationMs:m.durationMs,description:r.description,tags:JSON.parse(r.tags),meme:!!r.meme};}
   parts(conversation:string,media:ReceivedMedia[]):ChatPart[]{
     const parts:ChatPart[]=[],seen=new Set<string>();
     const allowance=Math.max(1,Math.floor(8/Math.max(1,new Set(media.flatMap(m=>m.id?[m.id]:[])).size)));
@@ -102,7 +109,7 @@ export class QQMedia {
       if(seen.has(item.id))continue;seen.add(item.id);
       const row=this.row(conversation,item.id),meta=JSON.parse(row.meta);
       const frames=meta.frames.length<=allowance?meta.frames:Array.from({length:allowance},(_,i)=>meta.frames[allowance===1?0:Math.round(i*(meta.frames.length-1)/(allowance-1))]);
-      parts.push({type:'text',text:JSON.stringify({...this.describe(conversation,item.id),messageId:item.messageId,sampledFrames:frames.map((f:any)=>f.index+1),stickerHint:item.stickerHint,source:'QQ收到的图片',sampling:meta.pages>1?'按顺序抽帧，不是完整视频':undefined})});
+      parts.push({type:'text',text:JSON.stringify({...this.describe(conversation,item.id),messageId:item.messageId,sampledFrames:frames.map((f:any)=>f.index+1),stickerHint:item.stickerHint,source:meta.web?'网页下载的原图':'QQ收到的图片',sampling:meta.pages>1?'按顺序抽帧，不是完整视频':undefined})});
       for(const frame of frames){
         const file=safePath(this.root,'runtime/memory/media/'+item.id+'/frame-'+frame.index+'.png');
         parts.push({type:'text',text:JSON.stringify({imageId:item.id,frame:frame.index+1,atMs:frame.atMs})},

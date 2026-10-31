@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { Config } from '../config.js';
 import { Ledger } from '../budget/ledger.js';
-import { FishError } from '../types.js';
+import { FishError,codeOf } from '../types.js';
 import { boundedJson } from '../agent/model.js';
 
 export interface SearchResult { title:string; url:string; snippet:string; summary?:string; date?:string|null; siteName?:string|null }
@@ -33,10 +33,11 @@ export class DeepSeekSearchProvider implements SearchProvider {
     if(!res.ok){await res.body?.cancel();throw new FishError('SEARCH_HTTP_'+res.status);}
     const data=await boundedJson(res);
     if(!Array.isArray(data.results))throw new FishError('SEARCH_INVALID_RESPONSE');
-    return data.results.filter((r:any)=>typeof r.url==='string'&&publicUrl(r.url)).slice(0,this.cfg().searchCount).map((r:any)=>({
+    const results=data.results.filter((r:any)=>typeof r.url==='string'&&publicUrl(r.url)).slice(0,this.cfg().searchCount).map((r:any)=>({
       title:String(r.title??'').slice(0,120),url:r.url.slice(0,8192),snippet:String(r.snippet??r.summary??'').slice(0,500),
       summary:String(r.summary??r.snippet??'').slice(0,1200),date:typeof r.date==='string'?r.date.slice(0,50):null,siteName:typeof r.site_name==='string'?r.site_name.slice(0,120):null,
     }));
+    Object.defineProperty(results,'billable',{value:data.results.length>0});return results;
   }
   async fetch(url:string):Promise<FetchedPage>{
     if(!this.key)throw new FishError('DEEPSEEK_KEY_MISSING');
@@ -47,7 +48,7 @@ export class DeepSeekSearchProvider implements SearchProvider {
     });
     if(!res.ok){await res.body?.cancel();throw new FishError('FETCH_HTTP_'+res.status);}
     const data=await boundedJson(res);
-    if(typeof data.title!=='string'||typeof data.content!=='string'||!data.content.trim())throw new FishError('FETCH_INVALID_RESPONSE');
+    if(typeof data.title!=='string'||typeof data.content!=='string')throw new FishError('FETCH_INVALID_RESPONSE');
     return {url,title:data.title.slice(0,200),content:data.content.slice(0,200000),truncated:data.content.length>200000,fetchedAt:new Date().toISOString()};
   }
 }
@@ -83,11 +84,12 @@ export class SearchService {
     const running=this.pending.get(key);if(running)return running as Promise<T>;
     const pending=(async()=>{
       const id=this.ledger.reserve('search',group,user);
+      let billed:boolean|undefined;
       try{
-        const result=await operation();
+        const result=await operation();billed=(result as any)?.billable??(Array.isArray(result)?result.length>0:!!(result as any)?.content?.trim());
         this.ledger.store.db.prepare('INSERT OR REPLACE INTO cache VALUES (?,?,?)').run(key,Date.now()+600000,JSON.stringify(result));
         return result;
-      }catch(e){this.ledger.error();throw e;}finally{this.ledger.settle(id);}
+      }catch(e){if(/^(SEARCH|FETCH)_HTTP_/.test(codeOf(e)))billed=false;this.ledger.error();throw e;}finally{this.ledger.settleSearch(id,billed);}
     })();
     this.pending.set(key,pending);try{return await pending;}finally{this.pending.delete(key);}
   }

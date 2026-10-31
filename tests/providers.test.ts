@@ -20,14 +20,14 @@ test('real DeepSeek wire schema and usage settlement through fake HTTP, no paid 
   }finally{f.cleanup();}
 });
 test('official Search API sends bounded request; filters private sources; caches and prechecks quota',async()=>{
-  const f=fixture({search:true,searchDaily:1});let calls=0;try{
+  const f=fixture({search:true,dailyTokens:2500});let calls=0;try{
     const http=(async(url:any,opts:any)=>{
       calls++;assert.equal(url,'https://api.deepseek.com/v1/tools/search');assert.deepEqual(JSON.parse(opts.body),{query:'test',count:3,need_content:false});
       return new Response(JSON.stringify({results:[{title:'safe',url:'https://example.com/a',snippet:'x'},{url:'http://127.0.0.1/a'},{url:'file:///etc/passwd'}]}));
     }) as typeof fetch;
     const s=new SearchService(new DeepSeekSearchProvider('fixture-key',f.cfg,http),f.ledger,f.cfg);
     assert.equal((await s.search('test','g','u')).length,1);await s.search('test','g','u');assert.equal(calls,1);
-    await assert.rejects(s.search('next','g','u'),/SEARCH_BUDGET/);assert.equal(calls,1);
+    await assert.rejects(s.search('next','g','u'),/TOKEN_BUDGET/);assert.equal(calls,1);
     await assert.rejects(s.search('a'.repeat(129),'g','u'),/SEARCH_QUERY/);
     for(const url of ['file:///x','http://localhost','http://0x7f000001','http://2130706433','http://[::1]','http://192.168.1.1','http://172.16.0.1','http://169.254.169.254','http://user:pass@example.com','http://foo.local'])assert.equal(publicUrl(url),false,url);
   }finally{f.cleanup();}
@@ -50,7 +50,7 @@ test('image fixture has valid PNG chunk checksums; corrupt image is rejected',as
 });
 
 test('official Fetch uses the fixed API, caches long pages and reports real failures',async()=>{
-  const f=fixture({search:true,searchDaily:2});let calls=0;
+  const f=fixture({search:true,dailyTokens:5000});let calls=0;
   try{
     const http=(async(url:any,options:any)=>{
       calls++;assert.equal(url,'https://api.deepseek.com/v1/tools/fetch');assert.equal(options.redirect,'error');
@@ -63,7 +63,7 @@ test('official Fetch uses the fixed API, caches long pages and reports real fail
     const page=await s.fetch('https://example.com/article','g','u');assert.equal(page.content.length,6000);assert.equal(page.nextOffset,6000);
     const rest=await s.fetch(page.url+'#anchor','g','u',page.nextOffset!);assert.equal(rest.content.length,100);assert.equal(rest.nextOffset,null);assert.equal(rest.truncated,false);assert.equal(calls,1);
     await assert.rejects(s.fetch('https://example.com/missing','g','u'),/FETCH_HTTP_404/);assert.equal(f.ledger.value('search'),2);
-    await assert.rejects(s.search('later','g','u'),/SEARCH_BUDGET_EXHAUSTED/);
+    assert.equal(f.ledger.value('tokens'),2500);f.set({dailyTokens:2500});await assert.rejects(s.search('later','g','u'),/TOKEN_BUDGET_EXHAUSTED/);
     f.set({search:false});await assert.rejects(s.fetch(page.url,'g','u'),/SEARCH_DISABLED/);
   }finally{f.cleanup();}
 });

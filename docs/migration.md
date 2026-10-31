@@ -65,3 +65,5 @@ API Key、QQ 登录状态、OneBot Token、Codex 登录、管理会话令牌、S
 NapCat 安装器包含登录持久化适配；私人 login-secrets.json 属于 QQ 登录凭据，不进普通迁移包，新机首次密码登录成功后重新建立。头像和说说索引均在既有 SQLite/人物记忆目录内随状态迁移。
 
 每日空间动态的非秘密 daily-qzone.json、SQLite 任务状态和诊断随私有状态迁移；新机还需运行 scripts/enable-daily-qzone.sh 安装香港时间定时器，见 [每日空间日常](daily-qzone.md)。已发日期不会因重启或迁移自动重发。
+
+知识库 `runtime/data/knowledge.sqlite` 已纳入私有状态归档，网页下载原图与来源随既有 memory/media 和 fish.sqlite 迁移。官方 tokenizer 数据位于 runtime/tools/tokenizer，由 build 脚本按固定官方版本准备（无模型权重）；发行包自带该数据，目标服务不需要联网初始化 tokenizer。

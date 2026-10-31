@@ -42,7 +42,7 @@
 
 ## 搜索和生图
 
-[DeepSeek 官方 Search/Fetch](https://api-docs.deepseek.com/guides/search/) 已有独立 `/v1/tools/search` 和 `/v1/tools/fetch`。当前实现 Search 与 Fetch；固定官方 HTTPS endpoint、128 字符 query、最多 5 条结果、need_content=false。Fetch 返回分段正文并缓存，供 QQ 模型自主调用。Search/Fetch 按请求计费，不当作文本 token；文档宣布 2026-11-01 北京时间起开始计费。新安装默认关闭；当前 VPS 按主人请求开启，实际验证结果见 QQ 人格与工具文档。
+[DeepSeek 官方 Search/Fetch](https://api-docs.deepseek.com/guides/search/) 已有独立 `/v1/tools/search` 和 `/v1/tools/fetch`。当前实现 Search 与 Fetch；固定官方 HTTPS endpoint、128 字符 query、最多 5 条结果、need_content=false。Fetch 返回分段正文并缓存，供 QQ 模型自主调用。上游 Search/Fetch 按请求计费，本项目按标准未缓存输入价换算为既有 token 额度，实际模型 usage 单独保留原始计数；文档宣布 2026-11-01 北京时间起开始计费。新安装默认关闭；当前 VPS 按主人请求开启，实际验证结果见 QQ 人格与工具文档。
 
 Codex 0.164.0 schema 有 `imageGeneration` 事件、savedPath 和 provider 能力查询，但不能据此认定当前账号、DSH 文本 provider 或受限任务已具备生图授权。[官方 feature 定义](https://github.com/openai/codex/blob/main/codex-rs/features/src/lib.rs) 和[工具选择条件](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/spec_plan.rs) 表明 availability 还受 feature、账号和 provider 影响。真实 Codex 代码任务显式关闭 image_generation；QQ 的 CodexImageProvider 返回 unsupported。Mock 只输出固定测试 PNG，不冒充模型生图，也未使用 OpenAI Image API。随后新增的本机命令行实际验证见下节，QQ 自动交付仍待集成。
 

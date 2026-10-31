@@ -53,9 +53,8 @@ test('errors retain held tokens; usage anomaly locks further calls; settlement i
     assert.equal(dayKey(Date.parse('2026-10-27T15:59:59Z')),'2026-10-27');assert.equal(dayKey(Date.parse('2026-10-27T16:00:00Z')),'2026-10-28');
   }finally{f.cleanup();}
 });
-test('search/image/task limits, global concurrency, time reservations persist',()=>{
-  const f=fixture({searchDaily:1,imageDaily:1,codexDaily:2,codexDailyMs:1000});try{
-    f.ledger.reserve('search','g','u');assert.throws(()=>f.ledger.reserve('search','g2','v'),/SEARCH_BUDGET/);
+test('image/task limits, global concurrency, time reservations persist',()=>{
+  const f=fixture({imageDaily:1,codexDaily:2,codexDailyMs:1000});try{
     f.ledger.reserve('image','g','u');assert.throws(()=>f.ledger.reserve('image','g','u'),/IMAGE_BUDGET/);
     const id=f.ledger.reserve('codex','g','u',0,0,600);assert.throws(()=>f.ledger.reserve('codex','g','u',0,0,200),/CODEX_BUSY/);
     f.ledger.settle(id,undefined,200);assert.equal(f.ledger.value('codexMs'),200);

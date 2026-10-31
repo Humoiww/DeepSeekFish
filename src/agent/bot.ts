@@ -9,7 +9,9 @@ import { BudgetedModel } from './model.js';
 import { FishError, codeOf, type Message, type Transport,type ChatMessage,type ChatPart } from '../types.js';
 import { Tasks, type Task } from '../codex/tasks.js';
 import type { SearchService } from '../search/provider.js';
-import { webTools } from '../search/tools.js';
+import { knowledgeTools,knowledgeSnapshot,updateKnowledge } from '../memory/knowledge.js';
+import { browsePage,downloadWebImage } from '../search/public-web.js';
+import { webTools,browseTools } from '../search/tools.js';
 import { makeDir, safePath } from '../paths.js';
 import { verifyPng, type ImageProvider } from '../image/provider.js';
 import { echoKey } from '../qq/adapter.js';
@@ -102,7 +104,7 @@ export class Bot {
       if(history.at(-1)?.id!==last.id)dialogue.push({role:'user',content:last.text});
       const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
       if(incoming.length)messages.push({role:'user',content:this.media!.parts(last.group,incoming)});
-      const tools=[...(c.search?webTools:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
+      const tools=[...knowledgeTools,...(c.search?[...webTools,...(this.media?browseTools:[])]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeSent=false;
       let imageOutcome:Record<string,unknown>|undefined;const memeResults=new Map<string,Record<string,unknown>>();
       const visibleImages=new Set(mediaIds);
@@ -143,6 +145,20 @@ export class Bot {
                 if(typeof args.text!=='string'||Object.keys(args).some(k=>k!=='text')||completion.tool_calls.length!==1)throw new FishError('INVALID_TOOL_ARGS');
                 if(args.text.trim())await this.send(last,args.text);
                 result={sent:!!args.text.trim()};finished=true;
+              }else if(call.function.name==='get_knowledge'){
+                if(Object.keys(args).length)throw new FishError('INVALID_TOOL_ARGS');result=knowledgeSnapshot(this.root);
+              }else if(call.function.name==='update_knowledge'){
+                result=updateKnowledge(this.root,args);messages[0]={role:'system',content:qqPrompt(this.root)};
+              }else if(call.function.name==='browse_page'){
+                if(!this.cfg().search)throw new FishError('SEARCH_DISABLED');
+                if(typeof args.url!=='string'||Object.keys(args).some(k=>!['url','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
+                result=await browsePage(args.url,args.offset,this.controller.signal);
+              }else if(call.function.name==='download_image'){
+                if(!this.cfg().search)throw new FishError('SEARCH_DISABLED');
+                if(!this.media||typeof args.url!=='string'||Object.keys(args).some(k=>k!=='url'))throw new FishError('INVALID_TOOL_ARGS');
+                const downloaded=await downloadWebImage(args.url,this.controller.signal);
+                const saved=await this.media.fromWeb(last.group,downloaded.bytes,downloaded.url);
+                result={saved:true,image:saved};media=this.media.parts(last.group,[{messageId:last.id,position:0,id:saved.id}]);viewedIds.push(saved.id);
               }else if(call.function.name==='search_web'){
                 if(typeof args.query!=='string'||Object.keys(args).some(k=>k!=='query'))throw new FishError('INVALID_TOOL_ARGS');
                 result={source:'DeepSeek Search',results:await this.search.search(args.query,last.group,last.user)};

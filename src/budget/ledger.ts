@@ -1,3 +1,4 @@
+import { networkPricing } from './pricing.js';
 import { randomUUID } from 'node:crypto';
 import type { Config } from '../config.js';
 import { Store } from '../storage/db.js';
@@ -42,6 +43,7 @@ export class Ledger {
     const cfg=this.config(); const id=randomUUID();
     if (![input,output,ms].every(n => Number.isSafeInteger(n) && n >= 0)) throw new FishError('INVALID_RESERVATION');
     if (this.store.getMeta('budgetFault')) throw new FishError('BUDGET_USAGE_FAULT');
+    if(kind==='search')input=networkPricing(cfg.model).tokensPerRequest;
     const total=input+output;
     if (kind === 'model') {
       if (output > cfg.maxOutputTokens || this.value('tokens','*',day)+total > cfg.dailyTokens ||
@@ -49,8 +51,12 @@ export class Ledger {
         this.value('requests','u:'+user,day) >= cfg.userDailyRequests) throw new FishError('TOKEN_BUDGET_EXHAUSTED');
       for (const scope of ['*','g:'+group]) this.add('tokens',total,scope,day);
       this.add('requests',1,'u:'+user,day);
+    } else if(kind==='search'){
+      if(this.value('tokens','*',day)+input>cfg.dailyTokens||this.value('tokens','g:'+group,day)+input>conversationTokenLimit(cfg,group))throw new FishError('TOKEN_BUDGET_EXHAUSTED');
+      for(const scope of ['*','g:'+group]){this.add('tokens',input,scope,day);this.add('webTokens',input,scope,day);}
+      this.add('search',1,'*',day);
     } else {
-      const limits = { search:cfg.searchDaily, codex:cfg.codexDaily, image:cfg.imageDaily, interjection:cfg.dailyInterjections };
+      const limits = { codex:cfg.codexDaily, image:cfg.imageDaily, interjection:cfg.dailyInterjections };
       const scope=kind==='interjection'?'g:'+group:'*';
       if (!(imageJob&&kind==='codex')&&this.value(kind,scope,day)>=limits[kind]) throw new FishError(kind.toUpperCase()+'_BUDGET_EXHAUSTED');
       if (kind==='codex') {
@@ -86,6 +92,13 @@ export class Ledger {
       this.store.db.prepare('UPDATE reservations SET state=? WHERE id=?').run(usage || r.kind!=='model' ? 'settled' : 'unknown',id);
     });
   }
+  /** Refund only requests known not to be billed. Ambiguous transport failures stay charged. */
+  settleSearch(id:string,billed:boolean|undefined):void{this.store.transaction(()=>{
+    const r=this.store.db.prepare("SELECT * FROM reservations WHERE id=? AND kind='search'").get(id) as unknown as Reservation;
+    if(!r||r.state!=='held')return;
+    if(billed===false)for(const scope of ['*','g:'+r.grp]){this.add('tokens',-r.input,scope,r.day);this.add('webTokens',-r.input,scope,r.day);}
+    this.store.db.prepare('UPDATE reservations SET state=? WHERE id=?').run(billed===undefined?'unknown':'settled',id);
+  });}
   error(): void { this.add('apiErrors',1); }
   snapshot(): unknown { return this.store.db.prepare('SELECT scope,metric,value FROM counters WHERE day=? ORDER BY scope,metric').all(dayKey()); }
 }

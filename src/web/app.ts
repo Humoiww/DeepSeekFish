@@ -1,3 +1,4 @@
+import { networkPricing } from '../budget/pricing.js';
 import fs from 'node:fs';
 import { configureQQ,qqStatus } from '../qq/settings.js';
 import { randomBytes,randomUUID } from 'node:crypto';
@@ -7,6 +8,7 @@ import { Store,redact } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
 import { Tasks } from '../codex/tasks.js';
 import { AppServerRunner,MockTaskRunner } from '../codex/runner.js';
+import { knowledgeTools,knowledgeSnapshot,updateKnowledge } from '../memory/knowledge.js';
 import { webTools } from '../search/tools.js';
 import { SearchService,DeepSeekSearchProvider,MockSearchProvider } from '../search/provider.js';
 import { FishError,codeOf } from '../types.js';
@@ -31,7 +33,7 @@ const tool=(name:string,description:string,properties:Record<string,unknown>={},
 const tools=[tool('list_files','列出当前会话工作区内的文件'),
   tool('read_file','读取当前会话工作区的 UTF-8 文本文件，最多 64 KiB',{path:{type:'string'}},['path']),
   tool('write_file','在当前会话工作区创建或更新文本文件，最多 64 KiB；无权访问其他目录',{path:{type:'string'},content:{type:'string'}},['path','content']),
-  ...webTools,
+  ...webTools,...knowledgeTools,
   tool('queue_codex','提出独立 Codex 任务，只进入待审队列，不能执行或批准任务',{task:{type:'string'}},['task'])];
 
 export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imageRunner?:ImageRunner,quotaReader?:QuotaReader){
@@ -97,7 +99,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     if(input.search!==undefined)budgetStore.transaction(()=>{const shared=JSON.parse(budgetStore.getMeta('settings')??'{}');shared.search=next.search;budgetStore.setMeta('settings',JSON.stringify(shared));});
     settings=next;store.setMeta('web-settings',JSON.stringify(settings));return status();
   }
-  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings:{...settings,search:cfg().search},web:{enabled:cfg().search,daily:cfg().searchDaily,used:ledger.value('search')},workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
+  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings:{...settings,search:cfg().search},web:{enabled:cfg().search,requests:ledger.value('search'),chargedTokens:ledger.value('webTokens'),budget:'tokens',...networkPricing(cfg().model)},workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
     dailyQzone:dailyStatus(root,budgetStore),
     memory:{automaticDays:2,timezone:PROJECT_TIMEZONE,archive:'runtime/memory/days',persona:'personas/active.json'},
     imageLimits:{daily:cfg().imageDaily,codexDaily:cfg().codexDaily},codexQuota:quota.status(),
@@ -108,10 +110,12 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     if(!args||typeof args!=='object'||Array.isArray(args))throw new FishError('INVALID_TOOL_ARGS');
     const schema=tools.find(t=>t.function.name===name)?.function.parameters;
     if(!schema)throw new FishError('TOOL_NOT_ALLOWED');
-    const fields=Object.keys(schema.properties as object),required=schema.required as string[];
-    if(Object.keys(args).some(k=>!fields.includes(k))||required.some(k=>typeof args[k]!=='string'))throw new FishError('INVALID_TOOL_ARGS');
+    const fields=Object.keys(schema.properties as object),required=(schema.required??[]) as string[];
+    if(Object.keys(args).some(k=>!fields.includes(k))||required.some(k=>!(k in args)||typeof args[k]!==(({integer:'number',array:'object'} as Record<string,string>)[(schema.properties as any)[k].type as string]??(schema.properties as any)[k].type)))throw new FishError('INVALID_TOOL_ARGS');
     const workspace=new SessionWorkspace(root,s.id);
     switch(name){
+      case 'get_knowledge':return knowledgeSnapshot(root);
+      case 'update_knowledge':return updateKnowledge(root,args);
       case 'list_files':return workspace.list();
       case 'read_file':return {path:args.path,content:workspace.read(args.path)};
       case 'write_file':return workspace.write(args.path,args.content);
@@ -178,9 +182,10 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
           try{
             if(!offered.some(t=>t.function.name===c.function.name))throw new FishError('TOOL_NOT_ALLOWED');
             result=await execute(s,c.function.name,JSON.parse(c.function.arguments));
+            if(c.function.name==='update_knowledge')sent[0]={role:'system',content:webPrompt(root)};
             record({name:c.function.name,state:'completed',result:redact(JSON.stringify(result)).slice(0,2000)});
           }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};record({name:c.function.name,state:'failed',result:JSON.stringify(result)});}
-          current.push({role:'tool',tool_call_id:c.id,content:redact(JSON.stringify(result)).slice(0,18000)});
+          current.push({role:'tool',tool_call_id:c.id,content:['get_knowledge','update_knowledge'].includes(c.function.name)?JSON.stringify(result):redact(JSON.stringify(result)).slice(0,18000)});
         }
       }
       joined.throwIfAborted();if(!answer)throw new FishError('DEEPSEEK_EMPTY_RESPONSE');
@@ -201,7 +206,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     while(active.size)await new Promise(resolve=>setTimeout(resolve,10));await quota.close();store.close();budgetStore.close();}
   return {root,mock,token,
     persona:()=>personaSettings(root),savePersona:(input:unknown)=>savePersona(root,input),
-    prompts:()=>({systems:promptSystems(root),latest:promptSnapshots(budgetStore)}),
+    prompts:()=>({systems:promptSystems(root),knowledge:knowledgeSnapshot(root),latest:promptSnapshots(budgetStore)}),
     sessions,session,createSession,detail,configure,status,chat,tasks,recover,close,
     startQQBroker:async()=>{if(!qqBroker)qqBroker=await startQQImageBroker(root,budgetStore,quota,mock,imageRunner);},
     configureQQ:(input:Record<string,unknown>)=>{if(input.enabled&&!key())throw new FishError('DEEPSEEK_KEY_MISSING');return configureQQ(root,input,settings.model);},qqStatus:()=>qqStatus(root,budgetStore),

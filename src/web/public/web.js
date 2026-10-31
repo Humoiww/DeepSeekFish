@@ -31,7 +31,7 @@ function renderStatus(s){renderCodexQuota(s.codexQuota);$('reset-images').disabl
   $('demo-banner').hidden=!s.mock;$('setup-banner').hidden=s.mock||s.credentialPresent;
   const count=s.budgets.usage.find(x=>x.metric==='tokens'&&x.scope==='*')?.value||0,limit=s.budgets.dailyTokens;
   $('budget-text').textContent=Math.round(count/limit*100)+'%';$('budget-detail').textContent=count.toLocaleString()+' / '+limit.toLocaleString()+' tokens';$('budget-bar').style.width=Math.min(100,count/limit*100)+'%';
-  $('search-state').textContent=s.settings.search?'自主调用 · 今日 '+(s.web?.used??0)+' / '+(s.web?.daily??20):'未开启';$('search-dot').textContent=s.settings.search?'✓':'○';$('codex-state').textContent=s.settings.codexQueue?'仅排队':'未开启';$('codex-dot').textContent=s.settings.codexQueue?'✓':'○';
+  $('search-state').textContent=s.settings.search?'自主调用 · 已计入 '+(s.web?.chargedTokens??0)+' tokens':'未开启';$('search-dot').textContent=s.settings.search?'✓':'○';$('codex-state').textContent=s.settings.codexQueue?'仅排队':'未开启';$('codex-dot').textContent=s.settings.codexQueue?'✓':'○';
   const tasks=s.tasks.filter(t=>t.sessionId===currentId);$('task-count').textContent=String(tasks.length);$('tasks').replaceChildren();
   if(!tasks.length)$('tasks').append(node('p','muted','暂时没有待审任务'));
   for(const t of tasks){const card=node('div','task-card');card.append(node('strong','',t.request),node('small','',({waiting:'等待本机终端审核',running:'正在执行',succeeded:'已完成',cancelled:'已取消',failed:'未完成',timed_out:'已超时'})[t.state]||t.state));
@@ -164,7 +164,7 @@ function addPersonaBlock(block={title:'补充',text:''}){
 }
 function renderPromptView(){
   if(!promptView)return;const channel=$('prompt-channel').value,system=promptView.systems[channel];
-  $('prompt-system').value=system;$('prompt-info').textContent='当前系统提示词 '+system.length+' 字符；这是实际组装函数的输出，包含人格与该入口的功能指引。字符数不是 token 数。';
+  $('prompt-system').value=system;$('prompt-info').textContent='知识库 '+(promptView.knowledge?.tokens??0)+' / 5000 tokens；当前系统提示词 '+system.length+' 字符；这是实际组装函数的输出，包含人格与该入口的功能指引。字符数不是 token 数。';
   const latest=promptView.latest[channel==='portrait'?'image':channel];
   $('prompt-record-info').textContent=latest?'实际调用时间：'+quotaTime(latest.at/1000)+'。下方保留该次发送的文本、工具与参数。':'更新后这个入口尚无请求记录。下一次调用会自动记录，不为查看提示词额外调用模型。';
   $('prompt-record').value=latest?JSON.stringify(latest.request,null,2):'';

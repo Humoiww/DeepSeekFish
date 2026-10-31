@@ -10,7 +10,7 @@ export interface Config {
   cooldownMs: number; dailyInterjections: number; windowSize: number; maxChars: number;
   quietHours: number[]; interests: string[]; bufferMs: number; historyHours: number;
   dailyTokens: number; groupDailyTokens: number; userDailyRequests: number; maxOutputTokens: number;
-  search: boolean; searchDaily: number; searchCount: number; searchTimeoutMs: number;
+  search: boolean; searchCount: number; searchTimeoutMs: number;
   codex: boolean; codexDaily: number; codexTimeoutMs: number; codexDailyMs: number;
   maxFiles: number; maxArtifactBytes: number; images: boolean; imageDaily: number;
   port: number; model: string; qqTransport:'official'|'onebot'; onebotUrl:string; privateUsers:string[];
@@ -22,12 +22,14 @@ export const defaults: Config = {
   cooldownMs: 480000, dailyInterjections: 12, windowSize: 20, maxChars: 600,
   quietHours: [0, 7], interests: ['AI', '编程', '游戏'], bufferMs: 1200, historyHours: 24,
   dailyTokens: 1000000, groupDailyTokens: 60000, userDailyRequests: 1000, maxOutputTokens: 256,
-  search: false, searchDaily: 20, searchCount: 3, searchTimeoutMs: 10000,
+  search: false, searchCount: 3, searchTimeoutMs: 10000,
   codex: false, codexDaily: 22, codexTimeoutMs: 300000, codexDailyMs: 6600000,
   maxFiles: 20, maxArtifactBytes: 10485760, images: false, imageDaily: 20,
   port: 17861, model: 'deepseek-v4-flash', qqTransport:'official', onebotUrl:'ws://127.0.0.1:3001', privateUsers:[],
 };
 export function validateConfig(input: Record<string, unknown>): Config {
+  // Ignore the obsolete per-day search count in existing installations.
+  const {searchDaily:_obsolete,...current}=input;input=current;
   const c = { ...defaults, ...input } as Config;
   for (const [k, v] of Object.entries(input)) {
     if (!(k in defaults) || typeof v !== typeof defaults[k as keyof Config]) throw new FishError('INVALID_CONFIG_' + k);

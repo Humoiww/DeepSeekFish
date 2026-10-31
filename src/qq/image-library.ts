@@ -8,8 +8,8 @@ import { dayStart } from '../memory/journal.js';
 import { resolveCharacterReference } from '../image/character-reference.js';
 import { readReference,type SelectedReference } from '../image/references.js';
 
-export type ImageSource='all'|'character'|'avatar'|'qzone'|'generated'|'received'|'collected';
-export interface LibraryImage {id:string;source:Exclude<ImageSource,'all'>;label:string;postId?:string;position?:number;observedAt?:number;messageId?:string;sourceImageId?:string;path:string}
+export type ImageSource='all'|'character'|'avatar'|'qzone'|'generated'|'received'|'collected'|'web';
+export interface LibraryImage {id:string;source:Exclude<ImageSource,'all'>;label:string;postId?:string;position?:number;observedAt?:number;messageId?:string;sourceImageId?:string;sourceUrl?:string;path:string}
 export class QQImageLibrary{
   constructor(private root:string,private broker:Store){}
   private entries(conversation:string,user:string):LibraryImage[]{
@@ -28,12 +28,12 @@ export class QQImageLibrary{
       const file=safePath(this.root,'runtime/data/fish.sqlite');if(fs.existsSync(file))db=new DatabaseSync(file,{readOnly:true});
       db?.exec('PRAGMA busy_timeout=2000');
       if(db?.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='qq_media'").get()){
-        const received=db.prepare('SELECT id,path,description,observed,meme,meta FROM qq_media WHERE conversation=? AND (observed>=? OR meme=1) ORDER BY observed DESC LIMIT 500')
+        const received=db.prepare("SELECT id,path,description,observed,meme,meta FROM qq_media WHERE conversation=? AND (observed>=? OR meme=1 OR json_extract(meta,'$.web.url') IS NOT NULL) ORDER BY observed DESC LIMIT 500")
           .all(conversation,dayStart()-86400000) as {id:string;path:string;description:string;observed:number;meme:number;meta:string}[];
         for(const row of received){
           if(!/^media-[a-f0-9]{32}$/.test(row.id)||!['png','jpeg','gif','webp'].some(ext=>row.path==='runtime/memory/media/'+row.id+'/original.'+ext))continue;
-          const {sourceImageId}=JSON.parse(row.meta);
-          images.push({id:row.id,source:sourceImageId?'collected':'received',sourceImageId,label:(sourceImageId?'图库收藏表情：':row.meme?'聊天表情包：':'聊天图片：')+row.description,observedAt:row.observed,path:safePath(this.root,row.path)});
+          const {sourceImageId,web}=JSON.parse(row.meta);
+          images.push({id:row.id,source:row.meme&&sourceImageId?'collected':web?'web':'received',sourceImageId,sourceUrl:web?.url,label:(web?'网页下载图片：':sourceImageId?'图库收藏表情：':row.meme?'聊天表情包：':'聊天图片：')+(row.description||web?.url||''),observedAt:row.observed,path:safePath(this.root,row.path)});
         }
       }
       for(const [table,kind] of [['qzone_observations','qzone'],['person_observations','avatar']] as const){
@@ -63,7 +63,7 @@ export class QQImageLibrary{
     return images.filter(image=>{try{const st=fs.lstatSync(image.path);return st.isFile()&&st.nlink===1&&st.size>=12&&st.size<=10485760;}catch{return false;}});
   }
   list(conversation:string,user:string,source:ImageSource='all',offset=0){
-    if(!['all','character','avatar','qzone','generated','received','collected'].includes(source)||!Number.isInteger(offset)||offset<0||offset>1000)throw new FishError('IMAGE_CATALOG_QUERY_INVALID');
+    if(!['all','character','avatar','qzone','generated','received','collected','web'].includes(source)||!Number.isInteger(offset)||offset<0||offset>1000)throw new FishError('IMAGE_CATALOG_QUERY_INVALID');
     const all=this.entries(conversation,user).filter(i=>source==='all'||i.source===source),page=all.slice(offset,offset+12);
     return {canAttachOriginals:true,images:page.map(({path,...image})=>image),total:all.length,nextOffset:offset+12<all.length?offset+12:null};
   }

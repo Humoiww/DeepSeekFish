@@ -21,7 +21,6 @@
   "maxOutputTokens": 256,
   "model": "deepseek-v4-flash",
   "search": false,
-  "searchDaily": 20,
   "searchCount": 3,
   "searchTimeoutMs": 10000,
   "codex": false,

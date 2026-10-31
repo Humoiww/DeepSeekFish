@@ -91,7 +91,7 @@ test('textual tool protocol is repaired through native JSON, kept out of chat/hi
   } as unknown as QQImageClient;
   const provider:Model={kind:'fixture',async complete(messages,_max,options){
     turns++;assert.ok(messages.every(m=>m.role!=='assistant'||!hasToolMarkup(String(m.content))));
-    assert.ok(!hasToolMarkup(String(messages[1].content)));assert.ok(String(messages[0].content).length<180);
+    assert.ok(!hasToolMarkup(String(messages[1].content)));assert.ok(String(messages[0].content).split('\n知识库（')[0].length<180);
     const required=options?.tools?.find(t=>t.function.name==='generate_image')?.function.parameters.required as string[]|undefined;
     assert.ok(!required?.includes('remark'));
     if(turns===1){assert.equal(options?.toolChoice,undefined);return {text:'',tool_calls:[call('list_images',{})],usage:{input:100,output:20}};}
@@ -110,7 +110,7 @@ test('textual tool protocol is repaired through native JSON, kept out of chat/hi
     assert.ok(f.transport.sent.every(m=>!hasToolMarkup(m.text)));
     const records=fs.readdirSync(f.root+'/runtime/logs/qq').map(n=>JSON.parse(fs.readFileSync(f.root+'/runtime/logs/qq/'+n,'utf8')));
     assert.ok(records[0].trace.some((t:any)=>t.protocolRepair?.tool==='generate_image'));
-    assert.ok(records[0].trace.some((t:any)=>t.assistant===leaked));assert.ok(records[0].contextSize.systemCharacters<180);
+    assert.ok(records[0].trace.some((t:any)=>t.assistant===leaked));assert.ok(records[0].system.split('\n知识库（')[0].length<180);
   }finally{await f.bot.stop();f.cleanup();}
 });
 test('unknown or repeated textual protocol never executes and never reaches QQ',async()=>{

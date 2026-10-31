@@ -70,8 +70,10 @@ QQ 图片及表情发送在每次 OneBot 请求中传 timeout=60000，延长 Nap
 
 QQ 普通对话在联网开启时始终提供 `search_web(query)` 和 `fetch_page(url, offset?)`，与图库、生图、空间等工具一起由模型自行选择。没有搜索关键词开关、强制首调或固定过渡语。前者返回来源 URL、标题、摘要、页面日期；后者读取正文，可用 nextOffset 续读长文。工具结果继续以原生 tool_call_id 回传给同一轮模型，回答措辞由当前人格决定。
 
-使用 [DeepSeek 官方 Search / Fetch](https://api-docs.deepseek.com/guides/search/) 与现有 API Key；联网请求只发向这两个固定 HTTPS API，目标网页由服务端读取，不让网页获得本机文件、登录态或执行权限。失败返回真实错误，不拿空结果冒充已查看。调用和来源结果保存在既有 QQ trace / 完整请求记录中。
+使用 [DeepSeek 官方 Search / Fetch](https://api-docs.deepseek.com/guides/search/) 与现有 API Key；搜索和正文读取发向这两个固定 HTTPS API；另提供本机公开网页抓取与图片下载，不携带登录态，不提供本机文件或执行权限。失败返回真实错误，不拿空结果冒充已查看。调用和来源结果保存在既有 QQ trace / 完整请求记录中。
 
-WebUI 的「允许自主联网」与 QQ 共用既有 settings 配置，不需要 `/fish search` 或逐次批准。查询与正文读取共用现有每天 20 次联网预算（香港时间切日）；同一搜索或网页缓存 10 分钟，翻页用缓存，不重复计数。`get_quota` 的 web 字段可查看已用和剩余。默认新安装仍关闭，当前 VPS 按主人请求启用；预算、开关、缓存和诊断随现有数据库迁移。搜索/网页服务按成功请求收费，文本模型按自己的 token 用量计费。
+WebUI 的「允许自主联网」与 QQ 共用既有 settings 配置，不需要 `/fish search` 或逐次批准。查询与正文读取按价格折算并扣除现有 token 额度，无单独的联网次数上限；同一搜索或网页缓存 10 分钟，翻页用缓存，不重复扣费。`get_quota` 的 web 字段可查看计入的 token 与折算价格，剩余统一看 energy。默认新安装仍关闭，当前 VPS 按主人请求启用；预算、开关、缓存和诊断随现有数据库迁移。搜索/网页服务按成功请求收费，文本模型按自己的 token 用量计费。
 
 2026-10-31 真实验证：现有账号的 DeepSeek 模型在没有指定工具名称的情况下，自行选择 search_web 三次并改写查询，然后自然语言回答；独立 Fetch 检查成功读到官方网页正文，长文以 nextOffset 续读。本轮共记 4 次联网调用，未发送 QQ 测试消息。私有完整记录位于 runtime/logs/network-live-check.json。
+
+网页图像浏览、下载、收藏以及后台知识库详见 [自主联网和知识库](web-knowledge.md)。
