@@ -22,7 +22,7 @@ args = p.parse_args()
 os.umask(0o077)
 root = args.root.resolve()
 data_names = {'fish.sqlite', 'webui.sqlite', 'mock.sqlite', 'demo.sqlite', 'webui-mock.sqlite', 'webui-mock-budget.sqlite'}
-nonsecret_data = {'qq-settings.json', 'qq-enabled', 'daily-qzone.json'}
+nonsecret_data = {'qq-settings.json', 'qq-enabled', 'daily-qzone.json', 'persona.json'}
 trees = ['runtime/outputs', 'runtime/workspace', 'runtime/logs', 'runtime/character', 'runtime/memory']
 def allowed(name):
     parts = PurePosixPath(name).parts

@@ -2,6 +2,9 @@ import type { ChatMessage, Model, ModelResult,CompletionOptions } from '../types
 import { FishError } from '../types.js';
 import { Ledger,conversationTokenLimit } from '../budget/ledger.js';
 import type { Config } from '../config.js';
+import { recordPrompt } from '../prompt-record.js';
+export const modelPayload=(cfg:Config,messages:ChatMessage[],maxTokens:number,options:CompletionOptions={})=>({model:cfg.model,messages,max_tokens:maxTokens,stream:false,thinking:{type:'disabled'},
+  ...(options.tools?.length?{tools:options.tools,tool_choice:options.final?'none':options.toolChoice?{type:'function',function:{name:options.toolChoice}}:options.requireTool?'required':'auto'}:{})});
 
 export function messageText(message:ChatMessage):string{return typeof message.content==='string'?message.content:message.content.filter(p=>p.type==='text').map(p=>p.text).join('\n');}
 export function inputBound(messages:ChatMessage[]):number{
@@ -35,8 +38,7 @@ export class DeepSeekModel implements Model {
     const res=await this.http('https://api.deepseek.com/chat/completions',{
       method:'POST', redirect:'error', signal:AbortSignal.any([AbortSignal.timeout(30000),...(options.signal?[options.signal]:[])]),
       headers:{authorization:'Bearer '+this.key,'content-type':'application/json'},
-      body:JSON.stringify({model:this.cfg().model,messages,max_tokens:maxTokens,stream:false,thinking:{type:'disabled'},
-        ...(options.tools?.length?{tools:options.tools,tool_choice:options.final?'none':options.toolChoice?{type:'function',function:{name:options.toolChoice}}:options.requireTool?'required':'auto'}:{})}),
+      body:JSON.stringify(modelPayload(this.cfg(),messages,maxTokens,options)),
     });
     if(!res.ok) { await res.body?.cancel(); throw new FishError('DEEPSEEK_HTTP_'+res.status); }
     const data=await boundedJson(res);
@@ -78,7 +80,7 @@ export class BudgetedModel {
       }
       throw e;
     }
-    try { const r=await this.provider.complete(messages,max,options);this.ledger.settle(id,r.usage);this.ledger.store.setMeta('modelStatus','last call succeeded');return r; }
+    try { recordPrompt(this.ledger.store,user==='daily-qzone'?'daily':'qq',modelPayload(this.cfg(),messages,max,options));const r=await this.provider.complete(messages,max,options);this.ledger.settle(id,r.usage);this.ledger.store.setMeta('modelStatus','last call succeeded');return r; }
     catch(e) { this.ledger.settle(id);this.ledger.error();this.ledger.store.setMeta('modelStatus','last call failed');throw e; }
   }
 }

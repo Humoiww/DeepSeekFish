@@ -40,4 +40,4 @@ sudo systemctl restart deepseekfish-web.service deepseekfish-qq.service
 
 安装器固定浏览器版本，支持 ARM64/x64，仅安装缺失的运行库和中文字体，不装 Playwright/Puppeteer 或测试框架；只创建本项目账户、AppArmor profile 和 unit，不改 SSH、Tailscale 或防火墙。
 
-`migrate-state.py` 包含 runtime/memory 和 SQLite 索引；人格随 Git/发布包迁移。临时浏览器 profile 与 QQ/Codex/DeepSeek 验证凭据不进普通迁移包，新机器按既有流程登录。
+`migrate-state.py` 包含 runtime/memory 和 SQLite 索引；默认人格随 Git/发布包迁移，网页分块编辑的 runtime/data/persona.json 随私有迁移包迁移。临时浏览器 profile 与 QQ/Codex/DeepSeek 验证凭据不进普通迁移包，新机器按既有流程登录。

@@ -63,8 +63,6 @@ export function checkImageCapacity(root:string,cfg:Config,ledger:Ledger,mock=fal
   if(ledger.store.getMeta('budgetFault'))throw new FishError('BUDGET_USAGE_FAULT');
   if(!mock&&!fs.existsSync(safePath(root,'runtime/codex-home/auth.json')))throw new FishError('CODEX_PROJECT_LOGIN_REQUIRED');
   if(ledger.value('image')>=cfg.imageDaily)throw new FishError('IMAGE_BUDGET_EXHAUSTED');
-  if(ledger.value('codex')>=cfg.codexDaily)throw new FishError('CODEX_BUDGET_EXHAUSTED');
-  if(ledger.value('codexMs')+cfg.codexTimeoutMs>cfg.codexDailyMs)throw new FishError('CODEX_TIME_BUDGET');
   if(ledger.store.db.prepare("SELECT id FROM reservations WHERE kind='codex' AND state='held'").get())throw new FishError('CODEX_BUSY');
 }
 

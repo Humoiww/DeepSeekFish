@@ -38,6 +38,8 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       if(!equal(req.headers.authorization??'','Bearer '+app.token)){res.statusCode=401;throw new FishError('LOCAL_AUTH_REQUIRED');}
       let value:unknown;
       if(req.method==='GET'&&url.pathname==='/api/status')value=app.status();
+      else if(req.method==='GET'&&url.pathname==='/api/persona')value=app.persona();
+      else if(req.method==='GET'&&url.pathname==='/api/prompts')value=app.prompts();
       else if(req.method==='GET'&&url.pathname==='/api/qq')value=await app.qqStatus();
       else if(req.method==='GET'&&url.pathname==='/api/sessions')value=app.sessions();
       else if(req.method==='GET'&&url.pathname==='/api/session')value=app.detail(url.searchParams.get('id'));
@@ -58,6 +60,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
           bootstrap=randomBytes(32).toString('hex');expires=Date.now()+300000;
           value={launchUrl:origin+'/#bootstrap='+bootstrap,mock:app.mock};
         }
+        else if(url.pathname==='/api/persona')value=app.savePersona(b);
         else if(url.pathname==='/api/settings')value=app.configure(b);
         else if(url.pathname==='/api/qq')value=app.configureQQ(b);
         else if(url.pathname==='/api/codex-quota/refresh')value=await app.refreshQuota();

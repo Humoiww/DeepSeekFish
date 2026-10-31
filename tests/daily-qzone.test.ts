@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import {fixture} from './helpers.js';
 import {writePrivate,makeDir} from '../src/paths.js';
 import {MemoryJournal} from '../src/memory/journal.js';
-import {DailyQzone,dailySlot,dailyMemory,dailyStatus,dailyActions,authorizedDailyImage} from '../src/qq/daily-qzone.js';
+import {DailyQzone,dailySlot,dailyMemory,dailyStatus,dailyActions} from '../src/qq/daily-qzone.js';
 import {QzonePublisher,QzoneRejected,qzoneResponse} from '../src/qq/qzone-publish.js';
 import {MockImageProvider} from '../src/image/provider.js';
 import {FishError,type ChatMessage} from '../src/types.js';
@@ -87,14 +87,6 @@ test('Qzone refusal never becomes a successful post',async()=>{
   const q={qzoneSession:async()=>({cookies:'p_uin=o10001; p_skey=private',bkn:'123'})};
   const p=new QzonePublisher(q,'10001',(async()=>new Response('{"code":-3,"message":"private response"}')) as typeof fetch);
   await assert.rejects(p.publish('日常',{richval:'fixture',picBo:'fixture'},()=>{}),e=>e instanceof QzoneRejected&&e.providerCode===-3&&!e.message.includes('private'));
-});
-test('standing image consent requires an enabled, active daily job for this owner and date',async()=>{
-  const f=await setup();try{
-    f.daily();f.store.db.prepare("INSERT INTO daily_qzone(day,self,state,image_key,lease,updated) VALUES ('2026-10-31','10001','preparing','daily-image',?,?)").run(midnight+1000,before);
-    const allowed=(group='private:20002',user='20002',key='daily-image',now=before)=>authorizedDailyImage(f.root,f.store,group,user,key,now);
-    assert.equal(allowed(),true);assert.equal(allowed('private:30003','30003'),false);assert.equal(allowed('private:20002','20002','daily-qzone:fake'),false);assert.equal(allowed('private:20002','20002','daily-image',midnight+2000),false);
-    f.store.db.prepare("UPDATE daily_qzone SET state='ready'").run();assert.equal(allowed(),false);
-  }finally{f.cleanup();}
 });
 test('daily context uses corrected delivery receipts, excludes another contact and the scheduled image itself',async()=>{
   const f=await setup();try{

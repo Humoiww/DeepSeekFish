@@ -1,8 +1,8 @@
 'use strict';
 const $=id=>document.getElementById(id);
-const imageUrls=new Set();let pendingImageConfirmation=null,confirmedImageRequest=null;
+const imageUrls=new Set();
 let token=sessionStorage.getItem('fish-token')||'',state,currentId=null,mode='chat',busy=false,abortController,tailnetOwner=false;
-const errors={CODEX_IMAGE_ONLY:'当前服务器仅启用 Codex 生图，不提供普通执行任务。',CODEX_QUOTA_UNKNOWN:'暂时无法读取 Codex 额度，自动生图已暂停，请刷新额度。',CODEX_QUOTA_LOW:'Codex 剩余额度低于 10% 或账号已受限，已暂停生图。',CODEX_QUOTA_CONFIRM_REQUIRED:'Codex 剩余额度在 10%～30%，需要逐张确认。',CODEX_RATE_LIMITED:'Codex 已限流，暂停生图，等待重试时间及官方确认恢复。',IMAGE_RESET_BUSY_OR_UNCERTAIN:'存在运行中或用量未确认的任务，暂时不能重置本地计数。',IMAGE_BUDGET_EXHAUSTED:'今天的本地生图额度已用完；可等待明天，或使用右侧 Reset 本地计数。',CODEX_BUDGET_EXHAUSTED:'今天的 Codex 任务额度已用完。',CODEX_TIME_BUDGET:'今天的 Codex 时长额度不足。',CODEX_BUSY:'已有 Codex 任务正在运行，请完成后再试。',CODEX_PROJECT_LOGIN_REQUIRED:'请在项目终端运行 bash scripts/manage.sh codex-login --device-auth（Windows：npm run cli -- codex-login --device-auth）后重试。',CHARACTER_REFERENCE_MISSING:'缺少鲸酱设定图，请恢复仓库中的 assets/character/whalechan-reference.png，或将自定义图放到 runtime/character/whalechan-reference.png。',CHARACTER_REFERENCE_NOT_USED:'Codex 没有确认使用设定图，未发布图片。',IMAGE_PLAN_REQUIRED:'模型未返回有效画面方案，未开始生图。',INVALID_IMAGE_PLAN:'画面方案格式不正确，未开始生图。',CODEX_IMAGE_CANCELLED_OR_TIMED_OUT:'生图已取消或超时，已发生的调用仍计入额度。',CODEX_IMAGE_UNSUPPORTED_OR_MISSING:'未收到 Codex 原生生图结果，未发布图片。',ARTIFACT_CHANGED:'图片文件发生变化，已停止提供该文件。',DEEPSEEK_KEY_MISSING:'请先在「连接与设置」中保存 DeepSeek API Key。',LOCAL_AUTH_REQUIRED:'本机连接已失效，请重新输入令牌。',DEEPSEEK_HTTP_401:'API Key 无效，请检查连接设置。',DEEPSEEK_HTTP_402:'DeepSeek 账户余额不足。',DEEPSEEK_HTTP_429:'DeepSeek 请求过于频繁，请稍后重试。',DEEPSEEK_HTTP_400:'模型或请求参数不受支持，请检查模型设置。',TOKEN_BUDGET_EXHAUSTED:'当前会话、每日额度或单用户请求次数已到上限。',BUDGET_USAGE_FAULT:'用量与预留不一致，后续调用已停止，请在本机检查预算。',CHAT_CANCELLED:'本次请求已停止。已发生的调用或文件写入会保留。',CHAT_BUSY:'此会话正在处理消息，请稍后再发。',CONVERSATION_LIMIT_CREATE_NEW:'当前会话已满，请开启新的对话。',TOOL_LIMIT_OR_DISABLED:'本次工具调用达到上限，或当前模式不允许工具。',BOOTSTRAP_EXPIRED:'自动连接链接已使用或过期，请输入本机令牌。'};
+const errors={CODEX_IMAGE_ONLY:'当前服务器仅启用 Codex 生图，不提供普通执行任务。',CODEX_RATE_LIMITED:'Codex 本次请求被服务端限流。账号状态仍可查看，系统不会因此锁住后续生图。',PERSONA_INVALID:'人格内容格式不正确，最多20块、合计24 KiB。',PERSONA_EMPTY:'请至少保留一块人格内容。',PERSONA_CHANGED_RELOAD:'人格已在其他页面修改，请复制未保存内容后重新打开。',IMAGE_RESET_BUSY_OR_UNCERTAIN:'存在运行中或用量未确认的任务，暂时不能重置本地计数。',IMAGE_BUDGET_EXHAUSTED:'今天的本地生图额度已用完；可等待明天，或使用右侧 Reset 本地计数。',CODEX_BUDGET_EXHAUSTED:'今天的 Codex 任务额度已用完。',CODEX_TIME_BUDGET:'今天的 Codex 时长额度不足。',CODEX_BUSY:'已有 Codex 任务正在运行，请完成后再试。',CODEX_PROJECT_LOGIN_REQUIRED:'请在项目终端运行 bash scripts/manage.sh codex-login --device-auth（Windows：npm run cli -- codex-login --device-auth）后重试。',CHARACTER_REFERENCE_MISSING:'缺少鲸酱设定图，请恢复仓库中的 assets/character/whalechan-reference.png，或将自定义图放到 runtime/character/whalechan-reference.png。',CHARACTER_REFERENCE_NOT_USED:'Codex 没有确认使用设定图，未发布图片。',IMAGE_PLAN_REQUIRED:'模型未返回有效画面方案，未开始生图。',INVALID_IMAGE_PLAN:'画面方案格式不正确，未开始生图。',CODEX_IMAGE_CANCELLED_OR_TIMED_OUT:'生图已取消或超时，已发生的调用仍计入额度。',CODEX_IMAGE_UNSUPPORTED_OR_MISSING:'未收到 Codex 原生生图结果，未发布图片。',ARTIFACT_CHANGED:'图片文件发生变化，已停止提供该文件。',DEEPSEEK_KEY_MISSING:'请先在「连接与设置」中保存 DeepSeek API Key。',LOCAL_AUTH_REQUIRED:'本机连接已失效，请重新输入令牌。',DEEPSEEK_HTTP_401:'API Key 无效，请检查连接设置。',DEEPSEEK_HTTP_402:'DeepSeek 账户余额不足。',DEEPSEEK_HTTP_429:'DeepSeek 请求过于频繁，请稍后重试。',DEEPSEEK_HTTP_400:'模型或请求参数不受支持，请检查模型设置。',TOKEN_BUDGET_EXHAUSTED:'当前会话、每日额度或单用户请求次数已到上限。',BUDGET_USAGE_FAULT:'用量与预留不一致，后续调用已停止，请在本机检查预算。',CHAT_CANCELLED:'本次请求已停止。已发生的调用或文件写入会保留。',CHAT_BUSY:'此会话正在处理消息，请稍后再发。',CONVERSATION_LIMIT_CREATE_NEW:'当前会话已满，请开启新的对话。',TOOL_LIMIT_OR_DISABLED:'本次工具调用达到上限，或当前模式不允许工具。',BOOTSTRAP_EXPIRED:'自动连接链接已使用或过期，请输入本机令牌。'};
 const explain=e=>errors[e]||'操作未完成：'+e;
 const node=(tag,className,text)=>{const n=document.createElement(tag);if(className)n.className=className;if(text!==undefined)n.textContent=text;return n;};
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,5000);}
@@ -19,12 +19,11 @@ function renderCodexQuota(q){
   if(!weekly.length){const missing=node('div','quota-weekly');missing.append(node('span','','本周剩余额度'),node('strong','','—'),node('small','','接口尚未提供周窗口数据'));content.append(missing);}
   for(const w of [...weekly,...all.filter(w=>w.windowDurationMins!==10080)]){const weeklyWindow=w.windowDurationMins===10080,box=node('div',weeklyWindow?'quota-weekly':'quota-window');box.append(node('span','',weeklyWindow?'本周剩余额度 · '+w.pool:(w.windowDurationMins===null?'未知时长窗口':w.windowDurationMins<1440?w.windowDurationMins/60+' 小时窗口':w.windowDurationMins/1440+' 天窗口')+' · '+w.pool),node('strong','',Number(w.remainingPercent.toFixed(1))+'%'));const meter=node('div','meter'),bar=node('i');bar.style.width=w.remainingPercent+'%';meter.append(bar);box.append(meter,node('small','','重置：'+quotaTime(w.resetsAt)));content.append(box);}
   for(const p of q.pools)if(p.credits)content.append(node('p','quota-credits',p.name+' Credits：'+(p.credits.unlimited?'无限':p.credits.balance??(p.credits.hasCredits?'有额度，余额未提供':'未提供可用余额'))));
-  const policy=node('p','quota-policy '+q.decision,({allow:'可以自动生图',confirm:'每张图片需要人工确认',pause:'自动生图已暂停'})[q.decision]||'等待额度');content.append(policy);
-  if(q.error)content.append(node('small','quota-error',explain(q.error)));
-  if(q.reason&&q.decision==='pause')content.append(node('small','quota-error',explain(q.reason)));
-  if(q.retryAt)content.append(node('small','quota-error','最早重试：'+quotaTime(q.retryAt/1000)+'；仍需官方确认恢复。'));
+  content.append(node('p','quota-policy','生图仅按今日张数限额判断'));
+  if(q.error)content.append(node('small','quota-error','额度读取：'+q.error));
+  if(q.retryAt)content.append(node('small','quota-error','上次服务端限流提供的重试时间：'+quotaTime(q.retryAt/1000)));
   content.append(node('small','quota-updated',(q.mock?'离线示例 · ':q.loading?'刷新中 · ':'')+(q.updatedAt?'更新 '+quotaTime(q.updatedAt/1000):'尚无有效数据')+' · 每5分钟自动刷新'));
-  content.append(node('small','quota-policy-note','>30% 自动 · 10%～30% 确认 · <10% 暂停'));
+  content.append(node('small','quota-policy-note','百分比和读取失败不阻止提交；实际生成结果由服务端返回。'));
   const latest=q.recentUsage?.[0];if(latest)content.append(node('small','quota-observation',latest.changes.length?'最近一次窗口变化：'+latest.changes.map(c=>c.window+' +'+c.percentagePoints+' 个百分点').join('，')+'（可能包含其他调用）':'最近一次窗口消耗暂不可比较；不推算剩余张数。'));
 }
 function renderStatus(s){renderCodexQuota(s.codexQuota);$('reset-images').disabled=busy||s.active>0;
@@ -68,8 +67,6 @@ function settings(){if(!state)return;closeDrawers(false);$('model').value=state.
 $('refresh-quota').onclick=async()=>{const button=$('refresh-quota');button.disabled=true;try{renderStatus(await api('codex-quota/refresh',{}));}catch(e){toast(explain(e.message));}finally{button.disabled=false;}};
 $('reset-images').onclick=()=>{$('reset-images-error').textContent='';$('reset-images-dialog').showModal();};
 $('reset-images-form').onsubmit=async e=>{e.preventDefault();e.submitter.disabled=true;try{renderStatus(await api('images/reset',{}));$('reset-images-dialog').close();toast('本地生图计数已重置；Codex 账号额度未改变。');}catch(err){$('reset-images-error').textContent=explain(err.message);}finally{e.submitter.disabled=false;}};
-$('confirm-image-once').onclick=()=>{const request=pendingImageConfirmation;pendingImageConfirmation=null;$('image-confirm-dialog').close();if(!request||request.sessionId!==currentId||busy)return;confirmedImageRequest=request;$('prompt').value=request.text;setMode(request.mode);$('chat-form').requestSubmit();};
-$('image-confirm-dialog').addEventListener('close',()=>{pendingImageConfirmation=null;});
 $('settings-button').onclick=settings;$('setup-button').onclick=settings;
 $('qq-button').onclick=async()=>{closeDrawers(false);$('qq-error').textContent='';$('qq-dialog').showModal();await refreshQQ(true);};
 async function refreshQQ(fill=false){
@@ -125,19 +122,19 @@ $('prompt').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.i
 document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='n'){e.preventDefault();$('new-chat').click();}});
 $('cancel').onclick=()=>{abortController?.abort();};
 $('chat-form').onsubmit=async e=>{
-  e.preventDefault();const confirmation=confirmedImageRequest;confirmedImageRequest=null;const text=$('prompt').value.trim(),requestMode=mode,imageConfirmed=!!confirmation&&confirmation.sessionId===currentId&&confirmation.text===text&&confirmation.mode===requestMode;if(busy||!text||!currentId)return;
+  e.preventDefault();const text=$('prompt').value.trim(),requestMode=mode;if(busy||!text||!currentId)return;
   if(!state.mock&&!state.credentialPresent){settings();return;}
   busy=true;const id=currentId;abortController=new AbortController();$('send').hidden=true;$('cancel').hidden=false;$('prompt').disabled=true;$('mode-chat').disabled=true;$('mode-agent').disabled=true;$('mode-image').disabled=true;
   $('welcome').hidden=true;const row=turnElement({user:text,answer:'',trace:[],state:'running'});$('messages').append(row);const answer=row.querySelector('.answer-slot'),trace=row.querySelector('.trace');scrollEnd();
   try{
-    const res=await fetch('/api/chat',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({sessionId:id,text,mode:requestMode,imageConfirmed}),signal:abortController.signal});
+    const res=await fetch('/api/chat',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({sessionId:id,text,mode:requestMode}),signal:abortController.signal});
     if(!res.ok){const data=await res.json();throw Error(data.error||'REQUEST_FAILED');}
     $('prompt').value='';const reader=res.body.getReader(),decoder=new TextDecoder();let buffer='',finished=false;
-    const handle=event=>{if(event.type==='done'||event.type==='error')finished=true;if(event.type==='thinking')answer.replaceChildren(node('div','thinking',event.stage==='planning'?'小鱼正在设计画面…':event.stage==='generating'?(state.mock?'正在演示出图流程…':'方案已交给 Codex，正在生成图片…'):event.round===1?'小鱼正在想一想…':'正在整理操作结果…'));if(event.type==='tool')trace.append(toolEvent(event.event));if(event.type==='image')row.querySelector('.image-results').append(imageElement(event.image,id));if(event.type==='answer')answer.replaceChildren(formatted(event.text));if(event.type==='error'){answer.replaceChildren(node('div','error-message',explain(event.error)));if(event.error==='CODEX_QUOTA_CONFIRM_REQUIRED')pendingImageConfirmation={sessionId:id,text,mode:requestMode};}scrollEnd();};
+    const handle=event=>{if(event.type==='done'||event.type==='error')finished=true;if(event.type==='thinking')answer.replaceChildren(node('div','thinking',event.stage==='planning'?'小鱼正在设计画面…':event.stage==='generating'?(state.mock?'正在演示出图流程…':'方案已交给 Codex，正在生成图片…'):event.round===1?'小鱼正在想一想…':'正在整理操作结果…'));if(event.type==='tool')trace.append(toolEvent(event.event));if(event.type==='image')row.querySelector('.image-results').append(imageElement(event.image,id));if(event.type==='answer')answer.replaceChildren(formatted(event.text));if(event.type==='error'){answer.replaceChildren(node('div','error-message',explain(event.error)));}scrollEnd();};
     for(;;){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let index;while((index=buffer.indexOf('\n'))!==-1){const line=buffer.slice(0,index);buffer=buffer.slice(index+1);if(line.trim())handle(JSON.parse(line));}}
     if(!finished)throw Error('STREAM_INTERRUPTED');
   }catch(err){answer.replaceChildren(node('div','error-message',err.name==='AbortError'?explain('CHAT_CANCELLED'):explain(err.message)));}
-  finally{busy=false;$('send').hidden=false;$('cancel').hidden=true;$('prompt').disabled=false;$('mode-chat').disabled=false;$('mode-agent').disabled=false;$('mode-image').disabled=false;$('prompt').focus();try{await refreshSessions();renderStatus(await api('status'));renderFiles((await api('session?id='+encodeURIComponent(id))).files);}catch{}if(pendingImageConfirmation){$('image-confirm-request').textContent=pendingImageConfirmation.text;$('image-confirm-dialog').showModal();}}
+  finally{busy=false;$('send').hidden=false;$('cancel').hidden=true;$('prompt').disabled=false;$('mode-chat').disabled=false;$('mode-agent').disabled=false;$('mode-image').disabled=false;$('prompt').focus();try{await refreshSessions();renderStatus(await api('status'));renderFiles((await api('session?id='+encodeURIComponent(id))).files);}catch{}}
 };
 async function start(){
   const fragment=new URLSearchParams(location.hash.slice(1)),code=fragment.get('bootstrap');history.replaceState(null,'',location.pathname);
@@ -150,3 +147,42 @@ async function start(){
   if(!token){$('auth-dialog').showModal();return;}try{await initialize();}catch(e){if(!$('auth-dialog').open)$('auth-dialog').showModal();toast(explain(e.message));}
 }
 void start();setInterval(async()=>{if((token||tailnetOwner)&&!$('auth-dialog').open){try{renderStatus(await api('status'));}catch{}}},6000);
+
+let personaRevision='',promptView;
+function personaTab(edit){
+  $('persona-editor').hidden=!edit;$('persona-viewer').hidden=edit;$('persona-save').hidden=!edit;
+  $('persona-edit-tab').setAttribute('aria-pressed',String(edit));$('persona-view-tab').setAttribute('aria-pressed',String(!edit));
+}
+function addPersonaBlock(block={title:'补充',text:''}){
+  const container=$('persona-blocks');if(container.children.length>=20){toast('最多20块');return;}
+  const box=node('section','persona-block'),heading=node('div','persona-block-heading'),title=node('input');title.value=block.title;title.maxLength=60;title.required=true;title.setAttribute('aria-label','区块名称');
+  heading.append(title);
+  for(const [label,action] of [['上移',()=>{if(box.previousElementSibling)container.insertBefore(box,box.previousElementSibling);}],['下移',()=>{if(box.nextElementSibling)container.insertBefore(box.nextElementSibling,box);}],['删除',()=>box.remove()]]){
+    const button=node('button','quiet-button',label);button.type='button';button.onclick=action;heading.append(button);
+  }
+  const text=node('textarea');text.value=block.text;text.rows=4;text.maxLength=8000;text.setAttribute('aria-label','区块内容');box.append(heading,text);container.append(box);
+}
+function renderPromptView(){
+  if(!promptView)return;const channel=$('prompt-channel').value,system=promptView.systems[channel];
+  $('prompt-system').value=system;$('prompt-info').textContent='当前系统提示词 '+system.length+' 字符；这是实际组装函数的输出，包含人格与该入口的功能指引。字符数不是 token 数。';
+  const latest=promptView.latest[channel==='portrait'?'image':channel];
+  $('prompt-record-info').textContent=latest?'实际调用时间：'+quotaTime(latest.at/1000)+'。下方保留该次发送的文本、工具与参数。':'更新后这个入口尚无请求记录。下一次调用会自动记录，不为查看提示词额外调用模型。';
+  $('prompt-record').value=latest?JSON.stringify(latest.request,null,2):'';
+}
+async function refreshPromptView(){promptView=await api('prompts');renderPromptView();}
+$('persona-button').onclick=async()=>{
+  closeDrawers(false);$('persona-error').textContent='';$('persona-saved').textContent='';$('persona-save').disabled=true;$('persona-dialog').showModal();
+  try{const config=await api('persona');personaRevision=config.revision;$('persona-blocks').replaceChildren();config.blocks.forEach(addPersonaBlock);$('persona-appearance').value=config.appearance;await refreshPromptView();personaTab(true);$('persona-save').disabled=false;}
+  catch(e){$('persona-error').textContent=explain(e.message);}
+};
+$('persona-edit-tab').onclick=()=>personaTab(true);
+$('persona-view-tab').onclick=()=>{personaTab(false);renderPromptView();};
+$('persona-add').onclick=()=>addPersonaBlock();$('prompt-channel').onchange=renderPromptView;
+$('prompt-refresh').onclick=async()=>{try{await refreshPromptView();}catch(e){$('persona-error').textContent=explain(e.message);}};
+async function copyPrompt(id){const text=$(id);try{if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(text.value);else{text.focus();text.select();if(!document.execCommand('copy'))throw Error();}toast('已复制');}catch{text.focus();text.select();toast('已选中文字，可长按复制');}}
+$('prompt-copy').onclick=()=>copyPrompt('prompt-system');$('prompt-record-copy').onclick=()=>copyPrompt('prompt-record');
+$('persona-form').onsubmit=async e=>{
+  e.preventDefault();const button=$('persona-save');button.disabled=true;$('persona-error').textContent='';$('persona-saved').textContent='';
+  try{const blocks=[...$('persona-blocks').children].map(box=>({title:box.querySelector('input').value,text:box.querySelector('textarea').value}));const result=await api('persona',{revision:personaRevision,blocks,appearance:$('persona-appearance').value});personaRevision=result.revision;$('persona-saved').textContent='已保存，下一轮对话生效。';await refreshPromptView();}
+  catch(err){$('persona-error').textContent=explain(err.message);}finally{button.disabled=false;}
+};

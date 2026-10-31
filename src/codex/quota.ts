@@ -36,9 +36,8 @@ export function quotaPolicy(snapshot:QuotaSnapshot|null,now=Date.now()){
   const windows=snapshot?.pools.flatMap(p=>p.windows)??[];
   const stale=!snapshot||now-snapshot.updatedAt>330000;
   const remaining=windows.length?Math.min(...windows.map(w=>w.remainingPercent)):null;
-  if(stale||!windows.length||snapshot?.pools.some(p=>!p.windows.length))return {decision:'pause' as const,reason:'CODEX_QUOTA_UNKNOWN',remaining,stale};
-  if(snapshot?.ordinaryUsageAllowed===false||snapshot?.pools.some(p=>p.reached)||(remaining??0)<10)return {decision:'pause' as const,reason:'CODEX_QUOTA_LOW',remaining,stale};
-  return {decision:(remaining??0)<=30?'confirm' as const:'allow' as const,reason:(remaining??0)<=30?'CODEX_QUOTA_CONFIRM_REQUIRED':'',remaining,stale};
+  const reason=stale||!windows.length?'CODEX_QUOTA_UNKNOWN':snapshot?.ordinaryUsageAllowed===false||snapshot?.pools.some(p=>p.reached)||(remaining??0)<10?'CODEX_QUOTA_LOW':'';
+  return {decision:'observe' as const,blocksImages:false,reason,remaining,stale};
 }
 /** Account-only connection: no thread/start, turn/start, command/exec or token reads. */
 export class AppServerQuotaReader implements QuotaReader{
@@ -74,7 +73,7 @@ export class CodexQuotaMonitor{
     store.db.exec('CREATE TABLE IF NOT EXISTS image_quota_usage(id TEXT PRIMARY KEY,at INTEGER,changes TEXT)');
   }
   status(){const policy=quotaPolicy(this.snapshot);return {...this.snapshot,pools:this.snapshot?.pools??[],updatedAt:this.snapshot?.updatedAt??null,mock:this.mock,loading:!!this.pending,error:this.error,...policy,
-    ...(this.retryAt>Date.now()||this.recoveryRequired?{decision:'pause',reason:'CODEX_RATE_LIMITED'}:{}),retryAt:this.retryAt||null,
+    ...(this.retryAt>Date.now()||this.recoveryRequired?{reason:'CODEX_RATE_LIMITED'}:{}),retryAt:this.retryAt||null,
     recentUsage:(this.store.db.prepare('SELECT id,at,changes FROM image_quota_usage ORDER BY at DESC LIMIT 5').all() as {id:string;at:number;changes:string}[]).map(r=>({...r,changes:JSON.parse(r.changes)}))};}
   start(){if(this.timer||this.stopped)return;void this.refresh();this.timer=setInterval(()=>void this.refresh(),300000);this.timer.unref();}
   refresh(manual=false):Promise<void>{
@@ -85,18 +84,18 @@ export class CodexQuotaMonitor{
         const timeout=AbortSignal.timeout(15000),signal=AbortSignal.any([this.controller.signal,timeout]);
         const value=this.mock?mockQuota():await this.reader.read(signal,()=>{if(!this.pending)void this.refresh(true);});
         signal.throwIfAborted();this.snapshot=normalizeQuota(value);this.error='';
-        if(this.recoveryRequired&&this.retryAt<=Date.now()&&this.snapshot.ordinaryUsageAllowed===true&&quotaPolicy(this.snapshot).decision!=='pause'){
+        if(this.recoveryRequired&&this.retryAt<=Date.now()&&this.snapshot.ordinaryUsageAllowed===true&&!this.snapshot.pools.some(p=>p.reached)){
           this.recoveryRequired=false;this.retryAt=0;this.persistBackoff();
         }
       }catch(e){if(e instanceof CodexRateLimitError)this.limited(e);this.error=codeOf(e);this.snapshot=null;}
     })().finally(()=>{this.pending=undefined;});return this.pending;
   }
-  async beforeImage(confirmed=false){if(this.retryAt>Date.now())throw new FishError('CODEX_RATE_LIMITED');await this.refresh();const status=this.status();if(status.decision==='pause')throw new FishError(status.reason);if(status.decision==='confirm'&&!confirmed)throw new FishError('CODEX_QUOTA_CONFIRM_REQUIRED');return this.snapshot!;}
+  async beforeImage(){await this.refresh();return this.snapshot;}
   limited(error:CodexRateLimitError){this.retryAt=error.retryAt??Date.now()+60000;this.recoveryRequired=true;this.persistBackoff();this.store.audit('error','web','CODEX_RATE_LIMITED');}
   private persistBackoff(){this.store.setMeta('codex-quota-backoff',JSON.stringify({retryAt:this.retryAt,recoveryRequired:this.recoveryRequired}));}
-  async afterImage(id:string,before:QuotaSnapshot){
+  async afterImage(id:string,before:QuotaSnapshot|null){
     await this.refresh();const after=this.snapshot,changes:{pool:string;window:string;percentagePoints:number}[]=[];
-    if(after)for(const pool of before.pools)for(const window of pool.windows){
+    if(after)for(const pool of before?.pools??[])for(const window of pool.windows){
       const next=after.pools.find(p=>p.id===pool.id)?.windows.find(w=>w.kind===window.kind&&w.windowDurationMins===window.windowDurationMins&&w.resetsAt!==null&&w.resetsAt===window.resetsAt);
       if(next&&next.usedPercent>=window.usedPercent)changes.push({pool:pool.id,window:window.windowDurationMins===10080?'weekly':window.kind,percentagePoints:Math.round((next.usedPercent-window.usedPercent)*100)/100});
     }

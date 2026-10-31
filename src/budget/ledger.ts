@@ -21,11 +21,11 @@ export class Ledger {
   reserve(kind: Kind, group: string, user: string, input=0, output=0, ms=0): string {
     return this.store.transaction(()=>this.charge(kind,group,user,input,output,ms));
   }
-  /** One image attempt needs both allowances or neither; never charge a Codex task
+  /** An image uses only the daily image cap; Codex time/count are recorded atomically. Never charge a Codex task
    * when the shared image allowance has already been spent. */
   reserveImageJob(group:string,user:string,ms:number):{codex:string;image:string}{
     return this.store.transaction(()=>{
-      const day=dayKey(),codex=this.charge('codex',group,user,0,0,ms,day),image=this.charge('image',group,user,0,0,0,day);
+      const day=dayKey(),codex=this.charge('codex',group,user,0,0,ms,day,true),image=this.charge('image',group,user,0,0,0,day);
       this.store.db.prepare('INSERT INTO image_jobs VALUES (?,?,?,?,0)').run(codex,image,day,ms);return {codex,image};
     });
   }
@@ -38,7 +38,7 @@ export class Ledger {
     this.store.db.prepare('UPDATE image_jobs SET reset=1 WHERE day=?').run(day);
     this.store.audit('local-reset','web',JSON.stringify({images,pairedCodex:paired.count,pairedMs:paired.ms}));return {images,pairedCodex:paired.count};
   });}
-  private charge(kind:Kind,group:string,user:string,input:number,output:number,ms:number,day=dayKey()):string{
+  private charge(kind:Kind,group:string,user:string,input:number,output:number,ms:number,day=dayKey(),imageJob=false):string{
     const cfg=this.config(); const id=randomUUID();
     if (![input,output,ms].every(n => Number.isSafeInteger(n) && n >= 0)) throw new FishError('INVALID_RESERVATION');
     if (this.store.getMeta('budgetFault')) throw new FishError('BUDGET_USAGE_FAULT');
@@ -52,9 +52,9 @@ export class Ledger {
     } else {
       const limits = { search:cfg.searchDaily, codex:cfg.codexDaily, image:cfg.imageDaily, interjection:cfg.dailyInterjections };
       const scope=kind==='interjection'?'g:'+group:'*';
-      if (this.value(kind,scope,day)>=limits[kind]) throw new FishError(kind.toUpperCase()+'_BUDGET_EXHAUSTED');
+      if (!(imageJob&&kind==='codex')&&this.value(kind,scope,day)>=limits[kind]) throw new FishError(kind.toUpperCase()+'_BUDGET_EXHAUSTED');
       if (kind==='codex') {
-        if (this.value('codexMs','*',day)+ms>cfg.codexDailyMs) throw new FishError('CODEX_TIME_BUDGET');
+        if (!imageJob&&this.value('codexMs','*',day)+ms>cfg.codexDailyMs) throw new FishError('CODEX_TIME_BUDGET');
         if (this.store.db.prepare("SELECT id FROM reservations WHERE kind='codex' AND state='held'").get()) throw new FishError('CODEX_BUSY');
         this.add('codexMs',ms,'*',day);
       }

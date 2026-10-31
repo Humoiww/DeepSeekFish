@@ -15,6 +15,7 @@ import { QQImageClient } from '../src/qq/image-client.js';
 import { startQQImageBroker } from '../src/qq/image-broker.js';
 import { qqResources } from '../src/qq/resources.js';
 import { CodexQuotaMonitor } from '../src/codex/quota.js';
+import { personaSettings,savePersona } from '../src/character.js';
 import { requestsImage } from '../src/web/images.js';
 import { FishError,type Model,type ToolCall } from '../src/types.js';
 import { hasToolMarkup } from '../src/agent/tool-protocol.js';
@@ -214,4 +215,15 @@ test('repeated image calls return confirmed success without generating or sendin
   f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
   try{await f.bot.receive(message('整一个你的版本',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(generated,1);assert.equal(f.transport.files.length,1);assert.deepEqual(f.transport.sent.map(m=>m.text),['笑得真欠。']);assert.equal(JSON.parse(f.store.getMeta('qq-image-result:fixture')!).delivered,true);}
   finally{await f.bot.stop();f.cleanup();}
+});
+
+test('QQ picks up persona edits on the next message without rebuilding its Bot',async()=>{
+  const seen:string[]=[];
+  const f=setup({kind:'fixture',async complete(messages){seen.push(String(messages[0].content));return {text:'收到',usage:{input:20,output:5}};}});
+  try{
+    await f.bot.receive(message('第一句',{group:'private:20002',user:'20002'}));await f.bot.flush();
+    savePersona(f.root,{...personaSettings(f.root),blocks:[{title:'新版',text:'已修改的人格内容'}]});
+    await f.bot.receive(message('第二句',{group:'private:20002',user:'20002'}));await f.bot.flush();
+    assert.equal(seen.length,2);assert.ok(!seen[0].includes('已修改的人格内容'));assert.ok(seen[1].includes('已修改的人格内容'));
+  }finally{await f.bot.stop();f.cleanup();}
 });

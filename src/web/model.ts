@@ -1,5 +1,6 @@
 import type { Config } from '../config.js';
 import { FishError } from '../types.js';
+import { recordPrompt } from '../prompt-record.js';
 import { Ledger } from '../budget/ledger.js';
 import { boundedJson } from '../agent/model.js';
 
@@ -17,6 +18,7 @@ export class WebModel {
     const bound=Buffer.byteLength(JSON.stringify(payload))+4096;
     const reservation=this.ledger.reserve('model',group,'webui-local',bound,cfg.maxOutputTokens);
     try{
+      recordPrompt(this.ledger.store,tools.some(t=>t.function.name==='generate_image')?'image':'web',payload);
       if(this.mock){
         const last=messages.at(-1)!;let result:WebCompletion;
         const call=(name:string,args:unknown)=>({content:'',tool_calls:[{id:'mock-'+messages.length,type:'function' as const,function:{name,arguments:JSON.stringify(args)}}]});

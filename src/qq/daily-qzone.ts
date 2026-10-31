@@ -5,7 +5,8 @@ import { Store,redact } from '../storage/db.js';
 import { type Config,conversationAllowed } from '../config.js';
 import { type BudgetedModel } from '../agent/model.js';
 import { FishError,codeOf,type ChatMessage,type ModelTool,type Message } from '../types.js';
-import { personalityPrompt,CHARACTER_APPEARANCE } from '../character.js';
+import { appearancePrompt } from '../character.js';
+import { dailyPrompt } from '../prompts.js';
 import { hasToolMarkup } from '../agent/tool-protocol.js';
 import { imageFields,validateImagePlan,type ImagePlan } from '../web/images.js';
 import { verifyPng } from '../image/provider.js';
@@ -25,13 +26,6 @@ export function dailySettings(root:string):DailySettings|undefined{
 export function dailySlot(at=Date.now()){
   const midnight=projectDayStart(at),preparing=at-midnight>=DAY_MS-10*60000;
   return {phase:preparing?'prepare':'publish',day:projectDay(preparing?midnight+DAY_MS:midnight),inWindow:preparing||at-midnight<6*3600000} as const;
-}
-/** Only the recorded, owner-enabled daily job carries standing image consent. */
-export function authorizedDailyImage(root:string,store:Store,conversation:string,user:string,messageId:string,now=Date.now()):boolean{
-  const s=dailySettings(root);if(!s?.enabled||s.owner!==user||conversation!=='private:'+user)return false;
-  if(!store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_qzone'").get())return false;
-  return !!store.db.prepare("SELECT day FROM daily_qzone WHERE image_key=? AND state='preparing' AND lease>? AND day>=? AND day IN (?,?)")
-    .get(messageId,now,s.startsOn,projectDay(now),projectDay(now+DAY_MS));
 }
 export function dailyStatus(root:string,store:Store,now=Date.now()){
   const config=dailySettings(root),exists=store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_qzone'").get();
@@ -87,8 +81,8 @@ export class DailyQzone {
   private config(){const s=dailySettings(this.root),c=this.cfg();if(!s?.enabled||!c.enabled||!c.images||!conversationAllowed(c,'private:'+s.owner))throw new FishError('DAILY_QZONE_DISABLED');return s;}
   private async compose(day:string,previous?:Draft,imagePath?:string):Promise<Draft>{
     const s=this.config(),memory=dailyMemory(this.store,this.cfg(),day,this.now());
-    const messages:ChatMessage[]=[{role:'system',content:personalityPrompt()+'\n这是你自己的QQ空间日常。日期与经历在memory，配图在image，完成状态以actions为准。只据实际记忆写自己的感受，不转贴聊天原文、联系人身份或私人资料。'},
-      {role:'user',content:JSON.stringify({memory,actions:dailyActions(this.root,this.store,this.cfg(),day),...(previous?{image:{attached:true},task:'回顾这一天，写一条你自己的空间日常。'}:{character:CHARACTER_APPEARANCE,task:'回顾刚过去的一天，自主写一条动态，并设计一张你自己的配图。'})})}];
+    const messages:ChatMessage[]=[{role:'system',content:dailyPrompt(this.root)},
+      {role:'user',content:JSON.stringify({memory,actions:dailyActions(this.root,this.store,this.cfg(),day),...(previous?{image:{attached:true},task:'回顾这一天，写一条你自己的空间日常。'}:{character:appearancePrompt(this.root),task:'回顾刚过去的一天，自主写一条动态，并设计一张你自己的配图。'})})}];
     if(imagePath)messages.push({role:'user',content:[{type:'image_url',image_url:{url:'data:image/png;base64,'+fs.readFileSync(imagePath).toString('base64'),detail:'high'}}]});
     const result=await this.model.complete('private:'+s.owner,'daily-qzone',messages,{tools:[draftTool(!previous)],toolChoice:'draft_daily_post'});
     if(result.tool_calls?.length!==1||result.tool_calls[0].function.name!=='draft_daily_post'||result.finishReason==='length')throw new FishError('DAILY_QZONE_DRAFT_INVALID');

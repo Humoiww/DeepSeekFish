@@ -13,6 +13,7 @@
     <div class="sidebar-bottom">
       <div class="budget-box"><div><span>今日对话用量</span><strong id="budget-text">—</strong></div><div class="meter"><i id="budget-bar"></i></div><small id="budget-detail">每次请求前检查预算</small></div>
       <button id="qq-button" class="sidebar-action"><span>◉</span> QQ 对话 <span class="arrow">↗</span></button>
+      <button id="persona-button" class="sidebar-action"><span>✎</span> 人格与提示词 <span class="arrow">↗</span></button>
       <button id="settings-button" class="sidebar-action"><span>⚙</span> 连接与设置 <span class="arrow">↗</span></button>
       <div class="local-label"><i></i><span>仅在本机运行</span><span>v0.1</span></div>
     </div>
@@ -46,7 +47,7 @@
   </main>
   <aside class="workspace-panel" id="workspace-panel">
     <div class="panel-header"><h2>这次对话的工作区</h2><button id="close-panel" class="icon-button" aria-label="关闭工作区">×</button></div>
-    <section class="quota-card" aria-label="Codex 账号额度"><div class="quota-heading"><strong>Codex 额度</strong><button id="refresh-quota" type="button">↻ 刷新</button></div><div id="codex-quota-content"><p class="muted">正在读取项目账号额度…</p></div><div class="local-image-quota"><span>今日生图 <strong id="image-quota">— / 20</strong></span><button id="reset-images" type="button">Reset 本地计数</button></div><small class="quota-footnote">本地上限与 Codex 账号额度分别计算。</small></section><div class="boundary-card"><span class="boundary-icon">◇</span><strong>能力有边界，想法没边界。</strong><p>助手只能读写本次会话的文件。其他项目、私人文件和凭据不在它的操作范围内。</p></div>
+    <section class="quota-card" aria-label="Codex 账号额度"><div class="quota-heading"><strong>Codex 额度</strong><button id="refresh-quota" type="button">↻ 刷新</button></div><div id="codex-quota-content"><p class="muted">正在读取项目账号额度…</p></div><div class="local-image-quota"><span>今日生图 <strong id="image-quota">— / 20</strong></span><button id="reset-images" type="button">Reset 本地计数</button></div><small class="quota-footnote">每天按生图张数计额；Codex 百分比仅供查看。</small></section><div class="boundary-card"><span class="boundary-icon">◇</span><strong>能力有边界，想法没边界。</strong><p>助手只能读写本次会话的文件。其他项目、私人文件和凭据不在它的操作范围内。</p></div>
     <div class="panel-section"><div class="section-title">可用操作 <span id="mode-label">聊天</span></div><ul class="capabilities"><li><span>✓</span> 查看和读写会话文本文件</li><li><span>✓</span> 下载已生成的文本文件</li><li><span>✓</span> 明确请求后生成单张图片</li><li><span id="search-dot">○</span> 公开搜索 <small id="search-state">未开启</small></li><li><span id="codex-dot">○</span> 提交 Codex 待审任务 <small id="codex-state">未开启</small></li></ul><div class="limit-note">无任意终端、删除或安装。画图请求仅授权一张。<br>每条消息最多 6 次工具调用。</div></div>
     <div class="panel-section"><div class="section-title">会话文件 <span id="file-count">0</span></div><div id="files" class="files"><div class="empty-files"><span>▱</span><p>文件会出现在这里</p><small>试试让助手创建 notes.md</small></div></div><small class="file-limit">最多 20 个文件 · 合计 1 MiB</small></div>
     <div class="panel-section task-section"><div class="section-title">Codex 任务 <span id="task-count">0</span></div><div id="tasks" class="tasks"><p class="muted">暂时没有待审任务</p></div></div>
@@ -64,6 +65,24 @@
   <p class="form-error" id="qq-error" role="alert"></p>
   <div class="dialog-footer"><button type="button" class="quiet-button" id="qq-refresh">刷新登录状态</button><button class="primary-button" type="submit">③ 保存并启用对话</button></div>
 </form></dialog>
+<dialog id="persona-dialog" aria-labelledby="persona-heading"><form id="persona-form">
+  <div class="dialog-heading"><h2 id="persona-heading">人格与提示词</h2><button type="button" class="icon-button" data-close="persona-dialog" aria-label="关闭人格设置">×</button></div>
+  <p class="dialog-description">人格按下列顺序组合。保存后，QQ、网页和每日动态在下一轮读取。</p>
+  <div class="persona-tabs"><button id="persona-edit-tab" type="button" aria-pressed="true">分块编辑人格</button><button id="persona-view-tab" type="button" aria-pressed="false">查看完整提示词</button></div>
+  <section id="persona-editor"><div id="persona-blocks"></div><button id="persona-add" class="quiet-button" type="button">＋ 添加一块</button>
+    <details class="persona-appearance"><summary>外观描述</summary><label>外观文字<textarea id="persona-appearance" rows="5" maxlength="4000"></textarea><small>只修改文字，设定图仍使用已有图片。</small></label></details>
+  </section>
+  <section id="persona-viewer" hidden>
+    <label>提示词入口<select id="prompt-channel"><option value="qq">QQ 对话</option><option value="web">网页聊天 / 受限助手</option><option value="image">网页生图规划</option><option value="portrait">网页生图规划 · 自拍</option><option value="daily">每日 QQ 空间动态</option></select></label>
+    <p id="prompt-info" class="dialog-description"></p>
+    <label>当前完整 system 提示词（已保存版本）<textarea id="prompt-system" readonly rows="12"></textarea></label>
+    <div class="persona-tabs"><button id="prompt-refresh" type="button">刷新实际记录</button><button id="prompt-copy" type="button">复制系统提示词</button></div>
+    <details><summary>最近一次实际请求：上下文、工具定义和调用参数</summary><p id="prompt-record-info" class="dialog-description"></p><textarea id="prompt-record" readonly rows="18" aria-label="最近一次实际模型请求"></textarea><button id="prompt-record-copy" type="button" class="quiet-button">复制完整请求</button></details>
+    <small>记录可能属于保存前的上一轮；下一条消息才会采用新的人格。图片显示附件标记，凭据不展示。</small>
+  </section>
+  <p id="persona-error" class="form-error" role="alert"></p><p id="persona-saved" role="status"></p>
+  <div class="dialog-footer"><button type="button" class="quiet-button" data-close="persona-dialog">关闭</button><button id="persona-save" type="submit" class="primary-button">保存人格</button></div>
+</form></dialog>
 <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-heading"><div><span class="eyebrow">MAKE A CONNECTION</span><h2>连接你自己的 DeepSeek</h2></div><button type="button" class="icon-button" data-close="settings-dialog" aria-label="关闭设置">×</button></div><p class="dialog-description">密钥只保存在本机服务器，不会返回浏览器。保存配置不会发起模型请求。</p>
   <label>API Key <span id="key-state">尚未配置</span><input id="api-key" name="apiKey" type="password" placeholder="sk-…（已有密钥时留空保留）" autocomplete="off" spellcheck="false"></label>
   <label>模型<input id="model" name="model" value="deepseek-flash" maxlength="80" required spellcheck="false"><small>官方接口：https://api.deepseek.com · 当前使用非思考模式</small></label>
@@ -74,6 +93,6 @@
 </form></dialog>
 <dialog id="auth-dialog"><form id="auth-form"><div class="dialog-heading"><div><span class="eyebrow">LOCAL ACCESS</span><h2>连接本机工作台</h2></div></div><p class="dialog-description">连接失效时，重新运行 <code>./start.sh</code> 或 <code>start.bat</code> 会打开新的安全连接。也可从项目的 <code>runtime/data/webui-admin-token</code> 文件复制本机令牌。</p><label>本机令牌<input type="password" id="auth-token" autocomplete="off" required></label><p class="form-error" id="auth-error" role="alert"></p><div class="dialog-footer"><button class="primary-button" type="submit">连接工作台</button></div></form></dialog>
 <dialog id="reset-images-dialog"><form id="reset-images-form"><div class="dialog-heading"><h2>Reset 本地生图计数</h2></div><p class="dialog-description">清零今天的本地生图计数，并释放这些图片关联的本地 Codex 次数与时长预算。历史图片和调用记录保留，普通任务、API token 用量不受影响。此操作不会重置 OpenAI 账号额度或解除限流。</p><p class="form-error" id="reset-images-error" role="alert"></p><div class="dialog-footer"><button type="button" class="quiet-button" data-close="reset-images-dialog">取消</button><button class="primary-button" type="submit">重置本地计数</button></div></form></dialog>
-<dialog id="image-confirm-dialog"><div class="dialog-heading"><h2>本次生图需要确认</h2></div><p class="dialog-description">Codex 剩余额度在 10%～30%。继续会使用你的订阅额度，仅授权下面这一次图片请求；低于 10% 时仍会暂停。</p><p id="image-confirm-request" class="confirmation-request"></p><div class="dialog-footer"><button type="button" class="quiet-button" data-close="image-confirm-dialog">取消</button><button id="confirm-image-once" class="primary-button" type="button">确认生成本次图片</button></div></dialog>
+
 <div class="toast" id="toast" role="status" hidden></div>
 </body></html>

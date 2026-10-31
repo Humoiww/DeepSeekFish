@@ -8,7 +8,7 @@
 - Do not enable image generation or paid calls implicitly. Keep limitations documented.
 - WebUI model tools only access their generated session workspace; never expose shell, secrets, settings or approval tools.
 
-- User-authorized WebUI image limit is 20/day. Local human reset preserves reservation/audit history and cannot reset provider quota or clear unknown/active leases. Codex quota monitoring is account-only RPC; never create a model turn to inspect usage.
+- User-authorized WebUI image limit is 20/day. Image allowance depends only on the daily image cap, not monitored Codex percentages or local Codex task/time caps; preserve quota telemetry and actual provider failures. Local human reset preserves reservation/audit history and cannot reset provider quota or clear unknown/active leases. Codex quota monitoring is account-only RPC; never create a model turn to inspect usage.
 - For straightforward copy, paste or upload requests, do not perform extra hash/checksum verification unless the user explicitly asks.
 - The user has authorized a compact, natural Whale-chan personality prompt. Keep it short, without sample replies or canned dialogue. The original attributed MIT excerpt remains in personas/mesugaki/upstream.md; do not label the adapted active prompt as an unmodified import. Runtime limits stay in code, outside personality text.
 - QQ daily archives are retained; automatic recall uses today/yesterday in Asia/Hong_Kong and the current conversation. Older records require a specific date or keyword. Profile observations follow the same scope/time rules.

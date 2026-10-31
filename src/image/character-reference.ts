@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { CHARACTER_APPEARANCE,CHARACTER_REFERENCE,BUNDLED_CHARACTER_REFERENCE } from '../character.js';
+import { appearancePrompt,CHARACTER_REFERENCE,BUNDLED_CHARACTER_REFERENCE } from '../character.js';
 import { safePath } from '../paths.js';
 import { FishError } from '../types.js';
 import { taskDirectory } from '../codex/platform.js';
@@ -25,7 +25,7 @@ export function prepareCharacterPortrait(root:string,cwd:string,prompt:string,ch
   const target=safePath(cwd,'character-reference.png');
   fs.copyFileSync(source,target,fs.constants.COPYFILE_EXCL);
   const sha256=createHash('sha256').update(fs.readFileSync(target)).digest('hex');
-  return {prompt:CHARACTER_APPEARANCE+'\n生成用户请求的同一位鲸酱。附带的 character-reference.png 是身份参考；必须在内置生图工具的 referenced_image_paths 中使用它，不能把参考图直接当作新作品返回。保留身份特征，默认附图Q版比例；只生成一张 PNG。\n用户要求：'+prompt,
+  return {prompt:appearancePrompt(root)+'\n生成用户请求的同一位鲸酱。附带的 character-reference.png 是身份参考；必须在内置生图工具的 referenced_image_paths 中使用它，不能把参考图直接当作新作品返回。保留身份特征，默认附图Q版比例；只生成一张 PNG。\n用户要求：'+prompt,
     reference:{path:target,sha256}};
 }
 export function verifyCharacterReference(items:{inputImages?:{path:string;sha256:string}[]}[],reference:CharacterReference):void{
