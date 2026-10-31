@@ -68,6 +68,8 @@
 <dialog id="persona-dialog" aria-labelledby="persona-heading"><form id="persona-form">
   <div class="dialog-heading"><h2 id="persona-heading">人格与提示词</h2><button type="button" class="icon-button" data-close="persona-dialog" aria-label="关闭人格设置">×</button></div>
   <p class="dialog-description">人格按下列顺序组合。保存后，QQ、网页和每日动态在下一轮读取。</p>
+  <p id="persona-loading" role="status" hidden>正在加载人格与提示词…</p>
+  <p id="persona-error" class="form-error" role="alert"></p><button id="persona-retry" type="button" class="quiet-button" hidden>重新加载</button>
   <div class="persona-tabs"><button id="persona-edit-tab" type="button" aria-pressed="true">分块编辑人格</button><button id="persona-view-tab" type="button" aria-pressed="false">查看完整提示词</button></div>
   <section id="persona-editor"><div id="persona-blocks"></div><button id="persona-add" class="quiet-button" type="button">＋ 添加一块</button>
     <details class="persona-appearance"><summary>外观描述</summary><label>外观文字<textarea id="persona-appearance" rows="5" maxlength="4000"></textarea><small>只修改文字，设定图仍使用已有图片。</small></label></details>
@@ -80,7 +82,7 @@
     <details><summary>最近一次实际请求：上下文、工具定义和调用参数</summary><p id="prompt-record-info" class="dialog-description"></p><textarea id="prompt-record" readonly rows="18" aria-label="最近一次实际模型请求"></textarea><button id="prompt-record-copy" type="button" class="quiet-button">复制完整请求</button></details>
     <small>记录可能属于保存前的上一轮；下一条消息才会采用新的人格。图片显示附件标记，凭据不展示。</small>
   </section>
-  <p id="persona-error" class="form-error" role="alert"></p><p id="persona-saved" role="status"></p>
+  <p id="persona-saved" role="status"></p>
   <div class="dialog-footer"><button type="button" class="quiet-button" data-close="persona-dialog">关闭</button><button id="persona-save" type="submit" class="primary-button">保存人格</button></div>
 </form></dialog>
 <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-heading"><div><span class="eyebrow">MAKE A CONNECTION</span><h2>连接你自己的 DeepSeek</h2></div><button type="button" class="icon-button" data-close="settings-dialog" aria-label="关闭设置">×</button></div><p class="dialog-description">密钥只保存在本机服务器，不会返回浏览器。保存配置不会发起模型请求。</p>

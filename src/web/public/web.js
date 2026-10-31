@@ -170,11 +170,18 @@ function renderPromptView(){
   $('prompt-record').value=latest?JSON.stringify(latest.request,null,2):'';
 }
 async function refreshPromptView(){promptView=await api('prompts');renderPromptView();}
-$('persona-button').onclick=async()=>{
-  closeDrawers(false);$('persona-error').textContent='';$('persona-saved').textContent='';$('persona-save').disabled=true;$('persona-dialog').showModal();
-  try{const config=await api('persona');personaRevision=config.revision;$('persona-blocks').replaceChildren();config.blocks.forEach(addPersonaBlock);$('persona-appearance').value=config.appearance;await refreshPromptView();personaTab(true);$('persona-save').disabled=false;}
-  catch(e){$('persona-error').textContent=explain(e.message);}
-};
+async function loadPersona(){
+  personaRevision='';promptView=undefined;$('persona-error').textContent='';$('persona-saved').textContent='';$('persona-loading').hidden=false;$('persona-retry').hidden=true;
+  $('persona-save').disabled=true;$('persona-edit-tab').disabled=true;$('persona-view-tab').disabled=true;$('persona-editor').hidden=true;$('persona-viewer').hidden=true;
+  try{
+    const [config,prompts]=await Promise.all([api('persona'),api('prompts')]);
+    personaRevision=config.revision;promptView=prompts;$('persona-blocks').replaceChildren();config.blocks.forEach(addPersonaBlock);$('persona-appearance').value=config.appearance;
+    renderPromptView();personaTab(true);$('persona-save').disabled=false;$('persona-edit-tab').disabled=false;$('persona-view-tab').disabled=false;
+  }catch(e){$('persona-error').textContent='人格与提示词未加载：'+explain(e.message);$('persona-retry').hidden=false;}
+  finally{$('persona-loading').hidden=true;}
+}
+$('persona-button').onclick=()=>{closeDrawers(false);$('persona-dialog').showModal();$('persona-dialog').scrollTop=0;void loadPersona();};
+$('persona-retry').onclick=loadPersona;
 $('persona-edit-tab').onclick=()=>personaTab(true);
 $('persona-view-tab').onclick=()=>{personaTab(false);renderPromptView();};
 $('persona-add').onclick=()=>addPersonaBlock();$('prompt-channel').onchange=renderPromptView;

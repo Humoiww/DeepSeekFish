@@ -42,3 +42,26 @@ test('owner devices enter without browser credentials; the upstream token never 
     owner=false;assert.equal((await call('/api/status')).status,403);assert.equal((await call('/api/access')).status,403);
   }finally{gateway.closeAllConnections();upstream.closeAllConnections();await Promise.all([new Promise<void>(r=>gateway.close(()=>r())),new Promise<void>(r=>upstream.close(()=>r()))]);}
 });
+
+test('phone owner gateway loads every prompt and saves persona through the real WebUI API',async()=>{
+  const {fixture}=await import('./helpers.js'),{createWebApp}=await import('../src/web/app.js'),{webServer}=await import('../src/web/server.js');
+  const f=fixture(),app=createWebApp(f.root,true),upstreamPort=44000+Math.floor(Math.random()*10000),{server:upstream}=webServer(app,upstreamPort);
+  upstream.listen(upstreamPort,'127.0.0.1');await once(upstream,'listening');
+  let owner=true;const gateway=tailnetGateway(publicHost,upstreamPort,{token:app.token,owner:async()=>owner}),port=await listen(gateway);
+  const call=(route:string,data?:unknown)=>new Promise<{status:number;body:any}>((resolve,reject)=>{
+    const req=request({hostname:'127.0.0.1',port,path:'/api/'+route,method:data?'POST':'GET',headers:{host:publicHost,origin:'http://'+publicHost,'content-type':'application/json'}},res=>{
+      let body='';res.on('data',part=>{body+=part;});res.on('end',()=>resolve({status:res.statusCode!,body:JSON.parse(body)}));
+    });req.on('error',reject);req.end(data?JSON.stringify(data):undefined);
+  });
+  try{
+    const config=await call('persona');assert.equal(config.status,200);assert.equal(config.body.blocks.length,3);
+    const prompts=await call('prompts');assert.equal(prompts.status,200);
+    for(const system of Object.values(prompts.body.systems))assert.ok(typeof system==='string'&&system.length>50);
+    const saved=await call('persona',{...config.body,blocks:[{title:'人格',text:'通过手机入口保存的设定'}]});assert.equal(saved.status,200);
+    const next=await call('prompts');for(const system of Object.values(next.body.systems))assert.ok(String(system).includes('通过手机入口保存的设定'));
+    assert.ok(!JSON.stringify(next.body).includes(app.token));assert.equal((await call('prompts',{})).status,403);
+    owner=false;assert.equal((await call('persona')).status,403);assert.equal((await call('prompts')).status,403);assert.equal((await call('persona',saved.body)).status,403);
+  }finally{
+    gateway.closeAllConnections();upstream.closeAllConnections();await Promise.all([new Promise<void>(r=>gateway.close(()=>r())),new Promise<void>(r=>upstream.close(()=>r()))]);await app.close();f.cleanup();
+  }
+});
