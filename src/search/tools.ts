@@ -1,9 +1,9 @@
 import type { ModelTool } from '../types.js';
 export const webTools:ModelTool[]=[
-  {type:'function',function:{name:'search_web',description:'联网搜索公开网页，返回摘要、来源链接和日期；是否搜索、关键词由你决定。',parameters:{type:'object',properties:{query:{type:'string',maxLength:128,description:'搜索词，支持 site:、after:、before: 等查询语法'}},required:['query'],additionalProperties:false}}},
-  {type:'function',function:{name:'fetch_page',description:'读取公开网页正文，可直接打开URL或继续看搜索结果；offset用于继续读长文。',parameters:{type:'object',properties:{url:{type:'string',maxLength:8192},offset:{type:'integer',minimum:0,maximum:200000}},required:['url'],additionalProperties:false}}},
+  {type:'function',function:{name:'search_web',description:'搜索公开网页，摘要含来源、发布日期和检索时间，排序不代表最新。是否查、查什么由你决定。',parameters:{type:'object',properties:{query:{type:'string',maxLength:128,description:'支持 site:、after:、before: 查询语法'},fresh:{type:'boolean',description:'跳过本地十分钟缓存；不能保证搜索索引即时更新'}},required:['query'],additionalProperties:false}}},
+  {type:'function',function:{name:'fetch_page',description:'读取公开网页正文；offset续读，fresh刷新。返回页面状态与获取时间，验证码和登录页不代表读到了内容。',parameters:{type:'object',properties:{url:{type:'string',maxLength:8192},offset:{type:'integer',minimum:0,maximum:200000},fresh:{type:'boolean'}},required:['url'],additionalProperties:false}}},
 ];
 export const browseTools:ModelTool[]=[
-  {type:'function',function:{name:'browse_page',description:'自主浏览公开网页，提取正文、链接和原图候选地址；可跟随链接继续找图，offset翻页。支持图片目录JSON与网页脚本中的公开数据链接，query筛选图名，textOffset续读正文。',parameters:{type:'object',properties:{url:{type:'string'},offset:{type:'integer',minimum:0},query:{type:'string'},textOffset:{type:'integer',minimum:0}},required:['url'],additionalProperties:false}}},
+  {type:'function',function:{name:'browse_page',description:'实时读取公开网页/JSON正文、链接、原图；offset翻目录，query筛图名，textOffset续读。B站空间URL可读取公开动态列表，覆盖范围及下一页在返回值中；不代替登录浏览器。',parameters:{type:'object',properties:{url:{type:'string'},offset:{type:'integer',minimum:0},query:{type:'string'},textOffset:{type:'integer',minimum:0}},required:['url'],additionalProperties:false}}},
   {type:'function',function:{name:'download_image',description:'url下载一张，urls批量下载最多12张原图并看图；各张独立返回结果，支持静图和动图抽帧；返回图库ID，可交给GPT生图或用collect_meme收藏表情。GitHub图片页面也可直接下载。',parameters:{type:'object',properties:{url:{type:'string'},urls:{type:'array',minItems:1,maxItems:12,items:{type:'string'}}},additionalProperties:false}}},
 ];

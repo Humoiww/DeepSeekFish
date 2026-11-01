@@ -5,6 +5,8 @@ import { isIP } from 'node:net';
 import { Parser } from 'htmlparser2';
 import { FishError } from '../types.js';
 import { publicUrl } from './provider.js';
+import { pageEvidence } from './evidence.js';
+import { bilibiliSpace } from './bilibili.js';
 
 export function publicAddress(address:string):boolean{
   if(isIP(address)===4){
@@ -111,18 +113,22 @@ function jsonAssets(value:unknown,base:string){
         }catch{}
       }else if(v&&typeof v==='object')visit(v,depth+1);
     }
-  };visit(value);return {title:'公开JSON图片目录',text:'',images:[...images.values()],links:[...links.values()]};
+  };visit(value);return {title:'公开JSON数据',text:JSON.stringify(value).slice(0,200000),images:[...images.values()],links:[...links.values()]};
 }
 export async function browsePage(url:string,offset=0,signal?:AbortSignal,reader:PublicReader=readPublic,query='',textOffset=0){
   if(!Number.isSafeInteger(offset)||offset<0||offset>100000||!Number.isSafeInteger(textOffset)||textOffset<0||textOffset>200000||typeof query!=='string'||query.length>200)throw new FishError('WEB_OFFSET_INVALID');
+  if(typeof url!=='string'||url.length>8192||!publicUrl(url))throw new FishError('WEB_PUBLIC_URL_REQUIRED');
+  const feed=await bilibiliSpace(url,reader,signal);
+  if(feed)return {...feed,text:feed.text.slice(textOffset,textOffset+5000),textOffset,nextTextOffset:textOffset+5000<feed.text.length?textOffset+5000:null,
+    images:feed.images.slice(offset,offset+25),links:feed.links.slice(offset,offset+25),totalImages:feed.images.length,totalLinks:feed.links.length,nextOffset:Math.max(feed.images.length,feed.links.length)>offset+25?offset+25:null};
   const r=await reader(url,2097152,signal);
-  if(/^image\//i.test(r.type))return {url:r.url,images:[{url:r.url,kind:'image',label:'直接图片地址'}],links:[],nextOffset:null};
+  if(/^image\//i.test(r.type))return {url:r.url,title:'图片',status:'image',fetchedAt:new Date().toISOString(),latestVerified:false,text:'',textOffset:0,nextTextOffset:null,images:[{url:r.url,kind:'image',label:'直接图片地址'}],links:[],totalImages:1,totalLinks:0,nextOffset:null};
   if(!/^(text\/|application\/(xhtml\+xml|json|javascript))/i.test(r.type))throw new FishError('WEB_PAGE_TYPE_UNSUPPORTED');
   let html:string;try{html=new TextDecoder(/charset=["']?([^;\s"']+)/i.exec(r.type)?.[1]??'utf-8').decode(r.bytes);}catch{html=r.bytes.toString('utf8');}
   let p;try{p=/json/i.test(r.type)||/^\s*[\[{]/.test(html)?jsonAssets(JSON.parse(html),r.url):pageAssets(html,r.url);}catch{p=pageAssets(html,r.url);}
   const terms=query.toLowerCase().split(/\s+/).filter(Boolean),images=terms.length?p.images.filter(i=>terms.every(t=>(i.label+' '+i.url).toLowerCase().includes(t))):p.images;
   const end=offset+25,content=p.text.slice(textOffset,textOffset+5000);
-  return {url:r.url,title:p.title,text:content,textOffset,nextTextOffset:textOffset+content.length<p.text.length?textOffset+content.length:null,images:images.slice(offset,end),links:p.links.slice(offset,end),totalImages:images.length,totalLinks:p.links.length,nextOffset:Math.max(images.length,p.links.length)>end?end:null};
+  return {url:r.url,title:p.title,fetchedAt:new Date().toISOString(),...pageEvidence(p.title,p.text,/<script\b/i.test(html)),text:content,textOffset,nextTextOffset:textOffset+content.length<p.text.length?textOffset+content.length:null,images:images.slice(offset,end),links:p.links.slice(offset,end),totalImages:images.length,totalLinks:p.links.length,nextOffset:Math.max(images.length,p.links.length)>end?end:null};
 }
 export async function downloadWebImage(url:string,signal?:AbortSignal,reader:PublicReader=readPublic){
   if(typeof url!=='string'||!publicUrl(url))throw new FishError('WEB_PUBLIC_URL_REQUIRED');

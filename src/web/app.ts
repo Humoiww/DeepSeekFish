@@ -10,7 +10,7 @@ import { Tasks } from '../codex/tasks.js';
 import { AppServerRunner,MockTaskRunner } from '../codex/runner.js';
 import { knowledgeTools,knowledgeSnapshot,updateKnowledge } from '../memory/knowledge.js';
 import { webTools } from '../search/tools.js';
-import { SearchService,DeepSeekSearchProvider,MockSearchProvider } from '../search/provider.js';
+import { SearchService,DeepSeekSearchProvider,MockSearchProvider,searchEvidence } from '../search/provider.js';
 import { FishError,codeOf } from '../types.js';
 import { SessionWorkspace } from './workspace.js';
 import { WebModel,type WireMessage,type WebTool } from './model.js';
@@ -119,8 +119,8 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       case 'list_files':return workspace.list();
       case 'read_file':return {path:args.path,content:workspace.read(args.path)};
       case 'write_file':return workspace.write(args.path,args.content);
-      case 'search_web':return search.search(args.query,'web:'+s.id,'webui-local');
-      case 'fetch_page':return search.fetch(args.url,'web:'+s.id,'webui-local',args.offset);
+      case 'search_web':return searchEvidence(await search.search(args.query,'web:'+s.id,'webui-local',args.fresh));
+      case 'fetch_page':return search.fetch(args.url,'web:'+s.id,'webui-local',args.offset,args.fresh);
       case 'queue_codex':{
         if(typeof args.task!=='string'||args.task.length>1500)throw new FishError('INVALID_TASK_BRIEF');
         const t=tasks.enqueue({id:randomUUID(),group:'web:'+s.id,user:'webui-local',text:'',mentioned:true,at:Date.now(),event:'mention'},args.task,args.task);

@@ -4,11 +4,12 @@ import { Ledger,conversationTokenLimit } from '../budget/ledger.js';
 import type { Config } from '../config.js';
 import { redact } from '../storage/db.js';
 import { recordPrompt } from '../prompt-record.js';
+import { knowledgeTokens } from '../memory/knowledge.js';
 export const modelPayload=(cfg:Config,messages:ChatMessage[],maxTokens:number,options:CompletionOptions={})=>({model:cfg.model,messages,max_tokens:maxTokens,stream:false,thinking:{type:'disabled'},
   ...(options.tools?.length?{tools:options.tools,tool_choice:options.final?'none':options.toolChoice?{type:'function',function:{name:options.toolChoice}}:options.requireTool?'required':'auto'}:{})});
 
 export function messageText(message:ChatMessage):string{return typeof message.content==='string'?message.content:message.content.filter(p=>p.type==='text').map(p=>p.text).join('\n');}
-export function inputBound(messages:ChatMessage[]):number{
+export function inputBound(messages:ChatMessage[],tools:CompletionOptions['tools']=[]):number{
   let imageTokens=0;
   const text=messages.map(m=>({...m,content:typeof m.content==='string'?m.content:m.content.map(p=>{
     if(p.type==='text')return p;
@@ -16,7 +17,11 @@ export function inputBound(messages:ChatMessage[]):number{
     // transport encoding, not text tokens: counting it blocks ordinary vision.
     imageTokens+=1024;return {type:'image_url',image_url:{url:'[image]',detail:p.image_url.detail}};
   })}));
-  return Buffer.byteLength(JSON.stringify(text),'utf8')+4096+imageTokens;
+  // Use the pinned official tokenizer, plus framing/template margin. Counting
+  // Chinese UTF-8 bytes as tokens caused otherwise affordable turns to fail.
+  const encoded=JSON.stringify({messages:text,tools});
+  let tokens:number;try{tokens=Math.ceil(knowledgeTokens(encoded)*1.25);}catch{tokens=Buffer.byteLength(encoded,'utf8');}
+  return tokens+4096+messages.length*32+(tools?.length??0)*64+imageTokens;
 }
 
 /** Bounded JSON reader: limit applies during streaming, not only after allocation. */
@@ -80,9 +85,7 @@ export class BudgetedModel {
   }
   async complete(group:string,user:string,messages:ChatMessage[],options:CompletionOptions={}):Promise<ModelResult> {
     const max=this.cfg().maxOutputTokens;
-    // Byte-level BPE cannot emit more normal tokens than UTF-8 bytes. Include a
-    // deliberately large allowance for fixed chat framing; no tools/hidden context.
-    const bound=inputBound(messages)+Buffer.byteLength(JSON.stringify(options.tools??[]));
+    const bound=inputBound(messages,options.tools);
     let id:string;
     try{id=this.ledger.reserve('model',group,user,bound,max);}
     catch(e){

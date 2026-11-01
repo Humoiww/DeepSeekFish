@@ -2,7 +2,7 @@ import type { Config } from '../config.js';
 import { FishError } from '../types.js';
 import { recordPrompt } from '../prompt-record.js';
 import { Ledger } from '../budget/ledger.js';
-import { boundedJson } from '../agent/model.js';
+import { boundedJson,inputBound } from '../agent/model.js';
 
 export interface ToolCall {id:string;type:'function';function:{name:string;arguments:string}}
 export interface WireMessage {role:'system'|'user'|'assistant'|'tool';content:string;tool_calls?:ToolCall[];tool_call_id?:string}
@@ -15,7 +15,7 @@ export class WebModel {
     signal.throwIfAborted();
     const cfg=this.cfg(),payload={model:cfg.model,messages,max_tokens:cfg.maxOutputTokens,stream:false,thinking:{type:'disabled'},
       ...(tools.length?{tools,tool_choice:final?'none':'auto'}:{})};
-    const bound=Buffer.byteLength(JSON.stringify(payload))+4096;
+    const bound=inputBound(messages,tools);
     const reservation=this.ledger.reserve('model',group,'webui-local',bound,cfg.maxOutputTokens);
     try{
       recordPrompt(this.ledger.store,tools.some(t=>t.function.name==='generate_image')?'image':'web',payload);

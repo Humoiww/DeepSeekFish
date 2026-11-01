@@ -3,12 +3,12 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { conversationAllowed,type Config } from '../config.js';
 import { Store, redact } from '../storage/db.js';
-import { Ledger } from '../budget/ledger.js';
+import { Ledger,TokenBudgetError } from '../budget/ledger.js';
 import { SocialGate } from '../social/gate.js';
 import { BudgetedModel,ModelResponseError } from './model.js';
 import { FishError, codeOf, type Message, type Transport,type ChatMessage,type ChatPart,type ModelResult } from '../types.js';
 import { Tasks, type Task } from '../codex/tasks.js';
-import type { SearchService } from '../search/provider.js';
+import { searchEvidence,type SearchService } from '../search/provider.js';
 import { knowledgeTools,knowledgeSnapshot,updateKnowledge } from '../memory/knowledge.js';
 import { browsePage,downloadWebImage } from '../search/public-web.js';
 import { webTools,browseTools } from '../search/tools.js';
@@ -175,11 +175,11 @@ export class Bot {
                 }
                 result=args.urls?{images:downloads}:downloads[0];media=this.media.parts(last.group,items);
               }else if(call.function.name==='search_web'){
-                if(typeof args.query!=='string'||Object.keys(args).some(k=>k!=='query'))throw new FishError('INVALID_TOOL_ARGS');
-                result={source:'DeepSeek Search',results:await this.search.search(args.query,last.group,last.user)};
+                if(typeof args.query!=='string'||Object.keys(args).some(k=>!['query','fresh'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
+                result=searchEvidence(await this.search.search(args.query,last.group,last.user,args.fresh));
               }else if(call.function.name==='fetch_page'){
-                if(typeof args.url!=='string'||Object.keys(args).some(k=>!['url','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
-                result={source:'DeepSeek Fetch',...await this.search.fetch(args.url,last.group,last.user,args.offset)};
+                if(typeof args.url!=='string'||Object.keys(args).some(k=>!['url','offset','fresh'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
+                result={source:'DeepSeek Fetch',...await this.search.fetch(args.url,last.group,last.user,args.offset,args.fresh)};
               }else if(call.function.name==='remember_images'){
                 if(!this.media||Object.keys(args).some(k=>k!=='images'))throw new FishError('INVALID_TOOL_ARGS');
                 const remembered=this.media.remember(last.group,args.images,mediaIds);result={images:remembered};classified=true;
@@ -315,7 +315,7 @@ export class Bot {
         }
       }catch(e){trace.push({error:codeOf(e)});throw e;}finally{saveTrace();}
       this.gate.record(last.group);this.store.audit('speech',last.group,reason);
-    }catch(e){this.store.audit('error',last.group,codeOf(e));if(!spontaneous&&this.accepting)await this.send(last,'当前无法回答：'+codeOf(e));}
+    }catch(e){this.store.audit('error',last.group,codeOf(e));if(!spontaneous&&this.accepting)await this.send(last,e instanceof TokenBudgetError?e.notice:'当前无法回答：'+codeOf(e));}
     finally{if(lease)this.ledger.settle(lease);}
   }
   private async send(m:Message,text:string):Promise<void>{

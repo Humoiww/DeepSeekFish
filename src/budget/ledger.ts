@@ -10,6 +10,10 @@ export const dayKey = (at = Date.now()): string => new Date(at + 8 * 3600000).to
 export const conversationTokenLimit=(cfg:Config,conversation:string):number=>conversation.startsWith('private:')?cfg.dailyTokens:cfg.groupDailyTokens;
 type Kind = 'model' | 'search' | 'codex' | 'image' | 'interjection';
 interface Reservation { id:string; day:string; grp:string; usr:string; kind:Kind; input:number; output:number; ms:number; state:string }
+export class TokenBudgetError extends FishError {
+  constructor(public reason:'tokens'|'requests'|'output',public remaining:number,public required:number){super('TOKEN_BUDGET_EXHAUSTED');}
+  get notice(){return this.reason==='requests'?'今日请求次数已用完，香港时间 00:00 恢复。':this.reason==='output'?'本次输出设置超过允许上限。':`今日还剩 ${this.remaining.toLocaleString('en-US')} token，本轮需要预留 ${this.required.toLocaleString('en-US')}，暂时不够。香港时间 00:00 更新额度。`;}
+}
 /** Every allowance is charged before dispatch under one SQLite write transaction. */
 export class Ledger {
   constructor(public store: Store, private config: () => Config) {}
@@ -45,14 +49,15 @@ export class Ledger {
     if (this.store.getMeta('budgetFault')) throw new FishError('BUDGET_USAGE_FAULT');
     if(kind==='search')input=networkPricing(cfg.model).tokensPerRequest;
     const total=input+output;
+    const remaining=Math.max(0,Math.min(cfg.dailyTokens-this.value('tokens','*',day),conversationTokenLimit(cfg,group)-this.value('tokens','g:'+group,day)));
     if (kind === 'model') {
-      if (output > cfg.maxOutputTokens || this.value('tokens','*',day)+total > cfg.dailyTokens ||
-        this.value('tokens','g:'+group,day)+total > conversationTokenLimit(cfg,group) ||
-        this.value('requests','u:'+user,day) >= cfg.userDailyRequests) throw new FishError('TOKEN_BUDGET_EXHAUSTED');
+      if(output>cfg.maxOutputTokens)throw new TokenBudgetError('output',remaining,total);
+      if(total>remaining)throw new TokenBudgetError('tokens',remaining,total);
+      if(this.value('requests','u:'+user,day)>=cfg.userDailyRequests)throw new TokenBudgetError('requests',remaining,total);
       for (const scope of ['*','g:'+group]) this.add('tokens',total,scope,day);
       this.add('requests',1,'u:'+user,day);
     } else if(kind==='search'){
-      if(this.value('tokens','*',day)+input>cfg.dailyTokens||this.value('tokens','g:'+group,day)+input>conversationTokenLimit(cfg,group))throw new FishError('TOKEN_BUDGET_EXHAUSTED');
+      if(input>remaining)throw new TokenBudgetError('tokens',remaining,input);
       for(const scope of ['*','g:'+group]){this.add('tokens',input,scope,day);this.add('webTokens',input,scope,day);}
       this.add('search',1,'*',day);
     } else {
