@@ -19,6 +19,10 @@ test('OneBot normalizes ordinary/mention messages and rejects self, string CQ an
   assert.equal(normalizeOneBot(event('普通群消息'),'10001')?.event,'ordinary');
   const mention=normalizeOneBot(event('',{message:[{type:'at',data:{qq:'10001'}},{type:'text',data:{text:'你好'}}]}),'10001');
   assert.equal(mention?.mentioned,true);assert.equal(mention?.text,'你好');
+  const bare=normalizeOneBot(event('',{message:[{type:'at',data:{qq:'10001'}}]}),'10001');
+  assert.equal(bare?.text,'[@你]');assert.equal(bare?.mentioned,true);
+  assert.equal(normalizeOneBot(event('',{message:[{type:'at',data:{qq:'30003'}}]}),'10001')?.mentioned,false);
+  assert.equal(normalizeOneBot(event('',{message:[{type:'at',data:{qq:'all'}}]}),'10001')?.mentioned,false);
   for(const extra of [{user_id:10001},{self_id:999},{message:'[CQ:at,qq=10001]hello'},{group_id:{}},{post_type:'message_sent'}])assert.equal(normalizeOneBot(event('bad',extra),'10001'),undefined);
   const picture=normalizeOneBot(event('',{message:[{type:'image',data:{url:'https://multimedia.nt.qq.com.cn/test',file:'fixture.gif',sub_type:1}}]}),'10001')!;
   assert.equal(picture.text,'[图片 1]');assert.equal(picture.images?.[0].stickerHint,true);assert.equal(picture.images?.[0].file,'fixture.gif');
@@ -54,10 +58,10 @@ test('real local WebSocket carries ordinary context into an @ reply using existi
     await deliver(event('群成员正在聊 AI'));assert.equal(provider.calls,0);assert.equal(f.store.history('123456',20).length,1);
     await deliver(event('',{message_id:2,message:[{type:'at',data:{qq:10001}},{type:'text',data:{text:'接着聊'}}]}));
     assert.equal(provider.calls,1);assert.equal(sent.length,1);assert.equal(sent[0].group_id,'123456');assert.equal(sent[0].message[0].type,'text');
-    assert.equal(f.store.history('123456',20).length,2);assert.ok(f.store.getMeta('qqOrdinary:123456'));
+    assert.equal(f.store.history('123456',20).length,3);assert.equal(f.store.history('123456',20)[2].user,'DeepSeekFish');assert.ok(f.store.getMeta('qqOrdinary:123456'));
     await deliver(event('私聊不需要at',{message_type:'private',message_id:3}));
     assert.equal(provider.calls,2);assert.equal(sent[1].action,'send_private_msg');assert.equal(sent[1].user_id,'20002');
-    assert.equal(f.store.history('private:20002',20).length,2);assert.equal(f.store.history('private:20002',20)[1].user,'DeepSeekFish');assert.equal(f.store.history('123456',20).length,2);
+    assert.equal(f.store.history('private:20002',20).length,2);assert.equal(f.store.history('private:20002',20)[1].user,'DeepSeekFish');assert.equal(f.store.history('123456',20).length,3);
     await deliver(event('接着聊上一句',{message_type:'private',message_id:4}));
     assert.equal(provider.calls,3);assert.match(sent[2].message[0].data.text,/接着聊上一句/);
     assert.deepEqual(f.store.history('private:20002',20).map(m=>m.user),['20002','DeepSeekFish','20002','DeepSeekFish']);

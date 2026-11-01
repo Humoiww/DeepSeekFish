@@ -9,7 +9,7 @@
 3. 保存并启用，然后用日常 QQ 加大肥鱼为好友；需要好友验证时在机器人账号侧确认。
 4. 直接发“你好”，后续继续聊天，不用 @ 或输入命令。
 
-私聊沿用鲸酱人设、已有 DeepSeek Key 和网页选定模型；双方最近 20 条消息进入上下文，按现有 TTL 清理。私聊、其他联系人及群聊互相隔离。修改账号或暂停/恢复通过网页生效，不用 SSH 或复制 Token；网页写入非秘密 QQ 设置与启动标记，由固定的 systemd path 激活专用 QQ service，网页进程没有 sudo 权限。QQ 进程断线重连、异常重启，已启用的聊天在重启后自动恢复。
+私聊沿用鲸酱人设、已有 DeepSeek Key 和网页选定模型；模型默认只读取最近 6 条消息，完整聊天单独归档。私聊、其他联系人及群聊互相隔离。修改账号或暂停/恢复通过网页生效，不用 SSH 或复制 Token；网页写入非秘密 QQ 设置与启动标记，由固定的 systemd path 激活专用 QQ service，网页进程没有 sudo 权限。QQ 进程断线重连、异常重启，已启用的聊天在重启后自动恢复。
 
 这一阶段先提供文本连续对话。图片/语音内容尚未解析，群生图和 Codex 执行未因此开放。之后要进群，再在同一设置页填写群号。
 
@@ -70,18 +70,28 @@ sudo journalctl -u deepseekfish-qq.service -f
 
 ## 4. 实际确认“看到了消息”
 
-在授权群里先让另一个账号发两句普通文本，再 `@鲸酱` 问刚才的话题。默认普通文本进入该群最近 20 条上下文，本地记录，不为每条消息调用模型；@ 或包含“小鱼/鲸酱”的消息才触发回复。`autoReply` 可让每个合并窗口回复，`autonomous` 则使用已有话题、概率、冷却与每日次数逻辑进行插话，两者由本机配置或管理 CLI 显式开启，不等同于 Codex 自主执行。
+WebUI 侧栏 → **QQ 对话** → 填写群号和 **群聊唤醒关键词** → 保存。先把肥鱼邀请进群；群号留空不启用群聊。默认关键词为 `肥鱼`、`Deepseek`，每行一个或逗号分隔，按包含匹配，英文不区分大小写。关键词留空则仅响应直接 @ 本机器人（不包括 @ 其他人或 @ 全体）。私聊仍可直接对话。
+
+群事件由现有 `deepseekfish-qq.service` 常驻监听，`src/social/group-trigger.ts` 本地筛选。普通群消息只归档，不调用模型、不下载或解码图片；@ 或关键词才进入原有通用工具循环。不会因最近历史里有关键词而反复唤醒，旧 `autoReply/autonomous` 开关也不能绕过群触发规则。显式 `/fish` 管理命令沿用原行为。不同群成员分别合并输入，避免把甲的提问或头像/空间操作归给乙；群内机器人实际回复也保存为 assistant 消息。
+
+配置立即生效，不重启 QQ 或重新登录；保存其他 QQ 设置不会覆盖自定义关键词。可迁移的配置脚本也能设置/验证相同规则，不额外启动第二个机器人，不进行模型或 QQ 测试发送：
+
+```bash
+# 在项目目录运行；线上部署以 deepseekfish 服务用户执行
+runtime/tools/node/bin/node scripts/configure-group-listener.mjs --keywords '肥鱼,Deepseek'
+runtime/tools/node/bin/node scripts/configure-group-listener.mjs --check
+```
+
+实测时先发普通群聊（应无回复），再发 `肥鱼在吗`、`deepSEEK在吗` 或单独 @ 肥鱼。要分析图片时，将图片与 @/关键词一起发送。
 
 ```bash
 sudo -u deepseekfish bash /srv/deepseekfish/app/scripts/manage.sh status
 sudo -u deepseekfish bash /srv/deepseekfish/app/scripts/manage.sh history 你的群号
-# 确认普通收发正常后，按需启用现有的低频自主插话：
-sudo -u deepseekfish bash /srv/deepseekfish/app/scripts/manage.sh set autonomous true
 ```
 
 状态中的 `qq=connected` 证明 OneBot 身份握手成功，`ordinaryMessages=observed` 证明已收到该群普通事件；历史和真实 QQ 回复共同验证上下文链路。不要用 Mock 或只读握手替代真实群消息验收。
 
-当前文本模型不会解析群图片或语音，输入中会明确标记“未解析/未转写”；不要把文本消息可见说成已经具备视觉。适配器支持从本项目 outputs 发送经过验证的 PNG，但 QQ 自动生图仍沿用原限制；本次没有放开群消息执行 Codex、访问密钥或调用任意 OneBot 管理接口。
+激活后的群对话可使用现有静图/动图识别、图库、表情包和生图功能；语音仍标记未转写。群消息不获得 Codex 通用执行、密钥或任意 OneBot 管理接口。
 
 ## 已验证与待操作
 

@@ -1,6 +1,7 @@
 import type { Config } from '../config.js';
 import type { Message, Reason } from '../types.js';
 import { Ledger, dayKey } from '../budget/ledger.js';
+import { groupTrigger } from './group-trigger.js';
 
 export class SocialGate {
   constructor(private cfg: () => Config, private ledger: Ledger, private random = Math.random) {}
@@ -12,7 +13,9 @@ export class SocialGate {
     const c=this.cfg(), last=messages.at(-1)!;
     if (!c.enabled || now-last.at>120000) return;
     if (messages.some(m=>m.mentioned)) return 'mention';
-    if (messages.some(m=>c.names.some(n=>m.text.toLowerCase().includes(n.toLowerCase())))) return 'name';
+    if (messages.some(m=>groupTrigger(m,c.names)==='name')) return 'name';
+    // Group wake-up is an explicit @/keyword policy, even with legacy flags.
+    if (!last.group.startsWith('private:')) return;
     if (c.autoReply) return 'auto';
     if (!c.autonomous) return;
     const hour=new Date(now+8*3600000).getUTCHours(); const [start,end]=c.quietHours;

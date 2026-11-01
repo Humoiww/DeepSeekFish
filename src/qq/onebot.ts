@@ -38,7 +38,7 @@ export function normalizeOneBot(event:any,self:string):Message|undefined{
     else if(segment?.type==='file')text+='[文件：未读取内容]';
     if(text.length>=16000)break;
   }
-  return {id:messageId,group,user,text:text.trim().slice(0,16000),at:event.time*1000,mentioned,event:mentioned?'mention':'ordinary',...(images.length?{images}:{})};
+  return {id:messageId,group,user,text:text.trim().slice(0,16000)||(mentioned&&event.message_type==='group'?'[@你]':''),at:event.time*1000,mentioned,event:mentioned?'mention':'ordinary',...(images.length?{images}:{})};
 }
 export function onebotCredential(root:string):string{
   const file=safePath(root,'runtime/data/onebot-credentials.json');

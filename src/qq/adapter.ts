@@ -13,7 +13,7 @@ export function normalize(msg:QQBotInboundMessage,appId:string):Message|undefine
   const marker=new RegExp(`<@!?${appId.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}>`,'g');
   const mentioned=msg.rawEventType==='GROUP_AT_MESSAGE_CREATE'||msg.mentions?.some(m=>m.is_you===true)||marker.test(msg.content);
   const at=Date.parse(msg.timestamp);if(!Number.isFinite(at))return;
-  return {id:msg.messageId,group:msg.groupOpenid,user:msg.senderId,text:msg.content.replace(marker,'').trim().slice(0,2000),at,
+  return {id:msg.messageId,group:msg.groupOpenid,user:msg.senderId,text:msg.content.replace(marker,'').trim().slice(0,2000)||(mentioned?'[@你]':''),at,
     mentioned:!!mentioned,bot:!!msg.senderIsBot||msg.senderId===appId,event:msg.rawEventType==='GROUP_MESSAGE_CREATE'?'ordinary':'mention'};
 }
 export class QQTransport implements Transport {

@@ -39,7 +39,7 @@ function deliveryFailure(error:unknown):Record<string,unknown>|undefined{
   if(code==='ONEBOT_ACTION_FAILED')return {deliveryStatus:'failed',retryScheduled:false,deliveryNote:'QQ 明确拒绝了这次发送；未安排重发。'};
 }
 export class Bot {
-  private pending=new Map<string,{messages:Message[];timer:NodeJS.Timeout}>();
+  private pending=new Map<string,{group:string;messages:Message[];timer:NodeJS.Timeout}>();
   private chains=new Map<string,Promise<void>>();private accepting=true;
   private queued=new Map<string,number>();
   private controller=new AbortController();
@@ -54,11 +54,11 @@ export class Bot {
     const c=this.cfg();
     if(!this.accepting||!c.enabled||!conversationAllowed(c,m.group)||m.bot||!m.text.trim()||!m.id||!m.user||
       !Number.isFinite(m.at)||Math.abs(Date.now()-m.at)>240000)return;
-    // OneBot timestamps have second precision; private replies use local
-    // milliseconds. Order private context by reception so rapid follow-ups
+    // OneBot timestamps have second precision; replies use local
+    // milliseconds. Order OneBot context by reception so rapid follow-ups
     // cannot sort before the assistant's preceding reply.
     const archiveText=redact(m.text).slice(0,16000);
-    m={...m,at:c.qqTransport==='onebot'&&m.group.startsWith('private:')?Date.now():m.at,text:archiveText.slice(0,2000)};
+    m={...m,at:c.qqTransport==='onebot'?Date.now():m.at,text:archiveText.slice(0,2000)};
     if(this.store.db.prepare('SELECT key FROM cache WHERE key=? AND expires>?').get(echoKey(m.group,m.text),Date.now()))return;
     if(!this.store.observe(m,c.historyHours,c.windowSize))return;
     this.memory.record({id:m.id,conversation:m.group,actor:m.user,role:'user',text:archiveText,at:Date.now()});
@@ -66,8 +66,11 @@ export class Bot {
       if(/^\/fish\s+cancel\b/.test(m.text)){await this.command(m);return;}
       this.enqueue(m.group,()=>this.command(m));await this.chains.get(m.group);return;
     }
-    let batch=this.pending.get(m.group);
-    if(!batch){batch={messages:[],timer:setTimeout(()=>this.flushGroup(m.group),c.bufferMs)};this.pending.set(m.group,batch);}
+    // Different group members must not overwrite the triggering person's
+    // question, quota attribution, profile selection or image request ID.
+    const pendingKey=m.group.startsWith('private:')?m.group:m.group+'\0'+m.user;
+    let batch=this.pending.get(pendingKey);
+    if(!batch){batch={group:m.group,messages:[],timer:setTimeout(()=>this.flushGroup(pendingKey),c.bufferMs)};this.pending.set(pendingKey,batch);}
     batch.messages.push(m);batch.messages=batch.messages.slice(-c.windowSize);
     // Fixed coalescing window: a busy group cannot postpone processing forever.
   }
@@ -78,16 +81,15 @@ export class Bot {
     const next=previous.then(fn).catch(e=>{this.store.audit('error',group,codeOf(e));});
     this.chains.set(group,next);void next.finally(()=>{this.queued.set(group,Math.max(0,(this.queued.get(group)??1)-1));if(this.chains.get(group)===next)this.chains.delete(group);});
   }
-  private flushGroup(group:string):void{
-    const batch=this.pending.get(group);if(!batch)return;clearTimeout(batch.timer);this.pending.delete(group);
-    this.enqueue(group,()=>this.respond(batch.messages));
+  private flushGroup(key:string):void{
+    const batch=this.pending.get(key);if(!batch)return;clearTimeout(batch.timer);this.pending.delete(key);
+    if(!batch.group.startsWith('private:')&&!this.gate.decide(batch.messages))return;
+    this.enqueue(batch.group,()=>this.respond(batch.messages));
   }
   async flush():Promise<void>{for(const group of this.pending.keys())this.flushGroup(group);await Promise.all(this.chains.values());}
   private async respond(batch:Message[]):Promise<void>{
     const last=batch.at(-1)!;const c=this.cfg();
     if(!c.enabled||!conversationAllowed(c,last.group))return;
-    const incoming=this.media?await this.media.ingest(batch,this.controller.signal):[];
-    const mediaIds=[...new Set(incoming.flatMap(m=>m.id?[m.id]:[]))];
     const history=this.store.history(last.group,c.windowSize).filter(m=>m.at>=dayStart()-86400000&&(m.user!=='DeepSeekFish'||!hasToolMarkup(m.text)));
     // Trigger only on this batch, use rolling history solely for local activity/topic checks.
     const reason=this.gate.decide(batch,Date.now(),history);
@@ -95,6 +97,8 @@ export class Bot {
     const spontaneous=['interest','opportunity','random'].includes(reason);
     const lease=spontaneous?this.ledger.reserve('interjection',last.group,last.user):undefined;
     try{
+      const incoming=this.media?await this.media.ingest(batch,this.controller.signal):[];
+      const mediaIds=[...new Set(incoming.flatMap(m=>m.id?[m.id]:[]))];
       const PERSONA=personalityPrompt(this.root),SYSTEM=qqPrompt(this.root);
       const context={character:{appearance:appearancePrompt(this.root),referenceId:'character'},actions:qqImageActivity(this.ledger,last.group,last.id),...this.media?.context(last.group),...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
       const dialogue:ChatMessage[]=recentDialogue(history,batch).map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:m.user==='DeepSeekFish'||last.group.startsWith('private:')?m.text:'['+m.user+'] '+m.text}));
@@ -329,7 +333,7 @@ export class Bot {
     await this.transport.send(m,sent);
     const id='assistant:'+randomUUID();
     this.memory.record({id,conversation:m.group,actor:'DeepSeekFish',role:'assistant',text:sent,at:Date.now()});
-    if(this.cfg().qqTransport==='onebot'&&m.group.startsWith('private:')){
+    if(this.cfg().qqTransport==='onebot'){
       this.store.db.prepare('INSERT INTO messages VALUES (?,?,?,?,?,?,?)').run(id,m.group,'DeepSeekFish',sent,Date.now(),0,'ordinary');
       this.store.prune(this.cfg().historyHours,this.cfg().windowSize);
     }

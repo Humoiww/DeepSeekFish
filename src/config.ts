@@ -17,7 +17,7 @@ export interface Config {
 }
 export const MAX_DAILY_TOKENS=10_000_000;
 export const defaults: Config = {
-  enabled: true, groups: [], admins: [], names: ['小鱼', 'DeepSeekFish'],
+  enabled: true, groups: [], admins: [], names: ['肥鱼', 'Deepseek'],
   autonomous: false, autoReply: false, probability: 0.02, activity: 0.5,
   cooldownMs: 480000, dailyInterjections: 12, windowSize: 20, maxChars: 600,
   quietHours: [0, 7], interests: ['AI', '编程', '游戏'], bufferMs: 1200, historyHours: 24,
@@ -41,6 +41,7 @@ export function validateConfig(input: Record<string, unknown>): Config {
   for (const key of ['groups', 'admins', 'names', 'interests', 'privateUsers'] as const) {
     if (!Array.isArray(c[key]) || !c[key].every(v => typeof v === 'string' && v.length > 0 && v.length <= 256)) throw new FishError('INVALID_CONFIG_' + key);
   }
+  c.names=triggerKeywords(c.names);
   if (!Array.isArray(c.quietHours) || c.quietHours.length !== 2 || !c.quietHours.every(v => Number.isInteger(v) && v >= 0 && v < 24) ||
     c.probability > 1 || c.activity > 1 || c.maxOutputTokens < 1 || c.maxOutputTokens > 4096 ||
     c.dailyTokens > MAX_DAILY_TOKENS || c.windowSize < 1 || c.windowSize > 100 || c.maxChars < 32 || c.maxChars > 4000 ||
@@ -51,6 +52,10 @@ export function validateConfig(input: Record<string, unknown>): Config {
   if(c.privateUsers.length>50||c.privateUsers.some(id=>!/^[1-9]\d{0,19}$/.test(id)))throw new FishError('INVALID_PRIVATE_USERS');
   validateOneBotUrl(c.onebotUrl);
   return c;
+}
+export function triggerKeywords(value:unknown):string[]{
+  if(!Array.isArray(value)||value.length>50||value.some(v=>typeof v!=='string'||!v.trim()||v.trim().length>64||/[\r\n\0]/.test(v)))throw new FishError('INVALID_GROUP_KEYWORDS');
+  const seen=new Set<string>();return value.map(v=>v.trim()).filter(v=>{const key=v.toLowerCase();if(seen.has(key))return false;seen.add(key);return true;});
 }
 export function validateOneBotUrl(value:string):URL{
   let url:URL;try{url=new URL(value);}catch{throw new FishError('INVALID_ONEBOT_URL');}

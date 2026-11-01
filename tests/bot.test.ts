@@ -56,15 +56,16 @@ test('budget exhausted and disabled bot cannot invoke provider; bounded rolling 
     f.store.clear('g');assert.equal(f.store.history('g',100).length,0);
   }finally{await f.bot.stop();f.cleanup();}
 });
-test('SocialGate observes activity/topic changes and persists cooldown/daily cap',()=>{
-  const f=fixture({autonomous:true,probability:1,activity:1,dailyInterjections:1});try{
+test('group activation requires a mention or keyword even with legacy auto-reply and social flags',()=>{
+  const f=fixture({autonomous:true,autoReply:true,probability:1,activity:1,dailyInterjections:1});try{
     const gate=new SocialGate(f.cfg,f.ledger,()=>0),now=Date.now();
     const a=message('AI真有意思',{mentioned:false,event:'ordinary',at:now-1000}),b=message('AI好玩',{mentioned:false,event:'ordinary',at:now});
-    assert.equal(gate.decide([a,b],now),'interest');
+    assert.equal(gate.decide([a,b],now),undefined);
     assert.equal(gate.decide([a,{...b,text:'今天吃什么'}],now),undefined);
     assert.equal(gate.decide([{...a,at:now-200000}],now),undefined);
     gate.record('g');assert.equal(gate.decide([a,b],now),undefined);
-    f.store.setMeta('lastSpoke:g','0');f.ledger.reserve('interjection','g','u');assert.equal(gate.decide([a,b],now),undefined);
+    assert.equal(gate.decide([{...b,text:'dEePsEeK 过来看看'}],now),'name');
+    f.set({names:[]});assert.equal(gate.decide([{...b,text:'肥鱼 Deepseek'}],now),undefined);
     assert.equal(gate.decide([message('explicit')],now),'mention');
   }finally{f.cleanup();}
 });

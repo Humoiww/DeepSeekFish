@@ -69,13 +69,14 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
     dailyQzone:dailyStatus(root,store),
     memory:{archive:'runtime/memory/days',automaticDays:2,timezone:PROJECT_TIMEZONE,events:(store.db.prepare('SELECT count(*) AS n FROM memory_events').get() as any).n,persona:'personas/active.json'},
     qqTransport:config.qqTransport,
+    groupTrigger:{mode:'mention-or-keyword',keywords:cfg().names},
     deepseek:{provider:provider.kind,model:config.model,credentialPresent:!!key,status:store.getMeta('modelStatus')??'not probed'},
     codex:{enabled:config.codex,provider:mock?'mock':'official-app-server',unattended:false,localApprovalRequired:true,
       projectLoginPresent:projectLoginPresent(),isolation:mock?'mock only':boundaryStatus(root)},
     features:{autonomous:config.autonomous,search:cfg().search,images:config.images},web:{enabled:cfg().search,requests:ledger.value('search'),chargedTokens:ledger.value('webTokens'),budget:'tokens',...networkPricing(cfg().model)},
     budgets:{dailyTokens:config.dailyTokens,maxOutputTokens:config.maxOutputTokens,usage:ledger.snapshot(),fault:store.getMeta('budgetFault')??null},
-    groups:config.groups.map(group=>({group,ordinaryMessages:store.getMeta('qqOrdinary:'+group)?'observed':'unverified; mention-only capability assumed'})),
-    groupCount:config.groups.length,tasks:tasks.list().map(t=>({id:t.id,group:t.grp,state:t.state,created:t.created,result:t.result})),
+    groups:cfg().groups.map(group=>({group,ordinaryMessages:store.getMeta('qqOrdinary:'+group)?'observed':'unverified; mention-only capability assumed'})),
+    groupCount:cfg().groups.length,tasks:tasks.list().map(t=>({id:t.id,group:t.grp,state:t.state,created:t.created,result:t.result})),
     recent:store.db.prepare('SELECT at,kind,grp,detail FROM audit ORDER BY id DESC LIMIT 30').all()});
   return {root,store,ledger,model,tasks,bot,transport,token,cfg,set,status,mock};
 }

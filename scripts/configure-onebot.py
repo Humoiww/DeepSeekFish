@@ -38,7 +38,7 @@ if config_file.is_symlink():
     raise SystemExit('Linked config is not supported.')
 config = json.loads(config_file.read_text()) if config_file.exists() else {}
 config.update(qqTransport='onebot', onebotUrl=args.url, groups=groups, admins=admins, privateUsers=admins, codex=False, images=False)
-config.setdefault('names', ['鲸酱', '小鱼', 'DeepSeekFish'])
+config.setdefault('names', ['肥鱼', 'Deepseek'])
 config.setdefault('autonomous', False)
 config.setdefault('autoReply', False)
 web_db = root / 'runtime/data/webui.sqlite'
