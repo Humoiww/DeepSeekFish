@@ -44,7 +44,7 @@ test('search cache and source attachment; image Mock is valid and real provider 
     assert.equal(f.ledger.value('search'),1);assert.ok(f.transport.sent.at(-1)!.text.includes('https://example.com/mock'));
     await f.bot.receive(message('/fish image 一张图'));assert.ok(f.transport.files.at(-1)!.endsWith('.png'));
     assert.equal((await new CodexImageProvider().generate()).status,'unsupported');
-    await f.bot.receive(message('/fish search http://127.0.0.1'));assert.equal(f.ledger.value('search'),1);
+    await f.bot.receive(message('/fish search http://127.0.0.1'));assert.equal(f.ledger.value('search'),2,'a search string is sent to the fixed provider; it does not fetch a host URL');
   }finally{await f.bot.stop();f.cleanup();}
 });
 test('budget exhausted and disabled bot cannot invoke provider; bounded rolling history',async()=>{
@@ -68,7 +68,7 @@ test('SocialGate observes activity/topic changes and persists cooldown/daily cap
     assert.equal(gate.decide([message('explicit')],now),'mention');
   }finally{f.cleanup();}
 });
-test('QQ archives full accepted text and excludes old rolling history unless explicitly recalled',async()=>{
+test('QQ archives full text but does not inject old records, even when the question mentions them',async()=>{
   const f=setup();let payload:any;
   try{
     f.set({historyHours:168});
@@ -78,11 +78,12 @@ test('QQ archives full accepted text and excludes old rolling history unless exp
     f.provider.complete=async(messages,max)=>{payload={...JSON.parse(messageText(messages[1])),messages:messages.slice(2).map(m=>({text:messageText(m)}))};return complete(messages,max);};
     await f.bot.receive(message('长消息'+ '甲'.repeat(3000)));await f.bot.flush();
     assert.ok(payload.messages.every((m:any)=>!m.text.includes('三天前')));
-    assert.equal(payload.memory.events.length,0);
+    assert.equal(payload.memory,undefined);
     const row=f.store.db.prepare('SELECT text FROM memory_events WHERE role=? ORDER BY seq DESC LIMIT 1').get('user') as any;
     assert.equal(row.text.length,3003);
     await f.bot.receive(message('还记得“海边露营”吗'));await f.bot.flush();
-    assert.equal(payload.memory.events[0].id,old.id);
+    assert.equal(payload.memory,undefined,'recall is a model-selected tool, not a keyword route');
+    assert.equal(f.bot.memory.read('g',{query:'海边露营'}).events[0].id,old.id);
     assert.ok(payload.messages.every((m:any)=>!m.text.includes('三天前')));
   }finally{await f.bot.stop();f.cleanup();}
 });

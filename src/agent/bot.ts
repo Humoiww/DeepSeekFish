@@ -16,7 +16,8 @@ import { makeDir, safePath } from '../paths.js';
 import { verifyPng, type ImageProvider } from '../image/provider.js';
 import { echoKey } from '../qq/adapter.js';
 import { characterPrompt,personalityPrompt,appearancePrompt } from '../character.js';
-import { MemoryJournal,dayStart } from '../memory/journal.js';
+import { MemoryJournal,dayStart,recallTools } from '../memory/journal.js';
+import { recentDialogue,TurnContext,contextTools,contextMetrics } from './context.js';
 import { PersonMemory } from '../memory/people.js';
 import { qqResources,qqImageActivity } from '../qq/resources.js';
 import { qqChatTools,imageLibraryTools } from '../qq/chat-tools.js';
@@ -94,17 +95,13 @@ export class Bot {
     const spontaneous=['interest','opportunity','random'].includes(reason);
     const lease=spontaneous?this.ledger.reserve('interjection',last.group,last.user):undefined;
     try{
-      const memory=this.memory.recall(last.group,last.text,history),person=this.people?.remembered(last.user,last.group,memory);
-      memory.events=memory.events.filter(event=>event.role!=='assistant'||!hasToolMarkup(event.text));
-      // Profile and Space reads are ordinary model-selected tools.
-      const savedQzone=this.qzone?.remembered(last.user,last.group,memory);
       const PERSONA=personalityPrompt(this.root),SYSTEM=qqPrompt(this.root);
-      const context={memory:{events:memory.events,needsReference:memory.needsReference},person:personContext(person),qzone:savedQzone?this.qzone!.context(savedQzone):null,character:{appearance:appearancePrompt(this.root),referenceId:'character'},actions:qqImageActivity(this.ledger,last.group,last.id),...this.media?.context(last.group),...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
-      const dialogue:ChatMessage[]=history.map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:m.user==='DeepSeekFish'||last.group.startsWith('private:')?m.text:'['+m.user+'] '+m.text}));
-      if(history.at(-1)?.id!==last.id)dialogue.push({role:'user',content:last.text});
+      const context={character:{appearance:appearancePrompt(this.root),referenceId:'character'},actions:qqImageActivity(this.ledger,last.group,last.id),...this.media?.context(last.group),...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
+      const dialogue:ChatMessage[]=recentDialogue(history,batch).map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:m.user==='DeepSeekFish'||last.group.startsWith('private:')?m.text:'['+m.user+'] '+m.text}));
       const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
-      if(incoming.length)messages.push({role:'user',content:this.media!.parts(last.group,incoming)});
-      const tools=[...knowledgeTools,...(c.search?[...webTools,...(this.media?browseTools:[])]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
+      const turnContext=new TurnContext();
+      if(incoming.length)messages.push(turnContext.images({role:'user',content:this.media!.parts(last.group,incoming)},-1));
+      const tools=[...recallTools,...contextTools,...knowledgeTools,...(c.search?[...webTools,...(this.media?browseTools:[])]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeSent=false;
       let imageOutcome:Record<string,unknown>|undefined;const memeResults=new Map<string,Record<string,unknown>>();
       const visibleImages=new Set(mediaIds);
@@ -114,6 +111,8 @@ export class Bot {
       saveTrace();
       try{
         for(let round=0;round<maxRounds;round++){
+          const compacted=turnContext.compact(round);
+          trace.push({round,contextInput:{...contextMetrics(messages,tools),...compacted}});
           let completion:ModelResult;
           try{completion=await this.model.complete(last.group,last.user,messages,{tools,requireTool:true,final:round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});}
           catch(e){
@@ -154,6 +153,11 @@ export class Bot {
                 if(typeof args.text!=='string'||Object.keys(args).some(k=>k!=='text')||completion.tool_calls.length!==1)throw new FishError('INVALID_TOOL_ARGS');
                 if(args.text.trim())await this.send(last,args.text);
                 result={sent:!!args.text.trim()};finished=true;
+              }else if(call.function.name==='recall_chat'){
+                const found=this.memory.read(last.group,args);
+                result={...found,events:found.events.filter(event=>event.role!=='assistant'||!hasToolMarkup(event.text))};
+              }else if(call.function.name==='read_tool_result'){
+                result=turnContext.read(args);
               }else if(call.function.name==='get_knowledge'){
                 if(Object.keys(args).length)throw new FishError('INVALID_TOOL_ARGS');result=knowledgeSnapshot(this.root);
               }else if(call.function.name==='update_knowledge'){
@@ -300,7 +304,7 @@ export class Bot {
               trace.push({replyContext:{image,previewImages:0}});
             }
             saveTrace();
-            messages.push({role:'tool',tool_call_id:call.id,content:JSON.stringify(result)});
+            messages.push(turnContext.result(call.function.name,call.id,result,round));
             roundMedia.push(...media);
           }
           if(finished)break;
@@ -310,7 +314,7 @@ export class Bot {
             messages[1]={role:'user',content:JSON.stringify({...background,...this.media!.context(last.group)})};
             trace.push({classificationStored:true,nativeResultsRetained:true});saveTrace();
           }
-          if(roundMedia.length)messages.push({role:'user',content:[{type:'text',text:'工具返回的原图，图片ID、来源或说说ID标在各图前'},...roundMedia]});
+          if(roundMedia.length)messages.push(turnContext.images({role:'user',content:[{type:'text',text:'工具返回的原图，图片ID、来源或说说ID标在各图前'},...roundMedia]},round));
           for(const id of viewedIds)visibleImages.add(id);
         }
       }catch(e){trace.push({error:codeOf(e)});throw e;}finally{saveTrace();}

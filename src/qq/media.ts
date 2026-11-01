@@ -130,8 +130,9 @@ export class QQMedia {
     }));
   }
   context(conversation:string){
-    const rows=this.store.db.prepare('SELECT id FROM qq_media WHERE conversation=? AND observed>=? ORDER BY observed DESC LIMIT 6').all(conversation,dayStart()-86400000) as {id:string}[];
-    return {recentImages:rows.map(r=>this.describe(conversation,r.id)),memes:this.find(conversation,'').slice(0,6)};
+    const rows=this.store.db.prepare('SELECT id,description FROM qq_media WHERE conversation=? AND observed>=? ORDER BY observed DESC LIMIT 3').all(conversation,dayStart()-86400000) as {id:string;description:string}[];
+    const count=this.store.db.prepare('SELECT count(*) AS n FROM qq_media WHERE conversation=? AND meme=1').get(conversation) as {n:number};
+    return {recentImages:rows.map(r=>({id:r.id,description:r.description.slice(0,160)})),memes:{count:count.n,lookup:'find_memes'}};
   }
   find(conversation:string,query:string){return this.browse(conversation,query).memes;}
   browse(conversation:string,query:string,offset=0){
