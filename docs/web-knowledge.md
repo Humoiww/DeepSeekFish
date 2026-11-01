@@ -26,9 +26,21 @@ HTML 解析不执行网站脚本，也不代替登录浏览器。需要登录、
 
 ### B 站公开空间与 JSON
 
-`browse_page` 打开 `https://space.bilibili.com/UID/dynamic` 时读取公开动态接口。完整列表不可用时尝试公开图文列表，并带回 `coverage:image_text_posts_only`、原接口错误、动态 ID、正文、配图/视频封面类型与下一页 URL。图文列表不涵盖全部视频和转发，不能据此断言账号整体最新动态。接口不提供发布时间时保留 null；置顶与发布时间分别返回。无需账号或 Cookie，不绕过验证码。
+`browse_page` 打开 `https://space.bilibili.com/UID/dynamic` 时优先读取公开 desktop 动态接口，兼容其模块数组结构；然后尝试普通 web 动态接口与公开图文列表。最后一种会标明 `coverage:image_text_posts_only`；图文列表不涵盖全部视频和转发，不能据此断言账号整体最新动态。无需账号或 Cookie，不处理验证码。
 
-本 VPS 于 2026-11-01 实测：普通空间页返回验证码，完整动态接口 HTTP 412；公开图文接口可以读取近期条目及后续分页，已通过实际 `browse_page` 验证。完整动态列表仍受上游限制，未宣称打通登录浏览器或所有网站。普通 JSON 正文也会保留，修复以前只抽图片而丢掉非图片数据的问题。
+回执提供动态 ID、作者与认证信息、正文、发布时间、配图/视频封面类型、置顶标记与下一页 URL，转发原文单独置于 original。`latestOnPage` 按当前返回列表的发布时间选择非置顶条目，不把首张置顶旧视频当作最新动态。接口不提供发布时间时保留 null。头像不放入动态配图；视频只确认标题、简介和封面，不冒充看过正片。
+
+`t.bilibili.com/` 是登录账号的关注流首页，不是某个 UP 的空间。打开这个入口会返回 `target_account_required` 与正确 URL 格式，让模型自行搜索目标 UID 后再读。没有写死任何游戏或账号，也没有按聊天关键词强制调用工具。
+
+本 VPS 于 2026-11-01 实测：普通空间页验证码、普通 web 动态接口 HTTP 412；补浏览器请求头、游客标识、WBI 参数仍被拒绝。但 `desktop/v1/feed/space` 使用项目原有无 Cookie 网络层，成功返回两个官方账号的动态、置顶视频、正文与原生时间戳。不是无限制访问所有账号的保证，未来风控仍会返回实际失败。普通 JSON 正文也会保留，修复以前只抽图片而丢掉非图片数据的问题。
+
+可复现检查（只读公开数据，不调用付费模型或发送 QQ）：
+
+```bash
+runtime/tools/node/bin/node scripts/check-bilibili-public.mjs 目标数字UID
+```
+
+参考的社区 skill/方法：[B 站 API skill](https://github.com/Nek0Neko/claude-skill-bilibili-api)、[browser-harness 的 B 站导航说明](https://github.com/browser-use/browser-harness/blob/main/agent-workspace/domain-skills/bilibili/navigation.md)、[BiliStalkerMCP](https://github.com/222wcnm/BiliStalkerMCP)。Skill 提供调用知识；MCP 的动态能力仍依赖底层 B 站接口和必要登录态，安装名称本身不会消除 412。本次复用现有 TypeScript 工具实现可用公开读取，不额外安装 Python/MCP 框架。
 
 ## 5000-token 知识库
 
