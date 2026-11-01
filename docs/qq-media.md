@@ -30,3 +30,5 @@ recentImages、find_memes 和 list_images(source=received) 的 media- ID 可以�
 解码使用项目依赖 sharp 0.35.5，单工作线程、有限缓存和解码超时；拒绝 SVG 等非位图输入。服务仅新增 root 所有的 node_modules/@img 原生库加载路径，继续禁止执行 runtime 中的文件，保持 Codex、SSH 与登录目录隔离。新安装沿用 scripts/install.sh；依赖及 ARM64 原生库随现有部署包一起迁移，没有安装测试框架。
 
 实现依据：[NapCat 图片消息段](https://napneko.github.io/onebot/segment#_1-图片消息-image)、[sharp 分页/动画输入](https://sharp.pixelplumbing.com/api-constructor/)、[动画元数据](https://sharp.pixelplumbing.com/api-input/)。
+
+网页下载和收藏支持数组批量：download_image.urls 与 collect_meme.images。单张参数保留，批内逐张返回成败，已成功的图片不会因另一张失败而丢失；看过后才记录表情描述，再由模型选择 send_meme.ids 发送。工具协议诊断和目录发现见 [自主联网与知识库](web-knowledge.md)。

@@ -66,11 +66,13 @@ export class QQMedia {
     return id;
   }
   async fromWeb(conversation:string,bytes:Buffer,url:string){
+    const expected='media-'+createHash('sha256').update(conversation+'\0').update(bytes).digest('hex').slice(0,32);
+    const alreadyInLibrary=!!this.store.db.prepare('SELECT id FROM qq_media WHERE id=? AND conversation=?').get(expected,conversation);
     const id=await this.keepOriginal(conversation,'DeepSeekFish',bytes,Date.now());
     this.store.transaction(()=>{
       const meta=JSON.parse(this.row(conversation,id).meta);meta.web={url,downloadedAt:Date.now()};
       this.store.db.prepare('UPDATE qq_media SET meta=? WHERE id=? AND conversation=?').run(JSON.stringify(meta),id,conversation);
-    });return this.describe(conversation,id);
+    });return {...this.describe(conversation,id),alreadyInLibrary};
   }
   async collect(conversation:string,imageId:string,bytes:Buffer,description:unknown,tags:unknown){
     // The caller obtains bytes by resolving an opaque, conversation-scoped catalog ID.
@@ -146,9 +148,10 @@ export class QQMedia {
   }
   sent(conversation:string,id:string){this.store.db.prepare('UPDATE qq_media SET last_sent=? WHERE id=? AND conversation=?').run(Date.now(),id,conversation);}
 }
+const memeProperties={imageId:{type:'string'},description:{type:'string',maxLength:300},tags:{type:'array',maxItems:6,items:{type:'string',maxLength:30}}};
 export function mediaTools(ids:string[]):ModelTool[]{return [
   ...(ids.length?[{type:'function' as const,function:{name:'remember_images',description:'将本次图片的可见内容、文字、动图变化记入后台；识别为表情包则收藏。聊天可以自行接梗。',parameters:{type:'object',properties:{images:{type:'array',minItems:ids.length,maxItems:ids.length,items:{type:'object',properties:{id:{type:'string',enum:ids},description:{type:'string',maxLength:300},meme:{type:'boolean',description:'表达情绪、反应或梗的表情图；普通照片和截图不自动算表情包'},tags:{type:'array',maxItems:6,items:{type:'string',maxLength:30},description:'情绪、含义及适合的聊天场景'}},required:['id','description','meme','tags'],additionalProperties:false}}},required:['images'],additionalProperties:false}}}]:[]),
-  {type:'function',function:{name:'collect_meme',description:'从图库收藏表情，包括自己生成的图。imageId 来自图库或生图结果；本轮没看过原图时先返回图片，看图后再调用保存描述/标签，已有收藏则更新。',parameters:{type:'object',properties:{imageId:{type:'string'},description:{type:'string',maxLength:300},tags:{type:'array',maxItems:6,items:{type:'string',maxLength:30}}},required:['imageId','description','tags'],additionalProperties:false}}},
+  {type:'function',function:{name:'collect_meme',description:'看图后收藏表情，包括网页下载和自己生成的图。imageId/description/tags存一张，images批量存多张；失败逐张返回。没看过会先返回预览。',parameters:{type:'object',properties:{...memeProperties,images:{type:'array',minItems:1,maxItems:12,items:{type:'object',properties:memeProperties,required:['imageId','description','tags'],additionalProperties:false}}},additionalProperties:false}}},
   {type:'function',function:{name:'find_memes',description:'按含义或情绪找已收藏的表情包；空查询浏览，nextOffset 可继续下一页。',parameters:{type:'object',properties:{query:{type:'string',maxLength:100},offset:{type:'integer',minimum:0,maximum:10000}},required:['query'],additionalProperties:false}}},
   {type:'function',function:{name:'send_meme',description:'发送收藏表情；id 发一张，ids 发多张。也可以只发图，动图发送原动画，同一轮重复ID返回已有送达状态。',parameters:{type:'object',properties:{id:{type:'string'},ids:{type:'array',minItems:1,maxItems:12,items:{type:'string'}}},additionalProperties:false}}}
 ];}

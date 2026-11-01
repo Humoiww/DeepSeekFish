@@ -5,8 +5,8 @@ import { conversationAllowed,type Config } from '../config.js';
 import { Store, redact } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
 import { SocialGate } from '../social/gate.js';
-import { BudgetedModel } from './model.js';
-import { FishError, codeOf, type Message, type Transport,type ChatMessage,type ChatPart } from '../types.js';
+import { BudgetedModel,ModelResponseError } from './model.js';
+import { FishError, codeOf, type Message, type Transport,type ChatMessage,type ChatPart,type ModelResult } from '../types.js';
 import { Tasks, type Task } from '../codex/tasks.js';
 import type { SearchService } from '../search/provider.js';
 import { knowledgeTools,knowledgeSnapshot,updateKnowledge } from '../memory/knowledge.js';
@@ -108,13 +108,22 @@ export class Bot {
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeSent=false;
       let imageOutcome:Record<string,unknown>|undefined;const memeResults=new Map<string,Record<string,unknown>>();
       const visibleImages=new Set(mediaIds);
-      const maxRounds=8,maxCalls=8;let repaired=false;
+      const maxRounds=16,maxCalls=64;let repaired=false,protocolRepairs=0;
       const tracePath='runtime/logs/qq/'+randomUUID()+'.json';makeDir(this.root,'runtime/logs/qq');
       const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,toolPolicy:'model-choice',imageRequested,received:incoming,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
       saveTrace();
       try{
         for(let round=0;round<maxRounds;round++){
-          let completion=await this.model.complete(last.group,last.user,messages,{tools,requireTool:true,final:round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});
+          let completion:ModelResult;
+          try{completion=await this.model.complete(last.group,last.user,messages,{tools,requireTool:true,final:round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});}
+          catch(e){
+            if(e instanceof ModelResponseError){
+              trace.push({round,error:e.code,providerResponse:e.diagnostic,usage:e.usage});saveTrace();
+              if(protocolRepairs++<2&&round<maxRounds-1){
+                messages.push({role:'system',content:e.code==='DEEPSEEK_TOOL_OUTPUT_TRUNCATED'?'上一次工具参数被输出长度截断，这批动作尚未执行。请拆成较小批次，输出完整JSON后继续。':'上一次工具返回格式无效，这批动作尚未执行。请按工具参数格式重新调用。'});continue;
+              }
+            }throw e;
+          }
           trace.push({round,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
           if(hasToolMarkup(completion.text)){
             if(!completion.tool_calls?.length){
@@ -151,14 +160,20 @@ export class Bot {
                 result=updateKnowledge(this.root,args);messages[0]={role:'system',content:qqPrompt(this.root)};
               }else if(call.function.name==='browse_page'){
                 if(!this.cfg().search)throw new FishError('SEARCH_DISABLED');
-                if(typeof args.url!=='string'||Object.keys(args).some(k=>!['url','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
-                result=await browsePage(args.url,args.offset,this.controller.signal);
+                if(typeof args.url!=='string'||Object.keys(args).some(k=>!['url','offset','query','textOffset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
+                result=await browsePage(args.url,args.offset,this.controller.signal,undefined,args.query,args.textOffset);
               }else if(call.function.name==='download_image'){
                 if(!this.cfg().search)throw new FishError('SEARCH_DISABLED');
-                if(!this.media||typeof args.url!=='string'||Object.keys(args).some(k=>k!=='url'))throw new FishError('INVALID_TOOL_ARGS');
-                const downloaded=await downloadWebImage(args.url,this.controller.signal);
-                const saved=await this.media.fromWeb(last.group,downloaded.bytes,downloaded.url);
-                result={saved:true,image:saved};media=this.media.parts(last.group,[{messageId:last.id,position:0,id:saved.id}]);viewedIds.push(saved.id);
+                if(!this.media||Object.keys(args).some(k=>!['url','urls'].includes(k))||args.url!==undefined&&args.urls!==undefined)throw new FishError('INVALID_TOOL_ARGS');
+                const urls=args.urls??[args.url];if(!Array.isArray(urls)||!urls.length||urls.length>12||urls.some(url=>typeof url!=='string'))throw new FishError('INVALID_TOOL_ARGS');
+                const downloads:Record<string,any>[]=[],items:{messageId:string;position:number;id:string}[]=[];
+                for(const url of [...new Set<string>(urls)]){
+                  try{
+                    const downloaded=await downloadWebImage(url,this.controller.signal),saved=await this.media.fromWeb(last.group,downloaded.bytes,downloaded.url);
+                    downloads.push({saved:true,image:saved});items.push({messageId:last.id,position:items.length,id:saved.id});viewedIds.push(saved.id);
+                  }catch(e){downloads.push({url,error:codeOf(e)});}
+                }
+                result=args.urls?{images:downloads}:downloads[0];media=this.media.parts(last.group,items);
               }else if(call.function.name==='search_web'){
                 if(typeof args.query!=='string'||Object.keys(args).some(k=>k!=='query'))throw new FishError('INVALID_TOOL_ARGS');
                 result={source:'DeepSeek Search',results:await this.search.search(args.query,last.group,last.user)};
@@ -173,13 +188,21 @@ export class Bot {
                   this.memory.record({id:'media:'+owner.id+':'+item.id,conversation:last.group,actor:owner.user,role:'user',text:JSON.stringify({imageId:item.id,description:item.description,animated:item.animated,meme:item.meme,tags:item.tags}),at:owner.at,source:'qq-image-observation'});
                 }
               }else if(call.function.name==='collect_meme'){
-                if(!this.media||!this.imageClient||typeof args.imageId!=='string'||Object.keys(args).some(k=>!['imageId','description','tags'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
-                const selected=await this.imageClient.view(last,[args.imageId],this.controller.signal);
-                const source=selected.images?.[0];if(source?.id!==args.imageId||typeof source.data!=='string')throw new FishError('IMAGE_REFERENCE_NOT_AVAILABLE');
-                if(!visibleImages.has(args.imageId)){
-                  result={saved:false,phase:'preview',imageId:args.imageId,next:'原图已返回；看图后调用 collect_meme 保存描述和标签。'};
-                  media=[{type:'text',text:JSON.stringify({imageId:source.id,source:source.label})},{type:'image_url',image_url:{url:'data:'+source.mime+';base64,'+source.data,detail:'high'}}];viewedIds.push(source.id);
-                }else result={saved:true,meme:await this.media.collect(last.group,args.imageId,Buffer.from(source.data,'base64'),args.description,args.tags)};
+                if(!this.media||!this.imageClient||Object.keys(args).some(k=>!['imageId','description','tags','images'].includes(k))||args.images!==undefined&&Object.keys(args).some(k=>k!=='images'))throw new FishError('INVALID_TOOL_ARGS');
+                const items=args.images??[args];if(!Array.isArray(items)||!items.length||items.length>12)throw new FishError('INVALID_TOOL_ARGS');
+                const outcomes:Record<string,unknown>[]=[];
+                for(const item of items){
+                  try{
+                    if(!item||typeof item.imageId!=='string'||Object.keys(item).some(k=>!['imageId','description','tags'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
+                    const selected=await this.imageClient.view(last,[item.imageId],this.controller.signal),source=selected.images?.[0];
+                    if(source?.id!==item.imageId||typeof source.data!=='string')throw new FishError('IMAGE_REFERENCE_NOT_AVAILABLE');
+                    if(!visibleImages.has(item.imageId)){
+                      outcomes.push({saved:false,phase:'preview',imageId:item.imageId,next:'看图后再收藏。'});
+                      media.push({type:'text',text:JSON.stringify({imageId:source.id,source:source.label})},{type:'image_url',image_url:{url:'data:'+source.mime+';base64,'+source.data,detail:'high'}});viewedIds.push(source.id);
+                    }else outcomes.push({saved:true,meme:await this.media.collect(last.group,item.imageId,Buffer.from(source.data,'base64'),item.description,item.tags)});
+                  }catch(e){outcomes.push({imageId:item?.imageId,error:codeOf(e)});}
+                }
+                result=args.images?{images:outcomes}:outcomes[0];
               }else if(call.function.name==='find_memes'){
                 if(!this.media||Object.keys(args).some(k=>!['query','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
                 result=this.media.browse(last.group,args.query,args.offset??0);

@@ -13,9 +13,9 @@ Search / Fetch 上游价格为 $0.75 / 1000 次成功请求。本项目以该模
 ## 图片工具
 
 - `search_web` 找公开网页，`fetch_page` 读正文。
-- `browse_page(url, offset?)` 解析网页正文、分页链接和图片候选地址，包括 lazy-src、srcset、网页预览图和视频封面。后两者明确标出类型。
-- `download_image(url)` 下载原文件并立即给模型看图片/有序动图样本；GitHub blob 图片链接自动解析为 raw。返回当前会话图库 ID。
-- 模型可用 `collect_meme` 保存表情描述、标签，再由 `find_memes` / `send_meme` 检索发送；也可把下载图 ID 放进 `generate_image.referenceIds`。普通图片下载无需先归类为表情包。
+- `browse_page(url, offset?, query?, textOffset?)` 优先返回正文中的图片与链接；可读公开 JSON 图库目录，query 筛图名、offset 翻目录、textOffset 续读正文。也发现静态脚本中的公开数据入口，不执行网页代码。预览图和视频封面明确标出类型。
+- `download_image(url)` 下载一张，`download_image({urls:[...]})` 一批下载最多 12 张，每张独立返回成败并给模型看图/动图样本；GitHub blob/raw 候选统一为原文件 URL 去重。返回当前会话图库 ID。
+- 模型可用 `collect_meme` 保存表情描述、标签；其 images 数组支持批量收藏，再由 `find_memes` / `send_meme` 检索发送；也可把下载图 ID 放进 `generate_image.referenceIds`。普通图片下载无需先归类为表情包。
 - `list_images(source="web")` 浏览已下载的网页图。显式下载的原图跨天保留，原始 GIF/WebP 不被静图覆盖。图库、收藏和 GPT 参考沿用同一会话边界。
 
 HTML 解析不执行网站脚本，也不代替登录浏览器。需要登录、验证码、仅客户端渲染或禁止下载的网站仍可能无法读取，工具返回实际失败；模型可继续尝试别的公开来源。下载使用现有图片解码和存储范围，不开放 shell、任意宿主文件或内网访问。
@@ -37,3 +37,13 @@ HTML 解析不执行网站脚本，也不代替登录浏览器。需要登录、
 2026-11-01（香港时间）：真实 DeepSeek 在未指定工具名称的自然请求下，自选 `browse_page → download_image → update_knowledge`，下载并看到了仓库角色原图，测试知识库写入 259 tokens。验证资料放在私有隔离目录，未发送 QQ 消息，未调用生图。后续回复检查未播报知识库维护。实际 Fetch 成功读取正文后，webTokens 和总 tokens 都增加 2500，没有第二余额。
 
 本次定向检查覆盖静图/动图原文件、图片来源/会话参考、5000 接受与 5001 整次回滚、并发版本冲突、重开持久化、QQ 后台工具回执、完整提示词入口和价格结算。完整提示词经手机永久 Tailscale 网关返回 HTTP 200。Native QQ、SSH、Tailscale 进程保持不变。
+
+## 批量流程修复（2026-11-01）
+
+旧协议适配器把超过 4 个合法工具调用也归入 INVALID_TOOL_CALL，QQ 整轮 8 个调用也无法支持逐张抓取/收藏 10 张。现在协议层按字段与 JSON 完整性验证，不再将批量数量当成格式错误；QQ 仍保留成本与防循环边界（16 次模型请求、64 个工具调用），正常批量优先使用数组参数，逐张调用也兼容。
+
+输出被 max_tokens 截断时，这批不完整动作不执行，后台提示模型拆小批次续做，最多修复两次。已知 usage 按实际结算；finish_reason、具体字段错误、工具数量及提供商返回写入原有私有 QQ trace 和 meta.model:last-invalid，不再丢掉诊断只留笼统错误码。
+
+网页解析将正文图片与目录链接排在站点导航前，支持 Markdown 相对图片、公开 JSON 图库的原图字段和分页/名称筛选。不内置特定图库域名，也不根据聊天关键词决定调用什么工具。
+
+真实公开图验证中，模型读取图库后下载了 10 个不同原文件；首轮自行收藏/发送 9 张，后续补齐 10 张不同图片。图片发送接入隔离接收端，未向 QQ 发送测试消息；不是 QQ 十张真实送达的声明。HTTP/图片解码/DeepSeek 均为真实调用，工具参数与动作由模型选择；生产聊天未重放。下载回执也显示 alreadyInLibrary，便于模型区分新文件与重复下载。

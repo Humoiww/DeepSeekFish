@@ -1,7 +1,8 @@
 import type { ChatMessage, Model, ModelResult,CompletionOptions } from '../types.js';
-import { FishError } from '../types.js';
+import { FishError,type Usage } from '../types.js';
 import { Ledger,conversationTokenLimit } from '../budget/ledger.js';
 import type { Config } from '../config.js';
+import { redact } from '../storage/db.js';
 import { recordPrompt } from '../prompt-record.js';
 export const modelPayload=(cfg:Config,messages:ChatMessage[],maxTokens:number,options:CompletionOptions={})=>({model:cfg.model,messages,max_tokens:maxTokens,stream:false,thinking:{type:'disabled'},
   ...(options.tools?.length?{tools:options.tools,tool_choice:options.final?'none':options.toolChoice?{type:'function',function:{name:options.toolChoice}}:options.requireTool?'required':'auto'}:{})});
@@ -30,6 +31,9 @@ export async function boundedJson(response: Response, limit=1048576): Promise<an
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } finally { await reader.cancel().catch(()=>{}); }
 }
+export class ModelResponseError extends FishError {
+  constructor(code:string,public usage:Usage|undefined,public diagnostic:Record<string,unknown>){super(code);}
+}
 export class DeepSeekModel implements Model {
   readonly kind='deepseek';
   constructor(private key: string, private cfg: ()=>Config, private http: typeof fetch=fetch) {}
@@ -45,7 +49,16 @@ export class DeepSeekModel implements Model {
     const message=data.choices?.[0]?.message,text=message?.content??'',calls=message?.tool_calls;
     const input=data.usage?.prompt_tokens,output=data.usage?.completion_tokens;
     if(typeof text!=='string' || !Number.isSafeInteger(input) || input<0 || !Number.isSafeInteger(output) || output<0) throw new FishError('DEEPSEEK_INVALID_RESPONSE');
-    if(calls!==undefined&&(!Array.isArray(calls)||calls.length>4||calls.some(c=>typeof c?.id!=='string'||c.id.length>200||c.type!=='function'||typeof c.function?.name!=='string'||typeof c.function.arguments!=='string'||c.function.arguments.length>12000)))throw new FishError('DEEPSEEK_INVALID_TOOL_CALL');
+    if(calls!==undefined){
+      const issues:string[]=[];
+      if(!Array.isArray(calls))issues.push('tool_calls is not an array');
+      else for(const [i,c] of calls.entries()){
+        if(typeof c?.id!=='string'||!c.id||c.id.length>200||c.type!=='function'||typeof c.function?.name!=='string'||typeof c.function?.arguments!=='string'||c.function.arguments.length>131072)issues.push('call '+i+': invalid fields');
+        else {try{JSON.parse(c.function.arguments);}catch{issues.push('call '+i+': incomplete or invalid argument JSON');}}
+      }
+      if(issues.length)throw new ModelResponseError(data.choices?.[0]?.finish_reason==='length'?'DEEPSEEK_TOOL_OUTPUT_TRUNCATED':'DEEPSEEK_INVALID_TOOL_CALL',{input,output},
+        {responseId:data.id,finishReason:data.choices?.[0]?.finish_reason,toolCount:Array.isArray(calls)?calls.length:null,issues,response:{content:text,tool_calls:calls}});
+    }
     return {text,usage:{input,output},...(calls?.length?{tool_calls:calls}:{}),...(typeof data.choices[0].finish_reason==='string'?{finishReason:data.choices[0].finish_reason}:{})};
   }
 }
@@ -81,6 +94,6 @@ export class BudgetedModel {
       throw e;
     }
     try { recordPrompt(this.ledger.store,user==='daily-qzone'?'daily':'qq',modelPayload(this.cfg(),messages,max,options));const r=await this.provider.complete(messages,max,options);this.ledger.settle(id,r.usage);this.ledger.store.setMeta('modelStatus','last call succeeded');return r; }
-    catch(e) { this.ledger.settle(id);this.ledger.error();this.ledger.store.setMeta('modelStatus','last call failed');throw e; }
+    catch(e) { this.ledger.settle(id,e instanceof ModelResponseError?e.usage:undefined);if(e instanceof ModelResponseError){this.ledger.store.setMeta('model:last-invalid',redact(JSON.stringify({at:Date.now(),code:e.code,...e.diagnostic})));this.ledger.store.audit('model-invalid',group,JSON.stringify({code:e.code,issues:e.diagnostic.issues,finishReason:e.diagnostic.finishReason}));}this.ledger.error();this.ledger.store.setMeta('modelStatus','last call failed');throw e; }
   }
 }

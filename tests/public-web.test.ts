@@ -33,10 +33,10 @@ test('downloaded animations are visible, durable catalog references and collecta
   const f=fixture(),media=new QQMedia(f.root,f.store);f.store.db.exec('CREATE TABLE qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT)');
   const bytes=await sharp(Buffer.concat([Buffer.alloc(16*16*3,0),Buffer.alloc(16*16*3,255)]),{raw:{width:16,height:32,channels:3,pageHeight:16}}).gif({delay:[100,200]}).toBuffer();
   try{
-    const saved=await media.fromWeb('g',bytes,'https://example.com/meme.gif');assert.equal(saved.animated,true);assert.equal(saved.meme,false);
+    const saved=await media.fromWeb('g',bytes,'https://example.com/meme.gif');assert.equal(saved.animated,true);assert.equal(saved.meme,false);assert.equal(saved.alreadyInLibrary,false);assert.equal((await media.fromWeb('g',bytes,'https://example.com/alias.gif')).alreadyInLibrary,true);
     assert.equal(media.parts('g',[{id:saved.id,messageId:'web',position:0}]).filter(p=>p.type==='image_url').length,2);
     const library=new QQImageLibrary(f.root,f.store);f.store.db.prepare('UPDATE qq_media SET observed=0').run();
-    assert.equal(library.list('g','u','web').images[0].sourceUrl,'https://example.com/meme.gif');assert.deepEqual(Buffer.from(library.view('g','u',[saved.id]).images[0].data,'base64'),bytes);
+    assert.equal(library.list('g','u','web').images[0].sourceUrl,'https://example.com/alias.gif');assert.deepEqual(Buffer.from(library.view('g','u',[saved.id]).images[0].data,'base64'),bytes);
     await media.collect('g',saved.id,bytes,'眨眼的鲸鱼',['得意']);assert.deepEqual(media.original('g',saved.id),bytes);assert.equal(media.find('g','得意').length,1);
     assert.throws(()=>library.select('g2','u',[saved.id]),/NOT_AVAILABLE/);await assert.rejects(media.fromWeb('g',Buffer.from('<html>no image</html>'),'https://example.com/fake.png'));
   }finally{f.cleanup();}
