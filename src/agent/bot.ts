@@ -118,9 +118,14 @@ export class Bot {
       try{
         for(let round=0;round<maxRounds;round++){
           const compacted=turnContext.compact(round);
-          trace.push({round,contextInput:{...contextMetrics(messages,tools),...compacted}});
+          const closing=round===maxRounds-1||calls>=maxCalls;
+          // At the existing round limit, finish through the same native reply
+          // protocol. tool_choice=none made the model print DSML as plain text.
+          const offered=closing?[{type:'function' as const,function:{name:'reply',description:'根据本轮已取得的内容回复并结束。',parameters:{type:'object',properties:{text:{type:'string'}},required:['text'],additionalProperties:false}}}]:tools;
+          const options={tools:offered,requireTool:true,...(closing?{toolChoice:'reply'}:{}),signal:this.controller.signal};
+          trace.push({round,...(closing?{closing:true}:{}),contextInput:{...contextMetrics(messages,offered),...compacted}});
           let completion:ModelResult;
-          try{completion=await this.model.complete(last.group,last.user,messages,{tools,requireTool:true,final:round===maxRounds-1||calls>=maxCalls,signal:this.controller.signal});}
+          try{completion=await this.model.complete(last.group,last.user,messages,options);}
           catch(e){
             if(e instanceof ModelResponseError){
               trace.push({round,error:e.code,providerResponse:e.diagnostic,usage:e.usage});saveTrace();
@@ -132,12 +137,12 @@ export class Bot {
           trace.push({round,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
           if(hasToolMarkup(completion.text)){
             if(!completion.tool_calls?.length){
-              const tool=tools.find(t=>completion.text.includes(t.function.name));
-              if(repaired||!tool||round===maxRounds-1||calls>=maxCalls)throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');
+              const tool=closing?offered[0]:tools.find(t=>completion.text.includes(t.function.name));
+              if(repaired||!tool)throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');
               repaired=true;trace.push({protocolRepair:{tool:tool.function.name}});
               // Re-request native JSON using an already allowed tool. Never
               // parse or execute the model's textual protocol as a command.
-              completion=await this.model.complete(last.group,last.user,messages,{tools,toolChoice:tool.function.name,signal:this.controller.signal});
+              completion=await this.model.complete(last.group,last.user,messages,{tools:offered,toolChoice:tool.function.name,signal:this.controller.signal});
               trace.push({round,repair:true,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
               if(!completion.tool_calls?.some(call=>call.function.name===tool.function.name))throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');
             }
@@ -145,18 +150,18 @@ export class Bot {
           }
           saveTrace();
           if(!completion.tool_calls?.length){if(!completion.text.trim()){if(memeSent)break;throw new FishError('DEEPSEEK_EMPTY_RESPONSE');}await this.send(last,completion.text);break;}
-          if(round===maxRounds-1||calls+completion.tool_calls.length>maxCalls)throw new FishError('QQ_TOOL_LIMIT');
+          if(closing?completion.tool_calls.length!==1||completion.tool_calls[0].function.name!=='reply':calls+completion.tool_calls.length>maxCalls)throw new FishError('QQ_TOOL_LIMIT');
           messages.push({role:'assistant',content:completion.text,tool_calls:completion.tool_calls});
           let said=false;const roundMedia:ChatPart[]=[];const viewedIds:string[]=[];let classified=false;let finished=false;
           for(const call of completion.tool_calls){
             if(used.has(call.id))throw new FishError('DUPLICATE_TOOL_CALL');used.add(call.id);calls++;
             let result:unknown,media:ReturnType<PersonMemory['images']>=[];let imageAttempt=false;
             try{
-              if(!tools.some(t=>t.function.name===call.function.name))throw new FishError('TOOL_NOT_ALLOWED');
+              if(!offered.some(t=>t.function.name===call.function.name))throw new FishError('TOOL_NOT_ALLOWED');
               const args=JSON.parse(call.function.arguments);
               if(!args||typeof args!=='object'||Array.isArray(args))throw new FishError('INVALID_TOOL_ARGS');
               if(call.function.name==='reply'){
-                if(typeof args.text!=='string'||Object.keys(args).some(k=>!['text','memory'].includes(k))||completion.tool_calls.length!==1)throw new FishError('INVALID_TOOL_ARGS');
+                if(typeof args.text!=='string'||Object.keys(args).some(k=>!(closing?['text']:['text','memory']).includes(k))||completion.tool_calls.length!==1)throw new FishError('INVALID_TOOL_ARGS');
                 const memory=args.memory===undefined?undefined:updateKnowledge(this.root,args.memory);
                 if(memory)messages[0]={role:'system',content:qqPrompt(this.root)};
                 // An overlong/stale edit returns privately to the model before

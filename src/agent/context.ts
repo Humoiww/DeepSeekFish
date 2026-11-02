@@ -15,29 +15,80 @@ export function recentDialogue(history:Message[],batch:Message[]):Message[]{
   return [...selected,...batch];
 }
 
-export const contextTools:ModelTool[]=[{type:'function',function:{name:'read_tool_result',description:'按 resultId 续读本轮已收起的工具原文，offset 翻页；不重新请求网站或执行动作。',parameters:{type:'object',properties:{resultId:{type:'string'},offset:{type:'integer',minimum:0}},required:['resultId'],additionalProperties:false}}}];
+export const contextTools:ModelTool[]=[{type:'function',function:{name:'read_tool_result',description:'取回本轮工具资料；网页默认只读正文。section可选text/images/links/posts/raw，offset按回执续读；数组按条、文字按字符。不重新联网。',parameters:{type:'object',properties:{resultId:{type:'string'},section:{type:'string',enum:['text','images','links','posts','raw']},offset:{type:'integer',minimum:0}},required:['resultId'],additionalProperties:false}}}];
 const RECEIPTS=new Set(['generate_image','send_meme','collect_meme','remember_images','reply']);
+const WEB_TEXT_TOKENS=4000;
+type Result={message:ChatMessage;name:string;raw:string;data:any;round:number;body?:string};
+// These pages put the actual body in text/content. Bilibili and similar
+// structured feeds put their bodies inside posts and keep their original view.
+function webBody(name:string,data:any):string|undefined{
+  if(!['browse_page','fetch_page'].includes(name)||!data||typeof data!=='object')return;
+  if(Array.isArray(data.posts)&&data.posts.some((p:any)=>typeof p?.content==='string'||typeof p?.text==='string'))return;
+  const text=data.text??data.content;return typeof text==='string'?text:undefined;
+}
+function clipTokens(text:string,limit:number){
+  if(limit<=0)return '';if(knowledgeTokens(text)<=limit)return text;
+  let low=0,high=text.length;
+  while(low<high){const mid=Math.ceil((low+high)/2);if(knowledgeTokens(text.slice(0,mid))<=limit)low=mid;else high=mid-1;}
+  return text.slice(0,low).replace(/[\uD800-\uDBFF]$/,'');
+}
+function webView(id:string,r:Result,body:string,older=false){
+  const d=r.data,out:Record<string,unknown>={resultId:id};
+  for(const key of ['url','source','sourceUrl','title','status','coverage','forum','thread','page','totalPages','totalReported','returned','fetchedAt','latestVerified','notice','unavailable','nextPage','textOffset','nextTextOffset','offset','nextOffset','totalCharacters','truncated','totalImages','totalLinks'])if(d[key]!==undefined)out[key]=d[key];
+  out[typeof d.text==='string'?'text':'content']=body;
+  if(body.length<r.body!.length)out.retainedText={characters:body.length,totalCharacters:r.body!.length,readWith:'read_tool_result',section:'text',offset:body.length};
+  // Do not pay for all signed image URLs and repeated per-floor metadata on
+  // every model request. They remain addressable without refetching the page.
+  out.details=Object.fromEntries(['images','links','posts'].filter(k=>Array.isArray(d[k])).map(k=>[k,{count:d[k].length,section:k}]));
+  if(!older){
+    if(d.images?.length)out.images=d.images.slice(0,2);
+    if(d.links?.length)out.links=d.links.slice(0,6);
+  }
+  out.readWith='read_tool_result';return out;
+}
 /** The full results stay in the private trace. This turn's references never cross conversations. */
 export class TurnContext {
-  private results=new Map<string,{message:ChatMessage;name:string;raw:string;round:number}>();
+  private results=new Map<string,Result>();
   private media:{message:ChatMessage;round:number}[]=[];
   result(name:string,id:string,result:unknown,round:number):ChatMessage{
     const raw=JSON.stringify(result)??'null',message:ChatMessage={role:'tool',tool_call_id:id,content:raw};
-    this.results.set(id,{message,name,raw,round});return message;
+    const saved={message,name,raw,data:result,round,body:webBody(name,result)};
+    this.results.set(id,saved);
+    if(saved.body!==undefined)message.content=JSON.stringify(webView(id,saved,saved.body));
+    return message;
   }
   images(message:ChatMessage,round:number):ChatMessage{this.media.push({message,round});return message;}
   read(args:any){
-    if(!args||typeof args.resultId!=='string'||Object.keys(args).some(k=>!['resultId','offset'].includes(k))||!Number.isSafeInteger(args.offset??0)||(args.offset??0)<0)throw new FishError('INVALID_TOOL_ARGS');
+    if(!args||typeof args.resultId!=='string'||Object.keys(args).some(k=>!['resultId','offset','section'].includes(k))||!Number.isSafeInteger(args.offset??0)||(args.offset??0)<0||args.section!==undefined&&!['text','images','links','posts','raw'].includes(args.section))throw new FishError('INVALID_TOOL_ARGS');
     const result=this.results.get(args.resultId);if(!result)throw new FishError('TOOL_RESULT_NOT_FOUND');
-    const offset=args.offset??0,content=result.raw.slice(offset,offset+4000);
-    return {resultId:args.resultId,tool:result.name,content,offset,nextOffset:offset+content.length<result.raw.length?offset+content.length:null,totalCharacters:result.raw.length};
+    const section=args.section??(result.body!==undefined?'text':'raw'),offset=args.offset??0;
+    if(['images','links','posts'].includes(section)){
+      const all=result.data?.[section];if(!Array.isArray(all))throw new FishError('TOOL_RESULT_SECTION_NOT_FOUND');
+      const items=all.slice(offset,offset+10);
+      return {resultId:args.resultId,tool:result.name,section,items,offset,nextOffset:offset+items.length<all.length?offset+items.length:null,totalItems:all.length};
+    }
+    const all=section==='raw'?result.raw:result.body;if(all===undefined)throw new FishError('TOOL_RESULT_SECTION_NOT_FOUND');
+    const content=all.slice(offset,offset+4000);
+    return {resultId:args.resultId,tool:result.name,section,content,offset,nextOffset:offset+content.length<all.length?offset+content.length:null,totalCharacters:all.length};
   }
   compact(round:number){
-    let abridgedResults=0,retiredImages=0;
-    for(const [id,r] of this.results){
+    let abridgedResults=0,retiredImages=0,remaining=WEB_TEXT_TOKENS;
+    for(const [id,r] of [...this.results].reverse()){
+      if(r.body!==undefined){
+        // Preserve exact readable text across tool rounds instead of replacing
+        // it with the beginning of a JSON envelope (which often has no body).
+        const body=clipTokens(r.body,remaining);remaining-=knowledgeTokens(body);
+        r.message.content=JSON.stringify(webView(id,r,body,round-r.round>=2));abridgedResults++;continue;
+      }
       // Keep native call/result pairs and delivery receipts; older long reads
       // become explicitly labelled excerpts, not fabricated summaries.
       if(round-r.round<2||RECEIPTS.has(r.name)||r.raw.length<=1200)continue;
+      if(r.name==='read_tool_result'){
+        // Recovered slices are not new documents. Keep their original handle,
+        // not another 1000-character copy of an escaped JSON chunk.
+        const {resultId,tool,section,offset,nextOffset}=r.data;
+        r.message.content=JSON.stringify({resultId,tool,section,offset,nextOffset,previouslyRead:true,readWith:'read_tool_result'});abridgedResults++;continue;
+      }
       r.message.content=JSON.stringify({resultId:id,abridged:true,tool:r.name,preview:r.raw.slice(0,1000),totalCharacters:r.raw.length,readWith:'read_tool_result'});abridgedResults++;
     }
     for(const item of this.media){
