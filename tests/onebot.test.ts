@@ -84,14 +84,14 @@ test('image upload acknowledgement can arrive after the ordinary action deadline
     const r=JSON.parse(raw.toString()),reply=(data:unknown)=>socket.send(JSON.stringify({echo:r.echo,status:'ok',retcode:0,data}));
     if(r.action==='get_login_info')reply({user_id:10001});
     else if(r.action==='get_group_list')reply([]);
-    else {assert.equal(r.params.message[0].type,'image');assert.equal(r.params.timeout,60000);acknowledge=()=>reply({message_id:123});received();}
+    else {assert.equal(r.params.message[0].type,'image');assert.equal(r.params.timeout,240000);acknowledge=()=>reply({message_id:123});received();}
   }));
   const transport=new OneBotTransport(f.root,`ws://127.0.0.1:${server.address().port}`,'fixture-token',f.store,async()=>{},()=>true);
   try{
     await transport.inspect();t.mock.timers.enable({apis:['setTimeout']});
     const sent=transport.file({id:'1',group:'private:20002',user:'20002',text:'画张图',at:Date.now(),mentioned:true,event:'mention'},(out as {path:string}).path);
     let failed=false;void sent.catch(()=>{failed=true;});await uploading;
-    t.mock.timers.tick(65000);await Promise.resolve();assert.equal(failed,false);
+    t.mock.timers.tick(125000);await Promise.resolve();assert.equal(failed,false);
     acknowledge();await sent;
   }finally{t.mock.timers.reset();transport.stop();for(const client of server.clients)client.terminate();await new Promise<void>(resolve=>server.close(()=>resolve()));f.cleanup();}
 });
@@ -103,6 +103,7 @@ test('native send timeout stays unconfirmed, real rejection stays failed, and ra
   server.on('connection',(socket:any)=>socket.on('message',(raw:Buffer)=>{
     const r=JSON.parse(raw.toString());
     if(r.action==='get_login_info'||r.action==='get_group_list')socket.send(JSON.stringify({echo:r.echo,status:'ok',retcode:0,data:r.action==='get_login_info'?{user_id:10001}:[]}));
+    else if(r.action.endsWith('_msg_history'))socket.send(JSON.stringify({echo:r.echo,status:'ok',retcode:0,data:{messages:[]}}));
     else {
       sends++;
       const response=sends===1?{status:'failed',retcode:1200,wording:'Timeout: NTEvent serviceAndMethod:NodeIKernelMsgService/sendMsg ListenerName:NodeIKernelMsgListener/onMsgInfoListUpdate EventRet: secret-sentinel'}:
@@ -121,4 +122,26 @@ test('native send timeout stays unconfirmed, real rejection stays failed, and ra
     const audit=JSON.stringify(f.store.db.prepare('SELECT detail FROM audit').all());
     assert.match(audit,/native_timeout/);assert.match(audit,/action_rejected/);assert.ok(!audit.includes('secret-sentinel'));
   }finally{transport.stop();for(const client of server.clients)client.terminate();await new Promise<void>(resolve=>server.close(()=>resolve()));f.cleanup();}
+});
+
+test('a native image timeout can be reconciled to the matching successful QQ history message without resending',async()=>{
+ const {createHash}=await import('node:crypto');const fs=await import('node:fs');
+ const {WebSocketServer}=createRequire(import.meta.url)('ws'),server=new WebSocketServer({host:'127.0.0.1',port:0});await once(server,'listening');
+ const f=fixture(),output=await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');assert.equal(output.status,'ok');
+ const file=(output as {path:string}).path,digest=createHash('md5').update(fs.readFileSync(file)).digest('hex');let sends=0,reads=0;
+ server.on('connection',(socket:any)=>socket.on('message',(raw:Buffer)=>{
+  const r=JSON.parse(raw.toString()),reply=(data:unknown)=>socket.send(JSON.stringify({echo:r.echo,status:'ok',retcode:0,data}));
+  if(r.action==='get_login_info')reply({user_id:10001});
+  else if(r.action==='get_group_list')reply([]);
+  else if(r.action==='send_group_msg'){sends++;socket.send(JSON.stringify({echo:r.echo,status:'failed',retcode:1200,message:'Timeout: NTEvent NodeIKernelMsgService/sendMsg'}));}
+  else {
+   assert.equal(r.action,'get_group_msg_history');assert.equal(r.params.group_id,'123456');reads++;
+   const match={user_id:10001,group_id:123456,message_type:'group',message_id:777,real_seq:'99',time:Math.ceil(Date.now()/1000),message:[{type:'image',data:{file:digest.toUpperCase()+'.png'}}]};
+   reply({messages:[{...match,user_id:20002},{...match,group_id:99999},{...match,real_seq:'0'},{...match,time:1},...(reads===1?[match]:[])]});
+  }
+ }));
+ const transport=new OneBotTransport(f.root,`ws://127.0.0.1:${server.address().port}`,'fixture',f.store,async()=>{},()=>true);
+ const m={id:'1',group:'123456',user:'20002',text:'',at:Date.now(),mentioned:true,event:'mention' as const};
+ try{await transport.inspect();await transport.file(m,file);assert.equal(sends,1);assert.equal(reads,1);assert.equal(await transport.imageReceipt(m,digest,Date.now()),undefined);}
+ finally{transport.stop();for(const client of server.clients)client.terminate();await new Promise<void>(resolve=>server.close(()=>resolve()));f.cleanup();}
 });

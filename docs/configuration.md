@@ -12,7 +12,7 @@
 | quietHours | [0,7] | 北京时间；开始包含、结束不包含，相同表示关闭夜间限制 |
 | windowSize / historyHours | 20 / 24 | 每群消息上限与 TTL，二者取更早删除 |
 | bufferMs / maxChars | 1200 / 600 | 归并窗口 / 回复字符上限 |
-| dailyTokens / groupDailyTokens | 1000000 / 60000 | 全局 / 每群 DeepSeek token 上限；每日总额度最多可设为 10000000，QQ 私聊使用全局上限，不额外套用群上限 |
+| dailyTokens / groupDailyTokens | 1000000 / 0 | 全局 / 每群 DeepSeek token 上限；0 表示群聊共用全局额度，不另设群限额。WebUI 可修改两者，QQ 即时读取同一配置；各项最多 10000000，私聊及网页会话使用全局上限 |
 | userDailyRequests / maxOutputTokens | 1000 / 256 | 每用户模型调用次数 / 每回合最大输出 |
 | search | false | 自主联网开关；搜索费用折算到现有 token 额度，无独立次数上限 |
 | searchCount / searchTimeoutMs | 3 / 10000 | 结果数（最多 5）/ 超时 |

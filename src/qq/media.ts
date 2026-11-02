@@ -10,7 +10,7 @@ import { dayStart } from '../memory/journal.js';
 // additional native executable mappings just because they import the CLI.
 let decoder:Promise<(typeof import('sharp'))['default']>|undefined;
 function imageDecoder(){return decoder??=import('sharp').then(({default:sharp})=>{sharp.concurrency(1);sharp.cache({memory:16,files:0,items:20});return sharp;});}
-const MAX_BYTES=10485760,MAX_PIXELS=16777216;
+const MAX_BYTES=10485760,MAX_PIXELS=24000000;
 const options={limitInputPixels:MAX_PIXELS,failOn:'warning' as const};
 const CDN=new Set(['multimedia.nt.qq.com.cn','multimedia.nt.qq.com','gchat.qpic.cn','c2cpicdw.qpic.cn','gchat.qlogo.cn']);
 export function qqImageUrl(value:string):URL{

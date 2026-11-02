@@ -26,7 +26,7 @@ import { PROJECT_TIMEZONE } from '../time.js';
 import { dailyStatus } from '../qq/daily-qzone.js';
 import { newsStatus } from '../qq/daily-news.js';
 
-type Settings={model:string;maxOutputTokens:number;dailyTokens:number;search:boolean;codexQueue:boolean};
+type Settings={model:string;maxOutputTokens:number;dailyTokens:number;groupDailyTokens:number;search:boolean;codexQueue:boolean};
 type Session={id:string;title:string;created:number;updated:number};
 type Turn={id:string;sid:string;user:string;answer:string;trace:string;context:string;state:string;created:number};
 export type WebEvent={type:string;[key:string]:unknown};
@@ -48,7 +48,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     memory.record({id:t.id+':user',conversation:'web:'+t.sid,actor:'webui-local',role:'user',text:t.user,at:t.created,source:'existing-web-chat'});
     if(t.state==='completed')memory.record({id:t.id+':assistant',conversation:'web:'+t.sid,actor:'DeepSeekFish',role:'assistant',text:t.answer,at:t.created,source:'existing-web-chat'});
   }
-  let settings:Settings={model:'deepseek-flash',maxOutputTokens:1024,dailyTokens:loadConfig(root).dailyTokens,search:false,codexQueue:false,...JSON.parse(store.getMeta('web-settings')??'{}')};
+  let settings:Settings={model:'deepseek-flash',maxOutputTokens:1024,dailyTokens:loadConfig(root).dailyTokens,groupDailyTokens:loadConfig(root).groupDailyTokens,search:false,codexQueue:false,...JSON.parse(store.getMeta('web-settings')??'{}')};
   const codexImageOnly=process.env.FISH_CODEX_IMAGE_ONLY==='1';
   if(codexImageOnly)settings.codexQueue=false;
   let secret='';const secretPath=safePath(root,'runtime/data/webui-secrets.json');
@@ -57,7 +57,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   const sessions=():Session[]=>store.db.prepare('SELECT * FROM web_sessions ORDER BY updated DESC LIMIT 50').all() as unknown as Session[];
   const cfg=():Config=>{
     const {codexQueue,...common}=settings;
-    return validateConfig({...defaults,...loadConfig(root),...common,search:JSON.parse(budgetStore.getMeta('settings')??'{}').search??settings.search,codex:codexQueue,
+    return validateConfig({...defaults,...loadConfig(root),...common,...Object.fromEntries(Object.entries(JSON.parse(budgetStore.getMeta('settings')??'{}')).filter(([k])=>['search','dailyTokens','groupDailyTokens'].includes(k))),codex:codexQueue,
       groups:sessions().map(s=>'web:'+s.id),admins:['webui-local']});
   };
   const ledger=new Ledger(budgetStore,cfg),model=new WebModel(key,cfg,ledger,mock,http);
@@ -87,26 +87,26 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   }
   function configure(input:Record<string,unknown>){
     if(codexImageOnly&&input?.codexQueue===true)throw new FishError('CODEX_IMAGE_ONLY');
-    const allowed=['apiKey','model','maxOutputTokens','dailyTokens','search','codexQueue'];
+    const allowed=['apiKey','model','maxOutputTokens','dailyTokens','groupDailyTokens','search','codexQueue'];
     if(!input||typeof input!=='object'||Object.keys(input).some(k=>!allowed.includes(k)))throw new FishError('INVALID_WEB_SETTINGS');
-    const next={...settings};
-    for(const field of ['model','maxOutputTokens','dailyTokens','search','codexQueue'] as const)if(field in input)(next as any)[field]=input[field];
+    const next={...settings,dailyTokens:cfg().dailyTokens,groupDailyTokens:cfg().groupDailyTokens};
+    for(const field of ['model','maxOutputTokens','dailyTokens','groupDailyTokens','search','codexQueue'] as const)if(field in input)(next as any)[field]=input[field];
     if(typeof next.model!=='string'||!/^[a-zA-Z0-9._-]{1,80}$/.test(next.model)||!Number.isInteger(next.maxOutputTokens)||next.maxOutputTokens<128||next.maxOutputTokens>4096||
-      !Number.isInteger(next.dailyTokens)||next.dailyTokens<1000||next.dailyTokens>MAX_DAILY_TOKENS||typeof next.search!=='boolean'||typeof next.codexQueue!=='boolean')throw new FishError('INVALID_WEB_SETTINGS');
+      !Number.isInteger(next.dailyTokens)||next.dailyTokens<1000||next.dailyTokens>MAX_DAILY_TOKENS||!Number.isInteger(next.groupDailyTokens)||next.groupDailyTokens<0||next.groupDailyTokens>MAX_DAILY_TOKENS||typeof next.search!=='boolean'||typeof next.codexQueue!=='boolean')throw new FishError('INVALID_WEB_SETTINGS');
     if(input.apiKey!==undefined){
       if(typeof input.apiKey!=='string'||input.apiKey.length>256||input.apiKey&&!/^[a-zA-Z0-9_-]{8,256}$/.test(input.apiKey))throw new FishError('INVALID_API_KEY');
       if(input.apiKey){secret=input.apiKey;writePrivate(root,'runtime/data/webui-secrets.json',JSON.stringify({deepseekKey:secret})+'\n');}
     }
-    if(input.search!==undefined)budgetStore.transaction(()=>{const shared=JSON.parse(budgetStore.getMeta('settings')??'{}');shared.search=next.search;budgetStore.setMeta('settings',JSON.stringify(shared));});
+    budgetStore.transaction(()=>{const shared=JSON.parse(budgetStore.getMeta('settings')??'{}');for(const field of ['search','dailyTokens','groupDailyTokens'] as const)if(input[field]!==undefined)shared[field]=next[field];budgetStore.setMeta('settings',JSON.stringify(shared));});
     settings=next;store.setMeta('web-settings',JSON.stringify(settings));return status();
   }
-  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings:{...settings,search:cfg().search},web:{enabled:cfg().search,requests:ledger.value('search'),chargedTokens:ledger.value('webTokens'),budget:'tokens',...networkPricing(cfg().model)},workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
+  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings:{...settings,search:cfg().search,dailyTokens:cfg().dailyTokens,groupDailyTokens:cfg().groupDailyTokens},web:{enabled:cfg().search,requests:ledger.value('search'),chargedTokens:ledger.value('webTokens'),budget:'tokens',...networkPricing(cfg().model)},workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
     dailyQzone:dailyStatus(root,budgetStore),
     dailyNews:newsStatus(root,budgetStore),
     memory:{automaticDays:2,timezone:PROJECT_TIMEZONE,archive:'runtime/memory/days',persona:'personas/active.json'},
     imageLimits:{daily:cfg().imageDaily,codexDaily:cfg().codexDaily},codexQuota:quota.status(),
     capabilities:['会话文件列表','会话文本读写','明确请求后设计并生成单张图片',...(cfg().search?['公开搜索与网页读取']:[]),...(settings.codexQueue?['提交 Codex 待审任务']:[])],
-    budgets:{dailyTokens:settings.dailyTokens,usage:ledger.snapshot(),fault:budgetStore.getMeta('budgetFault')??null},
+    budgets:{dailyTokens:cfg().dailyTokens,groupDailyTokens:cfg().groupDailyTokens,usage:ledger.snapshot(),fault:budgetStore.getMeta('budgetFault')??null},
     tasks:tasks.list().map(t=>({id:t.id,sessionId:t.grp.slice(4),request:t.request,brief:t.brief,state:t.state,result:t.result})),active:active.size};}
   async function execute(s:Session,name:string,args:any){
     if(!args||typeof args!=='object'||Array.isArray(args))throw new FishError('INVALID_TOOL_ARGS');

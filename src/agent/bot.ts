@@ -29,6 +29,7 @@ import { hasToolMarkup } from './tool-protocol.js';
 import { QQMedia,mediaTools } from '../qq/media.js';
 import { ForwardRecords,forwardTools } from '../qq/forward.js';
 
+import { sendGeneratedImage } from '../qq/image-delivery.js';
 import { qqPrompt } from '../prompts.js';
 function personContext(person:ReturnType<PersonMemory['remembered']>){
   return person?{profile:person.profile}:null;
@@ -85,15 +86,17 @@ export class Bot {
   private flushGroup(key:string):void{
     const batch=this.pending.get(key);if(!batch)return;clearTimeout(batch.timer);this.pending.delete(key);
     if(!batch.group.startsWith('private:')&&!this.gate.decide(batch.messages))return;
-    this.enqueue(batch.group,()=>this.respond(batch.messages));
+    const acceptedAt=Date.now();
+    this.enqueue(batch.group,()=>this.respond(batch.messages,acceptedAt));
   }
   async flush():Promise<void>{for(const group of this.pending.keys())this.flushGroup(group);await Promise.all(this.chains.values());}
-  private async respond(batch:Message[]):Promise<void>{
+  private async respond(batch:Message[],acceptedAt=Date.now()):Promise<void>{
     const last=batch.at(-1)!;const c=this.cfg();
     if(!c.enabled||!conversationAllowed(c,last.group))return;
     const history=this.store.history(last.group,c.windowSize).filter(m=>m.at>=dayStart()-86400000&&(m.user!=='DeepSeekFish'||!hasToolMarkup(m.text)));
     // Trigger only on this batch, use rolling history solely for local activity/topic checks.
-    const reason=this.gate.decide(batch,Date.now(),history);
+    // Accepted @/keyword requests may wait behind an image upload; queue time is not message staleness.
+    const reason=this.gate.decide(batch,acceptedAt,history);
     if(!reason)return;
     const spontaneous=['interest','opportunity','random'].includes(reason);
     const lease=spontaneous?this.ledger.reserve('interjection',last.group,last.user):undefined;
@@ -121,8 +124,9 @@ export class Bot {
           const closing=round===maxRounds-1||calls>=maxCalls;
           // At the existing round limit, finish through the same native reply
           // protocol. tool_choice=none made the model print DSML as plain text.
-          const offered=closing?[{type:'function' as const,function:{name:'reply',description:'根据本轮已取得的内容回复并结束。',parameters:{type:'object',properties:{text:{type:'string'}},required:['text'],additionalProperties:false}}}]:tools;
-          const options={tools:offered,requireTool:true,...(closing?{toolChoice:'reply'}:{}),signal:this.controller.signal};
+          const sendingAtClose=closing&&imageOutcome?.created&&imageOutcome.deliveryStatus==='not_attempted';
+          const offered=sendingAtClose?tools.filter(t=>t.function.name==='send_image'):closing?[{type:'function' as const,function:{name:'reply',description:'根据本轮已取得的内容回复并结束。',parameters:{type:'object',properties:{text:{type:'string'}},required:['text'],additionalProperties:false}}}]:tools;
+          const options={tools:offered,requireTool:true,...(closing?{toolChoice:sendingAtClose?'send_image':'reply'}:{}),signal:this.controller.signal};
           trace.push({round,...(closing?{closing:true}:{}),contextInput:{...contextMetrics(messages,offered),...compacted}});
           let completion:ModelResult;
           try{completion=await this.model.complete(last.group,last.user,messages,options);}
@@ -149,8 +153,8 @@ export class Bot {
             if(hasToolMarkup(completion.text))completion={...completion,text:''};
           }
           saveTrace();
-          if(!completion.tool_calls?.length){if(!completion.text.trim()){if(memeSent)break;throw new FishError('DEEPSEEK_EMPTY_RESPONSE');}await this.send(last,completion.text);break;}
-          if(closing?completion.tool_calls.length!==1||completion.tool_calls[0].function.name!=='reply':calls+completion.tool_calls.length>maxCalls)throw new FishError('QQ_TOOL_LIMIT');
+          if(!completion.tool_calls?.length){if(imageOutcome?.created&&imageOutcome.deliveryStatus==='not_attempted'){messages.push({role:'system',content:'成图 '+imageOutcome.catalogId+' 尚未发送，先调用send_image。'});continue;}if(!completion.text.trim()){if(memeSent)break;throw new FishError('DEEPSEEK_EMPTY_RESPONSE');}await this.send(last,completion.text);break;}
+          if(closing?completion.tool_calls.length!==1||completion.tool_calls[0].function.name!==(sendingAtClose?'send_image':'reply'):calls+completion.tool_calls.length>maxCalls)throw new FishError('QQ_TOOL_LIMIT');
           messages.push({role:'assistant',content:completion.text,tool_calls:completion.tool_calls});
           let said=false;const roundMedia:ChatPart[]=[];const viewedIds:string[]=[];let classified=false;let finished=false;
           for(const call of completion.tool_calls){
@@ -162,6 +166,10 @@ export class Bot {
               if(!args||typeof args!=='object'||Array.isArray(args))throw new FishError('INVALID_TOOL_ARGS');
               if(call.function.name==='reply'){
                 if(typeof args.text!=='string'||Object.keys(args).some(k=>!(closing?['text']:['text','memory']).includes(k))||completion.tool_calls.length!==1)throw new FishError('INVALID_TOOL_ARGS');
+                if(imageOutcome?.created&&imageOutcome.deliveryStatus==='not_attempted'){
+                  result={sent:false,pendingImage:imageOutcome.catalogId,next:'先用send_image发送已生成的图，再回复。'};
+                  trace.push({tool:call.function.name,result});messages.push(turnContext.result(call.function.name,call.id,result,round));saveTrace();continue;
+                }
                 const memory=args.memory===undefined?undefined:updateKnowledge(this.root,args.memory);
                 if(memory)messages[0]={role:'system',content:qqPrompt(this.root)};
                 // An overlong/stale edit returns privately to the model before
@@ -252,6 +260,15 @@ export class Bot {
                   memeResults.set(id,outcome);delivered.push(outcome);
                 }
                 result=args.ids?{images:delivered}:delivered[0];
+              }else if(call.function.name==='send_image'){
+                if(!this.imageClient||typeof args.imageId!=='string'||Object.keys(args).some(k=>k!=='imageId'))throw new FishError('INVALID_TOOL_ARGS');
+                this.controller.signal.throwIfAborted();
+                if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
+                result=await sendGeneratedImage(this.root,this.store,this.transport,last,args.imageId,this.cfg().maxArtifactBytes);
+                const outcome=result as Record<string,unknown>;
+                if(imageOutcome?.catalogId===args.imageId)imageOutcome={...imageOutcome,...outcome,next:undefined};
+                const background=JSON.parse(String(messages[1].content));
+                messages[1]={role:'user',content:JSON.stringify({...background,actions:{...qqImageActivity(this.ledger,last.group,last.id),lastImage:{created:outcome.created,delivery:outcome.delivered?'sent':outcome.deliveryStatus,catalogId:args.imageId,referenceIds:((outcome.references??[]) as {id:string}[]).map(r=>r.id),retryScheduled:false}}})};
               }else if(call.function.name==='list_images'){
                 if(!this.imageClient||Object.keys(args).some(k=>!['source','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
                 result=await this.imageClient.list(last,args.source??'all',args.offset??0,this.controller.signal);
@@ -292,16 +309,8 @@ export class Bot {
                     result={created:image.state==='completed',imageId:image.imageId,deliveryStatus:'unconfirmed',...JSON.parse(this.store.getMeta('qq-image-result:'+image.imageId)??'{}'),reused:true,state:image.state,...(image.error?{error:image.error}:{})};
                   }else{
                   result={created:true,deliveryStatus:'not_attempted',retryScheduled:false,imageId:image.imageId,catalogId:'generated-'+image.imageId,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
-                  const file=this.imageClient.verifiedImage(image.imageId,image.manifest,this.cfg().maxArtifactBytes);
-                  this.controller.signal.throwIfAborted();
-                  if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
-                  try{
-                    await this.transport.file(last,file);result={...result as Record<string,unknown>,delivered:true,deliveryStatus:'confirmed'};
-                  }catch(e){
-                    const failure=deliveryFailure(e);if(!failure)throw e;
-                    trace.push({tool:'generate_image',phase:'delivery_error',error:codeOf(e),imageId:image.imageId,at:Date.now()});
-                    result={...result as Record<string,unknown>,...failure};
-                  }
+                  this.imageClient.verifiedImage(image.imageId,image.manifest,this.cfg().maxArtifactBytes);
+                  result={...result as Record<string,unknown>,conversation:last.group,manifest:image.manifest,next:{tool:'send_image',imageId:'generated-'+image.imageId}};
                   }
                   }
                 }
@@ -322,6 +331,7 @@ export class Bot {
               messages[1]={role:'user',content:JSON.stringify({...chatContext,actions:{...qqImageActivity(this.ledger,last.group,last.id),lastImage:image},...qqResources(this.cfg(),this.ledger,last.group,last.user)})};
               trace.push({replyContext:{image,previewImages:0}});
             }
+            if(call.function.name==='generate_image'&&result&&typeof result==='object'){const {manifest:_manifest,conversation:_conversation,resources:_resources,...visible}=result as Record<string,unknown>;result=visible;}
             saveTrace();
             messages.push(turnContext.result(call.function.name,call.id,result,round));
             roundMedia.push(...media);

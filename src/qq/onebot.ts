@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash,randomUUID } from 'node:crypto';
 import { validateOneBotUrl } from '../config.js';
 import { safePath } from '../paths.js';
 import { Store } from '../storage/db.js';
@@ -51,10 +51,10 @@ export function onebotCredential(root:string):string{
   if(typeof token!=='string'||!token||token.length>512||/[\r\n\0]/.test(token))throw new FishError('ONEBOT_TOKEN_MISSING');
   return token;
 }
-type Action='get_login_info'|'get_group_list'|'get_status'|'send_group_msg'|'send_private_msg'|'get_stranger_info'|'get_cookies'|'get_image'|'get_forward_msg';
+type Action='get_login_info'|'get_group_list'|'get_status'|'send_group_msg'|'send_private_msg'|'get_stranger_info'|'get_cookies'|'get_image'|'get_forward_msg'|'get_group_msg_history'|'get_friend_msg_history';
 type Pending={resolve:(value:any)=>void;reject:(error:Error)=>void;timer:NodeJS.Timeout;action:Action;started:number;conversation:string};
-const IMAGE_SEND_TIMEOUT_MS=60000;
-const IMAGE_RESPONSE_TIMEOUT_MS=75000;
+const IMAGE_SEND_TIMEOUT_MS=240000;
+const IMAGE_RESPONSE_TIMEOUT_MS=255000;
 /** Keep provider details out of chat; only fixed diagnostic fields reach the audit. */
 export class OneBotActionError extends FishError {
   constructor(public diagnostic:{action:Action;status:string;retcode:number|null;reason:'native_timeout'|'action_rejected';elapsedMs:number}){super(diagnostic.reason==='native_timeout'?'ONEBOT_SEND_UNCONFIRMED':'ONEBOT_ACTION_FAILED');}
@@ -172,7 +172,14 @@ export class OneBotTransport implements Transport {
     if(!this.allowed(message.group))throw new FishError('ONEBOT_GROUP_NOT_ALLOWED');
     const base=safePath(this.root,'runtime/outputs'),relative=path.relative(base,file).split(path.sep).join('/');
     const png=verifyPng(base,relative,10485760);
-    await this.sendImage(message,fs.readFileSync(png));
+    const original=fs.readFileSync(png),bytes=await deliveryImage(original);
+    const imageId=relative.split('/')[0],key='qq-image-result:'+imageId;
+    if(/^[0-9a-f-]{36}$/.test(imageId)){
+      const previous=JSON.parse(this.store.getMeta(key)??'{}');
+      this.store.setMeta(key,JSON.stringify({...previous,deliveryFingerprint:createHash('md5').update(bytes).digest('hex'),submittedAt:Date.now()}));
+    }
+    this.store.audit('qq-image-upload',message.group,JSON.stringify({imageId,originalBytes:original.length,uploadBytes:bytes.length}));
+    await this.sendImage(message,bytes);
   }
   async meme(message:Message,original:Buffer):Promise<void>{
     if(!this.allowed(message.group))throw new FishError('ONEBOT_GROUP_NOT_ALLOWED');
@@ -183,9 +190,30 @@ export class OneBotTransport implements Transport {
     const target=this.target(message.group);
     // NapCat's native send wait defaults to ~10s + size/256KBps, independently
     // of our WebSocket deadline. Override it per image; allow reply overhead.
-    const receipt=await this.call(target.action,{...target.params,timeout:IMAGE_SEND_TIMEOUT_MS,
-      message:[{type:'image',data:{file:'base64://'+original.toString('base64'),...(sticker?{sub_type:1}:{})}}]},IMAGE_RESPONSE_TIMEOUT_MS);
-    if(!id(receipt?.message_id,true))throw new FishError('ONEBOT_SEND_UNCONFIRMED');
+    const started=Date.now();
+    try{
+      const receipt=await this.call(target.action,{...target.params,timeout:IMAGE_SEND_TIMEOUT_MS,
+        message:[{type:'image',data:{file:'base64://'+original.toString('base64'),...(sticker?{sub_type:1}:{})}}]},IMAGE_RESPONSE_TIMEOUT_MS);
+      if(!id(receipt?.message_id,true))throw new FishError('ONEBOT_SEND_UNCONFIRMED');
+    }catch(e){
+      if(['ONEBOT_SEND_UNCONFIRMED','ONEBOT_ACTION_TIMEOUT'].includes(codeOf(e))){
+        const found=await this.imageReceipt(message,createHash('md5').update(original).digest('hex'),started).catch(()=>undefined);
+        if(found)return;
+      }
+      throw e;
+    }
+  }
+  async imageReceipt(message:Message,fingerprint:string,since:number):Promise<string|undefined>{
+    if(!this.allowed(message.group)||!Number.isFinite(since)||!/^[a-f0-9]{32}$/i.test(fingerprint))return;
+    await this.open();const target=this.target(message.group),privateChat=message.group.startsWith('private:');
+    const result=await this.call(privateChat?'get_friend_msg_history':'get_group_msg_history',{...target.params,count:80},10000);
+    const found=(result?.messages??[]).find((m:any)=>String(m.user_id)===this.self&&m.message_type===(privateChat?'private':'group')&&
+      (privateChat||String(m.group_id)===message.group)&&Number.isSafeInteger(m.time)&&m.time*1000>=since-2000&&
+      /^\d+$/.test(String(m.real_seq))&&BigInt(m.real_seq)>0n&&Array.isArray(m.message)&&m.message.some((s:any)=>
+        s.type==='image'&&typeof s.data?.file==='string'&&s.data.file.split('.')[0].toLowerCase()===fingerprint.toLowerCase()));
+    const messageId=id(found?.message_id,true);
+    if(messageId)this.store.audit('qq-image-receipt',message.group,JSON.stringify({messageId,source:'history',fingerprint}));
+    return messageId;
   }
   private target(conversation:string):{action:'send_group_msg'|'send_private_msg';params:Record<string,string>}{
     if(conversation.startsWith('private:')){
@@ -199,4 +227,14 @@ export class OneBotTransport implements Transport {
     this.stopped=true;this.self='';this.qzoneAuth=undefined;clearTimeout(this.retry);clearTimeout(this.handshake);clearInterval(this.heartbeat);this.socket?.close();
     for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new FishError('ONEBOT_STOPPED'));}this.pending.clear();this.status='stopped';
   }
+}
+
+/** Keep the original artifact; encode only large static QQ delivery copies. */
+export async function deliveryImage(original:Buffer):Promise<Buffer>{
+  if(original.length<=262144)return original;
+  const {default:sharp}=await import('sharp');
+  const meta=await sharp(original,{limitInputPixels:24000000}).metadata();
+  if((meta.pages??1)>1)return original;
+  const copy=await sharp(original,{limitInputPixels:24000000}).rotate().resize({width:1536,height:1536,fit:'inside',withoutEnlargement:true}).flatten({background:'#ffffff'}).jpeg({quality:88}).timeout({seconds:10}).toBuffer();
+  return copy.length<original.length?copy:original;
 }

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {createHash} from 'node:crypto';
 import { fixture,message } from './helpers.js';
 import { BudgetedModel,DeepSeekModel } from '../src/agent/model.js';
 import { Bot } from '../src/agent/bot.js';
@@ -21,6 +22,12 @@ import { FishError,type Model,type ToolCall } from '../src/types.js';
 import { hasToolMarkup } from '../src/agent/tool-protocol.js';
 
 const call=(name:string,args:unknown):ToolCall=>({id:'tool-'+name,type:'function',function:{name,arguments:JSON.stringify(args)}});
+const imageId='11111111-1111-4111-8111-111111111111',catalogId='generated-'+imageId;
+function preparedImage(root:string){
+  const bytes=fs.readFileSync(root+'/runtime/outputs/mock.png'),dir=root+'/runtime/outputs/'+imageId;
+  fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(dir+'/image.png',bytes);
+  return {imageId,manifest:{name:'image.png',bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')},mock:true};
+}
 const plan={subject:'一条蓝色的小鱼',scene:'服务器旁边',style:'柔和插画',composition:'主体居中',lighting:'暖光',palette:'蓝白',details:'没有文字'};
 const replyImage=(messages:any[])=>JSON.parse(messages[1].content).actions.lastImage;
 function setup(provider:Model,people?:PersonMemory,client?:QQImageClient,qzone?:QzoneMemory){
@@ -60,7 +67,7 @@ test('QQ browses originals and passes model-selected image IDs through to GPT',a
   const client={
     list:async()=>({canAttachOriginals:true,images:[{id:'character',source:'character',label:'鲸酱原设定图'}]}),
     view:async(_m:any,ids:string[])=>{assert.deepEqual(ids,['character']);return {images:[{id:'character',label:'鲸酱原设定图',mime:'image/png',data:'AA=='}]};},
-    generate:async(_m:any,_plan:any,_timeout:any,_signal:any,ids:string[])=>{assert.deepEqual(ids,['character']);return {imageId:'fixture',manifest:{},mock:true,references:[{id:'character'}]};},
+    generate:async(_m:any,_plan:any,_timeout:any,_signal:any,ids:string[])=>{assert.deepEqual(ids,['character']);return {...preparedImage(f.root),references:[{id:'character'}]};},
     verifiedImage:()=>f.root+'/runtime/outputs/mock.png'
   } as unknown as QQImageClient;
   const provider:Model={kind:'fixture',async complete(messages,_max,options){
@@ -71,14 +78,15 @@ test('QQ browses originals and passes model-selected image IDs through to GPT',a
       assert.ok(Array.isArray(messages.at(-1)!.content));assert.ok((messages.at(-1)!.content as any[]).some(p=>p.type==='image_url'));
       return {text:'把这张设定图一起丢给她。',tool_calls:[call('generate_image',{remark:'把这张设定图一起丢给她。',referenceIds:['character'],...plan})],usage:{input:100,output:80}};
     }
+    if(round===4){assert.equal(f.transport.files.length,0);return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};}
     const result=replyImage(messages);assert.equal(result.referenceIds[0],'character');assert.equal(result.delivery,'sent');
     assert.ok(options?.tools?.some(t=>t.function.name==='generate_image'));assert.ok(messages.some(m=>m.role==='tool'));assert.equal(messages.at(-1)?.role,'tool');
-    assert.equal(result.catalogId,'generated-fixture');assert.equal(JSON.parse(String(messages.at(-1)?.content)).delivered,true);
+    assert.equal(result.catalogId,catalogId);assert.equal(JSON.parse(String(messages.at(-1)?.content)).delivered,true);
     return {text:'这次她照着原图画的。',usage:{input:100,output:20}};
   }};
   f=setup(provider,undefined,client);
   await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
-  try{await f.bot.receive(message('把你自己参考图丢给gpt',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(round,4);assert.equal(f.transport.files.length,1);assert.equal(f.transport.sent.at(-1)?.text,'这次她照着原图画的。');}
+  try{await f.bot.receive(message('把你自己参考图丢给gpt',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(round,5);assert.equal(f.transport.files.length,1);assert.equal(f.transport.sent.at(-1)?.text,'这次她照着原图画的。');}
   finally{await f.bot.stop();f.cleanup();}
 });
 test('textual tool protocol is repaired through native JSON, kept out of chat/history, and optional remarks stay optional',async()=>{
@@ -86,7 +94,7 @@ test('textual tool protocol is repaired through native JSON, kept out of chat/hi
   const leaked='<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="generate_image">untrusted textual arguments</｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>';
   const client={
     list:async()=>({images:[]}),
-    generate:async(_m:any,actual:any)=>{generated++;assert.deepEqual(actual,plan);return {imageId:'fixture',manifest:{},mock:true};},
+    generate:async(_m:any,actual:any)=>{generated++;assert.deepEqual(actual,plan);return preparedImage(f.root);},
     verifiedImage:()=>f.root+'/runtime/outputs/mock.png'
   } as unknown as QQImageClient;
   const provider:Model={kind:'fixture',async complete(messages,_max,options){
@@ -97,6 +105,7 @@ test('textual tool protocol is repaired through native JSON, kept out of chat/hi
     if(turns===1){assert.equal(options?.toolChoice,undefined);return {text:'',tool_calls:[call('list_images',{})],usage:{input:100,output:20}};}
     if(turns===2)return {text:leaked,usage:{input:100,output:30},finishReason:'stop'};
     if(turns===3){assert.equal(options?.toolChoice,'generate_image');assert.equal(options?.final,undefined);return {text:'',tool_calls:[call('generate_image',{...plan})],usage:{input:100,output:60},finishReason:'tool_calls'};}
+    if(turns===4)return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};
     return {text:'喏，摸鱼证据又多一张。',usage:{input:100,output:20}};
   }};
   f=setup(provider,undefined,client);
@@ -105,7 +114,7 @@ test('textual tool protocol is repaired through native JSON, kept out of chat/hi
   f.bot.memory.record({id:'old-leak',conversation:'private:20002',actor:'DeepSeekFish',role:'assistant',text:leaked,at:Date.now()});
   try{
     await f.bot.receive(message('那，可以画吗？',{group:'private:20002',user:'20002'}));await f.bot.flush();
-    assert.equal(generated,1);assert.equal(turns,4);assert.equal(f.transport.files.length,1);
+    assert.equal(generated,1);assert.equal(turns,5);assert.equal(f.transport.files.length,1);
     assert.deepEqual(f.transport.sent.map(m=>m.text),['喏，摸鱼证据又多一张。']);
     assert.ok(f.transport.sent.every(m=>!hasToolMarkup(m.text)));
     const records=fs.readdirSync(f.root+'/runtime/logs/qq').map(n=>JSON.parse(fs.readFileSync(f.root+'/runtime/logs/qq/'+n,'utf8')));
@@ -128,40 +137,42 @@ test('unknown or repeated textual protocol never executes and never reaches QQ',
 });
 test('every QQ turn has the same tools; the model may draw directly or simply chat',async()=>{
   let turns=0,generated=0,f:ReturnType<typeof setup>;
-  const client={generate:async()=>{generated++;return {imageId:'fixture',manifest:{},mock:true};},verifiedImage:()=>f.root+'/runtime/outputs/mock.png'} as unknown as QQImageClient;
+  const client={generate:async()=>{generated++;return preparedImage(f.root);},verifiedImage:()=>f.root+'/runtime/outputs/mock.png'} as unknown as QQImageClient;
   let toolNames:string[]=[];
   const provider:Model={kind:'fixture',async complete(messages,_max,options){
     turns++;assert.equal(options?.toolChoice,undefined);assert.equal(options?.requireTool,true);
     const names=options!.tools!.map(t=>t.function.name);if(!toolNames.length)toolNames=names;else assert.deepEqual(names,toolNames);
     assert.ok(names.includes('generate_image'));assert.ok(names.includes('get_quota'));
     if(turns===1)return {text:'',tool_calls:[call('generate_image',plan)],usage:{input:100,output:60}};
-    if(turns===2){assert.equal(replyImage(messages).delivery,'sent');return {text:'',tool_calls:[call('reply',{text:'这个就是我的版本。'})],usage:{input:100,output:20}};}
+    if(turns===2)return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};
+    if(turns===3){assert.equal(replyImage(messages).delivery,'sent');return {text:'',tool_calls:[call('reply',{text:'这个就是我的版本。'})],usage:{input:100,output:20}};}
     return {text:'',tool_calls:[call('reply',{text:'陪你发会儿呆。'})],usage:{input:100,output:20}};
   }};
   f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
   try{
     await f.bot.receive(message('换成你肯定更有意思',{group:'private:20002',user:'20002'}));await f.bot.flush();
     await f.bot.receive(message('然后呢',{group:'private:20002',user:'20002'}));await f.bot.flush();
-    assert.equal(generated,1);assert.equal(turns,3);assert.equal(f.transport.files.length,1);
+    assert.equal(generated,1);assert.equal(turns,4);assert.equal(f.transport.files.length,1);
     assert.deepEqual(f.transport.sent.map(m=>m.text),['这个就是我的版本。','陪你发会儿呆。']);
   }finally{await f.bot.stop();f.cleanup();}
 });
 test('image delivery failure preserves the generated artifact for the model and never regenerates',async()=>{
   let turns=0,generated=0,f:ReturnType<typeof setup>;
-  const client={list:async()=>({images:[]}),generate:async()=>{generated++;return {imageId:'finished-artifact',manifest:{},mock:true};},verifiedImage:()=>f.root+'/runtime/outputs/mock.png'} as unknown as QQImageClient;
+  const client={list:async()=>({images:[]}),generate:async()=>{generated++;return preparedImage(f.root);},verifiedImage:()=>f.root+'/runtime/outputs/mock.png'} as unknown as QQImageClient;
   const provider:Model={kind:'fixture',async complete(messages){
     turns++;
     if(turns===1)return {text:'',tool_calls:[call('list_images',{})],usage:{input:100,output:20}};
     if(turns===2)return {text:'',tool_calls:[call('generate_image',plan)],usage:{input:100,output:20}};
+    if(turns===3)return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};
     const result=replyImage(messages);
     assert.equal(result.created,true);assert.equal(result.delivery,'unconfirmed');assert.equal(result.retryScheduled,false);
     assert.ok(!JSON.stringify(messages).includes('ONEBOT_ACTION_TIMEOUT'));assert.ok(messages.some(m=>m.role==='tool'));
     const toolResult=JSON.parse(String(messages.filter(m=>m.role==='tool').at(-1)!.content));
-    assert.equal(toolResult.retryScheduled,false);assert.equal(toolResult.delivered,undefined);assert.match(toolResult.deliveryNote,/未安排重发/);
+    assert.equal(toolResult.retryScheduled,false);assert.equal(toolResult.delivered,undefined);assert.match(toolResult.deliveryNote,/没有安排重发/);
     return {text:'画好了，传图那边还没确认收到。',usage:{input:100,output:20}};
   }};
   f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');f.transport.file=async()=>{throw new FishError('ONEBOT_ACTION_TIMEOUT');};
-  try{await f.bot.receive(message('可以画吗',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(generated,1);assert.equal(turns,3);assert.match(f.transport.sent[0].text,/画好了/);}
+  try{await f.bot.receive(message('可以画吗',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(generated,1);assert.equal(turns,4);assert.match(f.transport.sent[0].text,/画好了/);}
   finally{await f.bot.stop();f.cleanup();}
 });
 test('private image broker accepts model-selected drawings, shares quotas and deduplicates message IDs',async()=>{
@@ -204,16 +215,17 @@ test('the provider lets QQ choose any capability including reply, without naming
 
 test('repeated image calls return confirmed success without generating or sending again',async()=>{
   let round=0,generated=0,f:ReturnType<typeof setup>;
-  const client={generate:async()=>{generated++;return {imageId:'fixture',manifest:{},mock:true};},verifiedImage:()=>f.root+'/runtime/outputs/mock.png'} as unknown as QQImageClient;
+  const client={generate:async()=>{generated++;return preparedImage(f.root);},verifiedImage:()=>f.root+'/runtime/outputs/mock.png'} as unknown as QQImageClient;
   const provider:Model={kind:'fixture',async complete(messages){
     round++;
     if(round===1)return {text:'',tool_calls:[{...call('generate_image',plan),id:'first'}],usage:{input:100,output:50}};
+    if(round===2)return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};
     const result=JSON.parse(String(messages.at(-1)?.content));assert.equal(result.created,true);assert.equal(result.delivered,true);assert.equal(result.error,undefined);
-    if(round===2)return {text:'',tool_calls:[{...call('generate_image',{...plan,remark:'不要重复发这句'}),id:'retry'}],usage:{input:100,output:50}};
+    if(round===3)return {text:'',tool_calls:[{...call('generate_image',{...plan,remark:'不要重复发这句'}),id:'retry'}],usage:{input:100,output:50}};
     assert.equal(result.reused,true);return {text:'',tool_calls:[call('reply',{text:'笑得真欠。'})],usage:{input:100,output:20}};
   }};
   f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
-  try{await f.bot.receive(message('整一个你的版本',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(generated,1);assert.equal(f.transport.files.length,1);assert.deepEqual(f.transport.sent.map(m=>m.text),['笑得真欠。']);assert.equal(JSON.parse(f.store.getMeta('qq-image-result:fixture')!).delivered,true);}
+  try{await f.bot.receive(message('整一个你的版本',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(generated,1);assert.equal(f.transport.files.length,1);assert.deepEqual(f.transport.sent.map(m=>m.text),['笑得真欠。']);assert.equal(JSON.parse(f.store.getMeta('qq-image-result:'+imageId)!).delivered,true);}
   finally{await f.bot.stop();f.cleanup();}
 });
 
@@ -242,4 +254,30 @@ test('QQ chooses Search and Fetch on ordinary messages, retains source results, 
     assert.equal(f.ledger.value('search'),2);assert.equal(f.transport.sent.at(-1)?.text,'看完了');
     await f.bot.receive(message('那就这样',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(f.ledger.value('search'),2);assert.equal(f.transport.sent.at(-1)?.text,'嗯哼');
   }finally{await f.bot.stop();f.cleanup();}
+});
+
+test('a premature reply must return to the model to send its new image before final text',async()=>{
+ let round=0,f:ReturnType<typeof setup>;
+ const client={generate:async()=>preparedImage(f.root),verifiedImage:()=>''} as unknown as QQImageClient;
+ f=setup({kind:'fixture',async complete(messages){
+  round++;
+  if(round===1)return {text:'',tool_calls:[call('generate_image',plan)],usage:{input:100,output:30}};
+  if(round===2){assert.equal(f.transport.files.length,0);return {text:'',tool_calls:[{...call('reply',{text:'尚未发出的文字'}),id:'premature'}],usage:{input:100,output:20}};}
+  if(round===3){assert.equal(f.transport.sent.length,0);assert.equal(JSON.parse(String(messages.at(-1)?.content)).pendingImage,catalogId);return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};}
+  assert.equal(f.transport.files.length,1);return {text:'',tool_calls:[call('reply',{text:'喏。'})],usage:{input:100,output:20}};
+ }},undefined,client);
+ await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');
+ try{await f.bot.receive(message('画张图',{group:'private:20002',user:'20002'}));await f.bot.flush();assert.equal(round,4);assert.deepEqual(f.transport.sent.map(m=>m.text),['喏。']);}
+ finally{await f.bot.stop();f.cleanup();}
+});
+
+test('an accepted group mention survives time spent queued behind an image turn',async(t)=>{
+ let calls=0,f:ReturnType<typeof setup>;const now=Date.now();
+ f=setup({kind:'fixture',async complete(){calls++;return {text:'收到',usage:{input:100,output:10}};}});f.set({groups:['123456']});
+ try{
+  await f.bot.receive(message('等一下',{group:'123456',user:'20002'}));
+  // flush enqueues now; the queue executes in the next microtask, after the clock advances.
+  const pending=f.bot.flush();t.mock.method(Date,'now',()=>now+300000);
+  await pending;assert.equal(calls,1);assert.equal(f.transport.sent.length,1);
+ }finally{t.mock.restoreAll();await f.bot.stop();f.cleanup();}
 });

@@ -117,7 +117,7 @@ function jsonAssets(value:unknown,base:string){
     const label=[node.alt,node.name,node.title,node.description].find(v=>typeof v==='string')??'';
     for(const [key,v] of Object.entries(node)){
       if(typeof v==='string'){
-        if(key==='preview'&&typeof node.original==='string')continue;
+        if(key==='preview'&&(typeof node.original==='string'||typeof node.path==='string'))continue;
         if(v.startsWith('#')||/\s/.test(v)||! /\.(png|jpe?g|gif|webp|json)(?:[?#]|$)/i.test(v))continue;
         try{
           const url=new URL(v,base).href;if(!publicUrl(url))continue;

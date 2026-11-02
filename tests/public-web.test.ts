@@ -41,3 +41,9 @@ test('downloaded animations are visible, durable catalog references and collecta
     assert.throws(()=>library.select('g2','u',[saved.id]),/NOT_AVAILABLE/);await assert.rejects(media.fromWeb('g',Buffer.from('<html>no image</html>'),'https://example.com/fake.png'));
   }finally{f.cleanup();}
 });
+test('reference catalogs prefer original paths over previews and can filter by character',async()=>{
+ const url='https://raw.githubusercontent.com/example/refs/main/catalog.json';
+ const bytes=Buffer.from(JSON.stringify({assets:[{path:'characters/gpt/reference.jpg',preview:'previews/gpt.jpg',description:'GPT原图'},{path:'characters/deepseek/reference.png',preview:'previews/deepseek.png'}]}));
+ const result=await browsePage(url,0,undefined,async()=>({url,type:'text/plain',bytes}),'gpt');
+ assert.equal(result.images.length,1);assert.equal(result.images[0].url,'https://raw.githubusercontent.com/example/refs/main/characters/gpt/reference.jpg');
+});

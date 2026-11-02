@@ -35,3 +35,23 @@ test('known empty/failed calls refund, ambiguous errors stay charged, cache does
     assert.equal(f.ledger.value('input'),0);assert.equal(f.ledger.value('webTokens'),7500);
   }finally{f.cleanup();}
 });
+
+test('default groups and WebUI share the daily cap; explicit group caps are visible and live',async()=>{
+ const {createWebApp}=await import('../src/web/app.js'),{createApp}=await import('../src/app.js');
+ const {conversationTokenLimit,TokenBudgetError}=await import('../src/budget/ledger.js');
+ const f=fixture(),web=createWebApp(f.root,false),qq=createApp(f.root,true);
+ const shared=new Store(f.root);
+ try{
+  assert.equal(conversationTokenLimit(f.cfg(),'g'),1000000);
+  f.ledger.add('tokens',70000,'g:g');f.ledger.add('tokens',70000);
+  f.ledger.settle(f.ledger.reserve('model','g','u',1000,100),{input:100,output:10});
+  web.configure({dailyTokens:800000,groupDailyTokens:250000});
+  assert.equal(web.status().budgets.dailyTokens,800000);assert.equal(web.status().budgets.groupDailyTokens,250000);
+  qq.store.setMeta('settings',shared.getMeta('settings')!);assert.equal(qq.cfg().dailyTokens,800000);assert.equal(qq.cfg().groupDailyTokens,250000);
+  const saved=JSON.parse(shared.getMeta('settings')!);assert.equal(saved.dailyTokens,800000);assert.equal(saved.groupDailyTokens,250000);
+  // Simulate the other process updating the shared meta, with WebUI already running.
+  shared.setMeta('settings',JSON.stringify({...saved,dailyTokens:900000,groupDailyTokens:0}));assert.equal(web.status().settings.dailyTokens,900000);
+  assert.equal(web.status().settings.groupDailyTokens,0);
+  assert.match(new TokenBudgetError('tokens',6000,10000,'conversation').notice,/本群/);
+ }finally{await qq.bot.stop();qq.store.close();shared.close();await web.close();f.cleanup();}
+});
