@@ -1,5 +1,5 @@
 import { Store,redact } from './storage/db.js';
-const channels=['qq','web','image','daily'] as const;
+const channels=['qq','web','image','daily','news','memory'] as const;
 export type PromptChannel=typeof channels[number];
 /** Store the actual request body, never Authorization headers or image data/URLs. */
 export function recordPrompt(store:Store,channel:PromptChannel,request:unknown){

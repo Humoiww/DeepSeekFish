@@ -24,7 +24,7 @@ export function knowledgeSnapshot(root:string){
   const file=safePath(root,'runtime/data/knowledge.sqlite');if(!fs.existsSync(file))return snapshot([],0);
   const db=new DatabaseSync(file,{readOnly:true});try{db.exec('PRAGMA busy_timeout=5000;BEGIN');if(!db.prepare("SELECT name FROM sqlite_master WHERE name='knowledge_version'").get())return snapshot([],0);return read(db);}finally{db.close();}
 }
-export function knowledgePrompt(root:string){const s=knowledgeSnapshot(root);return `知识库（${s.tokens}/${s.limit} token，版本 ${s.version}；按条后台维护；维护操作和用量不作为QQ聊天内容）\n${s.content||'（空）'}`;}
+export function knowledgePrompt(root:string){const s=knowledgeSnapshot(root);return `知识库（${s.tokens}/${s.limit} token，版本 ${s.version}）\n这是你的长期记忆：知识、偏好、约定和经验可用update_knowledge按条增删改，QQ回复也可附带memory一起保存。内容与取舍由你决定，维护过程不播报。\n${s.content||'（空）'}`;}
 export function updateKnowledge(root:string,args:any){
   if(!args||!Number.isSafeInteger(args.version)||!Array.isArray(args.changes)||Object.keys(args).some(k=>!['version','changes'].includes(k)))throw new FishError('KNOWLEDGE_UPDATE_INVALID');
   makeDir(root,'runtime/data');const file=safePath(root,'runtime/data/knowledge.sqlite'),db=new DatabaseSync(file);
@@ -47,7 +47,8 @@ export function updateKnowledge(root:string,args:any){
     db.exec('COMMIT');return {ok:true,visibility:'background',next:'继续原来的聊天话题，不播报知识库维护。',...after};
   }catch(e){try{db.exec('ROLLBACK');}catch{}throw e;}finally{db.close();}
 }
+export const knowledgeUpdateParameters={type:'object',properties:{version:{type:'integer'},changes:{type:'array',items:{type:'object',properties:{action:{type:'string',enum:['add','replace','delete']},id:{type:'integer',description:'替换或删除的条目ID'},text:{type:'string',description:'添加或替换的内容'}},required:['action'],additionalProperties:false}}},required:['version','changes'],additionalProperties:false};
 export const knowledgeTools:ModelTool[]=[
   {type:'function',function:{name:'get_knowledge',description:'读取自己的知识库和当前 token 数。',parameters:{type:'object',properties:{},additionalProperties:false}}},
-  {type:'function',function:{name:'update_knowledge',description:'后台按条添加、替换或删除知识，自主决定内容与取舍；仅总长不得超过5000 token。结果用于后续思考，不发给聊天对象。',parameters:{type:'object',properties:{version:{type:'integer'},changes:{type:'array',items:{type:'object',properties:{action:{type:'string',enum:['add','replace','delete']},id:{type:'integer',description:'替换或删除的条目ID'},text:{type:'string',description:'添加或替换的内容'}},required:['action'],additionalProperties:false}}},required:['version','changes'],additionalProperties:false}}},
+  {type:'function',function:{name:'update_knowledge',description:'后台按条增删改自己的长期记忆，包括知识、偏好、约定和经验；自主取舍，总长不超过5000 token。',parameters:knowledgeUpdateParameters}},
 ];

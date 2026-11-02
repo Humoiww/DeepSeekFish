@@ -1,10 +1,11 @@
 import type { ModelTool } from '../types.js';
 import { imageFields } from '../web/images.js';
+import { knowledgeUpdateParameters } from '../memory/knowledge.js';
 
 const remark={type:'string',description:'想顺口对朋友说的话，可省略',maxLength:180};
 export function qqChatTools(profile:boolean,image:boolean,qzone=false):ModelTool[]{
   return [
-    {type:'function',function:{name:'reply',description:'发消息并结束这一轮聊天。想做的操作先调用相应工具；不需要操作时直接聊天。',parameters:{type:'object',properties:{text:{type:'string',description:'你想对朋友说的话'}},required:['text'],additionalProperties:false}}},
+    {type:'function',function:{name:'reply',description:'发消息并结束这一轮。memory可同时后台保存你想长期记住的内容；其他操作先用对应工具。',parameters:{type:'object',properties:{text:{type:'string',description:'你想对朋友说的话'},memory:knowledgeUpdateParameters},required:['text'],additionalProperties:false}}},
     {type:'function',function:{name:'get_quota',description:'读取现在的精力值、每日限额和还能请 GPT小姐画多少张图。',parameters:{type:'object',properties:{},additionalProperties:false}}},
     ...(profile?[{type:'function' as const,function:{name:'get_person',description:'查看对方 QQ 头像和资料。',parameters:{type:'object',properties:{view:{type:'string',enum:['avatar','profile']},remark},required:['view'],additionalProperties:false}}}]:[]),
     ...(qzone?[{type:'function' as const,function:{name:'get_qzone',description:'看QQ空间说说：1最新、2上一条、3上上条。分页返回ID、时间、正文及对应附件。',parameters:{type:'object',properties:{index:{type:'integer',minimum:1,maximum:10000},count:{type:'integer',minimum:1,maximum:10},remark},required:['index','count'],additionalProperties:false}}}]:[]),

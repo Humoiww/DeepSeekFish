@@ -22,6 +22,7 @@ import { QzoneMemory } from './memory/qzone.js';
 import { QQMedia } from './qq/media.js';
 import { PROJECT_TIMEZONE } from './time.js';
 import { dailyStatus } from './qq/daily-qzone.js';
+import { newsStatus } from './qq/daily-news.js';
 
 export function createApp(root:string,mock:boolean,override:Partial<Config>={},demo=false){
   prepare(root);loadSecrets(root);
@@ -67,6 +68,7 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
   }
   const status=()=>({mode:mock?'mock':'live',enabled:cfg().enabled,qq:transport.status,privateUsers:cfg().privateUsers,
     dailyQzone:dailyStatus(root,store),
+    dailyNews:newsStatus(root,store),
     memory:{archive:'runtime/memory/days',automaticDays:2,timezone:PROJECT_TIMEZONE,events:(store.db.prepare('SELECT count(*) AS n FROM memory_events').get() as any).n,persona:'personas/active.json'},
     qqTransport:config.qqTransport,
     groupTrigger:{mode:'mention-or-keyword',keywords:cfg().names},

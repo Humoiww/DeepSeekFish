@@ -20,6 +20,9 @@ import { openLocalBrowser } from './web/browser.js';
 import { PROJECT_TIMEZONE } from './time.js';
 import { DailyQzone,dailyStatus } from './qq/daily-qzone.js';
 import { QzonePublisher } from './qq/qzone-publish.js';
+import { DailyNews,newsSettings,newsStatus } from './qq/daily-news.js';
+import { SearchService,DeepSeekSearchProvider } from './search/provider.js';
+import { deepseekCredential } from './config.js';
 
 process.env.TZ=PROJECT_TIMEZONE;
 const root=projectRoot();prepare(root);loadSecrets(root);
@@ -34,7 +37,26 @@ async function api(route:string,value?:unknown,approval?:string):Promise<any>{
   const data=await res.json();if(!res.ok)throw new FishError(data.error??'LOCAL_API_ERROR');return data;
 }
 async function main():Promise<void>{
-  if(command==='daily-qzone'){
+  if(command==='daily-news'){
+    const action=args[0]??'status';if(args.length>1||!['status','run','remember'].includes(action))throw new FishError('USAGE_DAILY_NEWS_STATUS_RUN_REMEMBER');
+    const app=createApp(root,false);let qq:OneBotTransport|undefined;
+    try{
+      if(action==='status'){print(newsStatus(root,app.store));return;}
+      const settings=newsSettings(root);if(!settings)throw new FishError('DAILY_NEWS_DISABLED');
+      if(app.cfg().qqTransport!=='onebot')throw new FishError('DAILY_NEWS_NEEDS_ONEBOT');
+      // No incoming QQ handler in this scheduled sender. The normal bot stays
+      // connected in its own service and shares the existing atomic ledger.
+      qq=new OneBotTransport(root,app.cfg().onebotUrl,onebotCredential(root),app.store,async()=>{},g=>g==='private:'+settings.owner&&app.cfg().privateUsers.includes(settings.owner));
+      const search=new SearchService(new DeepSeekSearchProvider(deepseekCredential(root),app.cfg),app.ledger,app.cfg);
+      const sender=qq,daily=new DailyNews(root,app.store,app.cfg,app.model,search,{async send(m,text){
+        try{await sender.inspect();}catch(e){app.store.audit('daily-news-connect','',codeOf(e));throw new FishError('DAILY_NEWS_CONNECT_FAILED');}
+        await sender.send(m,text);
+      }});
+      const result=action==='remember'?await daily.remember():await daily.run();
+      // Do not print private memory contents in the service journal/terminal.
+      print(action==='remember'?{ok:(result as any).ok,tokens:(result as any).tokens,limit:(result as any).limit,version:(result as any).version}:result);
+    }finally{qq?.stop();await app.bot.stop();app.store.close();}
+  }else if(command==='daily-qzone'){
     const action=args[0]??'status';if(args.length>1||!['status','run','prepare','preview'].includes(action))throw new FishError('USAGE_DAILY_QZONE_STATUS_RUN_PREPARE_PREVIEW');
     const app=createApp(root,false);
     try{
@@ -145,6 +167,6 @@ async function main():Promise<void>{
     await app.bot.receive({...m,id:randomUUID(),text:'/fish image 测试图片'});
     print({messages:(app.transport as any).sent,files:(app.transport as any).files,task:app.tasks.get(task.id),budget:app.ledger.snapshot()});
     await app.bot.stop();app.store.close();
-  }else print(`DeepSeekFish\n  npm run build / npm test\n  npm run mock / npm start / npm run demo\n  npm run cli -- status|tasks|history GROUP|clear GROUP|cancel ID|stop\n  npm run cli -- set autonomous false\n  npm run cli -- approve ID --reviewed\n  npm run cli -- say "你好小鱼"  (Mock only)\n  npm run bind / npm run cli -- codex-login [--device-auth]\n  npm run cli -- daily-qzone status|preview|prepare|run\n  npm run doctor / npm run cli -- sandbox-check (keyless, no model turn)\n  npm run cli -- codex-image --reviewed "one-image prompt" (real Codex subscription smoke test)\n  ./start.sh / start.bat (WebUI)\n  npm run cli -- webui [--mock] [--no-open]\n  npm run cli -- web-status|web-stop|web-approve ID --reviewed`);
+  }else print(`DeepSeekFish\n  npm run build / npm test\n  npm run mock / npm start / npm run demo\n  npm run cli -- status|tasks|history GROUP|clear GROUP|cancel ID|stop\n  npm run cli -- set autonomous false\n  npm run cli -- approve ID --reviewed\n  npm run cli -- say "你好小鱼"  (Mock only)\n  npm run bind / npm run cli -- codex-login [--device-auth]\n  npm run cli -- daily-qzone status|preview|prepare|run\n  npm run cli -- daily-news status|run|remember\n  npm run doctor / npm run cli -- sandbox-check (keyless, no model turn)\n  npm run cli -- codex-image --reviewed "one-image prompt" (real Codex subscription smoke test)\n  ./start.sh / start.bat (WebUI)\n  npm run cli -- webui [--mock] [--no-open]\n  npm run cli -- web-status|web-stop|web-approve ID --reviewed`);
 }
 main().catch(e=>{console.error('DeepSeekFish: '+codeOf(e));process.exitCode=1;});

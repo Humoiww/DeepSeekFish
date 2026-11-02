@@ -24,6 +24,7 @@ import { MemoryJournal,dayStart } from '../memory/journal.js';
 import { startQQImageBroker } from '../qq/image-broker.js';
 import { PROJECT_TIMEZONE } from '../time.js';
 import { dailyStatus } from '../qq/daily-qzone.js';
+import { newsStatus } from '../qq/daily-news.js';
 
 type Settings={model:string;maxOutputTokens:number;dailyTokens:number;search:boolean;codexQueue:boolean};
 type Session={id:string;title:string;created:number;updated:number};
@@ -101,6 +102,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   }
   function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings:{...settings,search:cfg().search},web:{enabled:cfg().search,requests:ledger.value('search'),chargedTokens:ledger.value('webTokens'),budget:'tokens',...networkPricing(cfg().model)},workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
     dailyQzone:dailyStatus(root,budgetStore),
+    dailyNews:newsStatus(root,budgetStore),
     memory:{automaticDays:2,timezone:PROJECT_TIMEZONE,archive:'runtime/memory/days',persona:'personas/active.json'},
     imageLimits:{daily:cfg().imageDaily,codexDaily:cfg().codexDaily},codexQuota:quota.status(),
     capabilities:['会话文件列表','会话文本读写','明确请求后设计并生成单张图片',...(cfg().search?['公开搜索与网页读取']:[]),...(settings.codexQueue?['提交 Codex 待审任务']:[])],

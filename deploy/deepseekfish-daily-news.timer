@@ -1,0 +1,15 @@
+[Unit]
+Description=DeepSeekFish morning news at 08:00 Hong Kong time
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Asia/Hong_Kong
+# Retry only known failures; saved/uncertain sends never repeat automatically.
+OnCalendar=*-*-* 08:10:00 Asia/Hong_Kong
+OnCalendar=*-*-* 08:20:00 Asia/Hong_Kong
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=deepseekfish-daily-news.service
+
+[Install]
+WantedBy=timers.target

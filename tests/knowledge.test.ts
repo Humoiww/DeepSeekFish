@@ -47,3 +47,17 @@ test('QQ knowledge edits are background tools and refresh the next model request
   try{await bot.receive(message('海豚的叫声'));await bot.flush();assert.equal(round,2);assert.equal(transport.sent.length,1);assert.ok(!JSON.stringify(transport.sent).includes('后台维护'));assert.ok(knowledgeSnapshot(f.root).tokens>0);}
   finally{await bot.stop();f.cleanup();}
 });
+test('QQ can remember a preference alongside its reply in one model call; overlong edits retry privately',async()=>{
+  for(const oversized of [false,true]){
+    const f=fixture({dailyTokens:1000000,groupDailyTokens:1000000,bufferMs:10000});let calls=0;
+    const provider:Model={kind:'fixture',async complete(messages,_max,options){
+      calls++;assert.ok((options?.tools?.find(t=>t.function.name==='reply')?.function.parameters.properties as any).memory);
+      if(oversized&&calls===2){assert.equal(transport.sent.length,0);assert.match(String(messages.at(-1)!.content),/KNOWLEDGE_TOO_LONG/);}
+      return {text:'',tool_calls:[{id:'reply-'+calls,type:'function',function:{name:'reply',arguments:JSON.stringify({text:'下次给你挑点有意思的。',memory:{version:0,changes:[{action:'add',text:oversized&&calls===1?' x'.repeat(6000):'主人喜欢聊游戏更新和鲸鱼。'}]}})}}],usage:{input:100,output:50}};
+    }};
+    const transport=new MockTransport(),tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner());
+    const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),tasks,new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport);
+    try{await bot.receive(message('我对游戏更新和鲸鱼挺感兴趣'));await bot.flush();assert.equal(calls,oversized?2:1);assert.equal(transport.sent.length,1);assert.equal(transport.sent[0].text,'下次给你挑点有意思的。');assert.match(knowledgeSnapshot(f.root).content,/喜欢聊游戏更新和鲸鱼/);}
+    finally{await bot.stop();f.cleanup();}
+  }
+});

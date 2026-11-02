@@ -154,9 +154,13 @@ export class Bot {
               const args=JSON.parse(call.function.arguments);
               if(!args||typeof args!=='object'||Array.isArray(args))throw new FishError('INVALID_TOOL_ARGS');
               if(call.function.name==='reply'){
-                if(typeof args.text!=='string'||Object.keys(args).some(k=>k!=='text')||completion.tool_calls.length!==1)throw new FishError('INVALID_TOOL_ARGS');
-                if(args.text.trim())await this.send(last,args.text);
-                result={sent:!!args.text.trim()};finished=true;
+                if(typeof args.text!=='string'||Object.keys(args).some(k=>!['text','memory'].includes(k))||completion.tool_calls.length!==1)throw new FishError('INVALID_TOOL_ARGS');
+                const memory=args.memory===undefined?undefined:updateKnowledge(this.root,args.memory);
+                if(memory)messages[0]={role:'system',content:qqPrompt(this.root)};
+                // An overlong/stale edit returns privately to the model before
+                // sending, so it can shorten/retry or reply without an edit.
+                if(memory&&!memory.ok)result={sent:false,memory};
+                else{if(args.text.trim())await this.send(last,args.text);result={sent:!!args.text.trim(),...(memory?{memory}:{})};finished=true;}
               }else if(call.function.name==='recall_chat'){
                 const found=this.memory.read(last.group,args);
                 result={...found,events:found.events.filter(event=>event.role!=='assistant'||!hasToolMarkup(event.text))};
