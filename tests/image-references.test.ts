@@ -33,6 +33,11 @@ test('catalog separates profiles and posts, scopes conversation/time and resolve
     assert.throws(()=>library.select('g2','20002',['qzone-fresh-0']),/NOT_AVAILABLE/);
     assert.throws(()=>library.select('private:20002','20002',['runtime/codex-home/auth.json']),/NOT_AVAILABLE/);
     assert.throws(()=>library.select('private:20002','20002',['character','character']),/IDS_INVALID/);
+    const selfFolder=makeDir(f.root,'runtime/memory/people/90009/today/item');fs.copyFileSync(path.join(folder,'mock.png'),path.join(selfFolder,'self.png'));
+    f.store.db.prepare('INSERT INTO qzone_observations VALUES(?,?,?,?,?)').run('self','private:20002','90009',Date.now(),JSON.stringify({posts:[{id:'fresh',owner:'90009',position:1,text:'肥鱼自己的动态',media:[{status:'downloaded',kind:'photo',path:'runtime/memory/people/90009/today/item/self.png'}]}]}));
+    const spaces=library.list('private:20002','20002','qzone').images;
+    assert.equal(spaces.length,2);assert.equal(new Set(spaces.map(i=>i.id)).size,2);assert.deepEqual(new Set(spaces.map(i=>i.owner)),new Set(['20002','90009']));
+    assert.ok(spaces.every(i=>i.label.includes(i.owner!)));assert.equal(library.view('private:20002','20002',['qzone-90009-fresh-0']).images[0].mime,'image/png');
     const cwd=makeDir(f.root,'runtime/workspace/partial');
     assert.throws(()=>stageReferences(f.root,cwd,[{id:'one',label:'first',path:path.join(folder,'mock.png')},{id:'missing',label:'missing',path:path.join(folder,'missing.png')}]));
     assert.deepEqual(fs.readdirSync(cwd),[]);

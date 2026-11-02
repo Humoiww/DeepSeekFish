@@ -27,6 +27,7 @@ import { writePrivate } from '../paths.js';
 import { QzoneMemory } from '../memory/qzone.js';
 import { hasToolMarkup } from './tool-protocol.js';
 import { QQMedia,mediaTools } from '../qq/media.js';
+import { ForwardRecords,forwardTools } from '../qq/forward.js';
 
 import { qqPrompt } from '../prompts.js';
 function personContext(person:ReturnType<PersonMemory['remembered']>){
@@ -46,7 +47,7 @@ export class Bot {
   private gate:SocialGate;
   readonly memory:MemoryJournal;
   constructor(private root:string,private cfg:()=>Config,public store:Store,public ledger:Ledger,
-    private model:BudgetedModel,public tasks:Tasks,private search:SearchService,private image:ImageProvider,public transport:Transport,private people?:PersonMemory,private imageClient?:QQImageClient,private qzone?:QzoneMemory,private media?:QQMedia){
+    private model:BudgetedModel,public tasks:Tasks,private search:SearchService,private image:ImageProvider,public transport:Transport,private people?:PersonMemory,private imageClient?:QQImageClient,private qzone?:QzoneMemory,private media?:QQMedia,private forwards?:ForwardRecords){
     this.gate=new SocialGate(cfg,ledger);tasks.onComplete=t=>this.deliver(t,JSON.parse(t.source));
     this.memory=new MemoryJournal(root,store);this.memory.backfill();
   }
@@ -57,7 +58,7 @@ export class Bot {
     // OneBot timestamps have second precision; replies use local
     // milliseconds. Order OneBot context by reception so rapid follow-ups
     // cannot sort before the assistant's preceding reply.
-    const archiveText=redact(m.text).slice(0,16000);
+    const archiveText=redact(this.forwards?this.forwards.observe(m):m.text).slice(0,16000);
     m={...m,at:c.qqTransport==='onebot'?Date.now():m.at,text:archiveText.slice(0,2000)};
     if(this.store.db.prepare('SELECT key FROM cache WHERE key=? AND expires>?').get(echoKey(m.group,m.text),Date.now()))return;
     if(!this.store.observe(m,c.historyHours,c.windowSize))return;
@@ -100,12 +101,13 @@ export class Bot {
       const incoming=this.media?await this.media.ingest(batch,this.controller.signal):[];
       const mediaIds=[...new Set(incoming.flatMap(m=>m.id?[m.id]:[]))];
       const PERSONA=personalityPrompt(this.root),SYSTEM=qqPrompt(this.root);
-      const context={character:{appearance:appearancePrompt(this.root),referenceId:'character'},actions:qqImageActivity(this.ledger,last.group,last.id),...this.media?.context(last.group),...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
+      const identity={self:(await this.transport.identity?.())?.userId,speaker:last.user};
+      const context={qqIdentity:identity,...(this.forwards?{forwardedChats:this.forwards.recent(last.group,0,3,dayStart()-86400000)}:{}),character:{appearance:appearancePrompt(this.root),referenceId:'character'},actions:qqImageActivity(this.ledger,last.group,last.id),...this.media?.context(last.group),...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
       const dialogue:ChatMessage[]=recentDialogue(history,batch).map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:m.user==='DeepSeekFish'||last.group.startsWith('private:')?m.text:'['+m.user+'] '+m.text}));
       const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
       const turnContext=new TurnContext();
       if(incoming.length)messages.push(turnContext.images({role:'user',content:this.media!.parts(last.group,incoming)},-1));
-      const tools=[...recallTools,...contextTools,...knowledgeTools,...(c.search?[...webTools,...(this.media?browseTools:[])]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
+      const tools=[...recallTools,...contextTools,...knowledgeTools,...(this.forwards?forwardTools:[]),...(c.search?[...webTools,...(this.media?browseTools:[])]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeSent=false;
       let imageOutcome:Record<string,unknown>|undefined;const memeResults=new Map<string,Record<string,unknown>>();
       const visibleImages=new Set(mediaIds);
@@ -161,6 +163,10 @@ export class Bot {
                 // sending, so it can shorten/retry or reply without an edit.
                 if(memory&&!memory.ok)result={sent:false,memory};
                 else{if(args.text.trim())await this.send(last,args.text);result={sent:!!args.text.trim(),...(memory?{memory}:{})};finished=true;}
+              }else if(call.function.name==='read_forward'){
+                if(!this.forwards)throw new FishError('QQ_FORWARD_UNAVAILABLE');
+                const read=await this.forwards.read(last.group,args,this.controller.signal);
+                result=read.context;media=read.parts;viewedIds.push(...read.mediaIds);
               }else if(call.function.name==='recall_chat'){
                 const found=this.memory.read(last.group,args);
                 result={...found,events:found.events.filter(event=>event.role!=='assistant'||!hasToolMarkup(event.text))};
@@ -262,12 +268,12 @@ export class Bot {
                   const snapshot=await this.people.refresh(last.user,last.group,true);
                   result={source:'qq_profile',...personContext(snapshot),errors:snapshot.errors};media=this.people.images(snapshot);
                 }else if(call.function.name==='get_qzone'){
-                  if(!this.qzone||Object.keys(args).some(k=>!['index','count','remark'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
-                  const cursorKey='qzone-navigation:'+last.group+':'+last.user;
+                  if(!this.qzone||Object.keys(args).some(k=>!['target','index','count','remark'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
+                  const person=await this.qzone.resolveTarget(args.target,last.user),cursorKey='qzone-navigation:'+last.group+':'+person;
                   if(!said&&remark){await this.send(last,remark);said=true;}
-                  const snapshot=await this.qzone.read(last.user,last.group,{index:args.index,count:args.count});
+                  const snapshot=await this.qzone.read(person,last.group,{index:args.index,count:args.count});
                   this.store.setMeta(cursorKey,JSON.stringify({index:snapshot.index,nextIndex:snapshot.nextIndex,at:Date.now()}));
-                  result=this.qzone.context(snapshot);media=this.qzone.images(snapshot);
+                  result=this.qzone.context(snapshot,identity);media=this.qzone.images(snapshot);
                 }else if(call.function.name==='generate_image'){
                   if(!this.imageClient||!this.cfg().images)throw new FishError('IMAGE_DISABLED');
                   if(imageRequested){result={...imageOutcome,reused:true};}

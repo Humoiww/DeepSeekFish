@@ -2,7 +2,9 @@
 
 QQ 头像是个人资料的图片；QQ空间本人说说来自 emotion_cgi_msglist_v6 的 msglist，具有独立的 tid、发布时间、正文、图片/视频字段。这两种来源现在使用不同工具，不能互为失败兜底。
 
-实现参考社区原始代码：[qzone-sdk](https://github.com/Eganchiyu/qzone-sdk)、[TeamSUEP emotion_list_raw](https://github.com/TeamSUEP/Index-SUEP-Channel/blob/main/qzone.py)。列表按新到旧，pos 为从 0 起的偏移，num 为数量。本机已用真实账号核对返回列表与指定序号：最新是第 1 条，上一条第 2 条，上上条第 3 条；第 N 条直接请求 pos=N-1。明确序号由可信代码解析，模型不能把“上上条”改成最新。
+实现参考社区原始代码：[qzone-sdk](https://github.com/Eganchiyu/qzone-sdk)、[TeamSUEP emotion_list_raw](https://github.com/TeamSUEP/Index-SUEP-Channel/blob/main/qzone.py)。列表按新到旧，pos 为从 0 起的偏移，num 为数量。本机已用真实账号核对返回列表与指定序号：最新是第 1 条，上一条第 2 条，上上条第 3 条；第 N 条直接请求 pos=N-1。序号由模型通过 index 参数明确提交；工具按该序号读取实际列表。
+
+get_qzone 必填 target：self 是肥鱼当前登录账号，speaker 是触发本轮的说话人，也可填写明确的 QQ 号。缺少目标时返回错误，不默认查询对方。读取仍使用当前 QQ 会话可见权限；失败不更换账号。每次返回 spaceOwner（QQ 号及 self/speaker/other 关系），每条说说和图片另带 owner，缓存与导航按会话及账号分别保存。图库中的空间图片同样以账号、postId、附件位置区分，不能把不同账号的配图混在一起。
 
 get_qzone 返回每条说说的实际 ID、位置、时间、正文和对应媒体。每张送入视觉模型的图前面都有所属 postId、位置和媒体类型，头像完全不进入该链路。单条读取包含其配图，列表预览每条先取一个附件；可继续指定某条查看全部配图。图片下载失败时保留该说说身份和失败状态，不拿头像或其他说说的图片顶替。
 

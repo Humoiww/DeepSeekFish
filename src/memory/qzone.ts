@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { makeDir,safePath,writePrivate } from '../paths.js';
 import { Store,redact } from '../storage/db.js';
 import { FishError,codeOf,type ChatPart } from '../types.js';
-import type { Config } from '../config.js';
+import { conversationAllowed,type Config } from '../config.js';
 import type { OneBotTransport } from '../qq/onebot.js';
 import { memoryDay,dayStart,type RecallScope } from './journal.js';
 import { parseQzone,responseBytes,imageMime,capturePage } from './people.js';
@@ -47,8 +47,14 @@ export class QzoneMemory {
   }
   read(person:string,conversation:string,selection:QzoneSelection):Promise<QzoneSnapshot>{
     if(!/^[1-9]\d{0,19}$/.test(person)||!Number.isInteger(selection.index)||selection.index<1||selection.index>10000||!Number.isInteger(selection.count)||selection.count<1||selection.count>10)throw new FishError('QZONE_SELECTION_INVALID');
-    if(conversation.startsWith('private:')?(conversation!=='private:'+person||!this.cfg().privateUsers.includes(person)):!this.cfg().groups.includes(conversation))throw new FishError('PERSON_SCOPE_NOT_ALLOWED');
+    if(!conversationAllowed(this.cfg(),conversation))throw new FishError('PERSON_SCOPE_NOT_ALLOWED');
     const work=this.fetch(person,conversation,selection);this.pending.add(work);void work.finally(()=>this.pending.delete(work)).catch(()=>{});return work;
+  }
+  async resolveTarget(target:unknown,speaker:string):Promise<string>{
+    if(target==='self')return (await this.qq.identity()).userId;
+    if(target==='speaker')return speaker;
+    if(typeof target==='string'&&/^[1-9]\d{0,19}$/.test(target))return target;
+    throw new FishError('QZONE_TARGET_REQUIRED');
   }
   private async fetch(person:string,conversation:string,{index,count}:QzoneSelection):Promise<QzoneSnapshot>{
     const session=await this.qq.qzoneSession();if(typeof session.cookies!=='string'||!session.bkn)throw new FishError('QZONE_LOGIN_REQUIRED');
@@ -84,8 +90,8 @@ export class QzoneMemory {
     writePrivate(this.root,folder+'/qzone.json',JSON.stringify(snapshot,null,2));
     this.store.db.prepare('INSERT INTO qzone_observations VALUES (?,?,?,?,?)').run(id,conversation,person,snapshot.observedAt,JSON.stringify(snapshot));return snapshot;
   }
-  context(snapshot:QzoneSnapshot){
-    return {source:'QQ空间本人说说列表',status:snapshot.posts.length?'ok':'empty',requestedIndex:snapshot.index,total:snapshot.total,nextIndex:snapshot.nextIndex,confirmedPosts:snapshot.posts.length,
+  context(snapshot:QzoneSnapshot,identity?:{self?:string;speaker:string}){
+    return {source:'QQ空间说说列表',spaceOwner:{qq:snapshot.person,relation:snapshot.person===identity?.self?'self':snapshot.person===identity?.speaker?'speaker':'other'},observedAt:snapshot.observedAt,status:snapshot.posts.length?'ok':'empty',requestedIndex:snapshot.index,total:snapshot.total,nextIndex:snapshot.nextIndex,confirmedPosts:snapshot.posts.length,
       posts:snapshot.posts.map(p=>({id:p.id,position:p.position,owner:p.owner,text:p.text,published:memoryDay(p.publishedAt||snapshot.observedAt),source:p.source,
         imageCount:p.imageCount,videoCount:p.videoCount,media:p.media.map(({path,...m})=>m)})),errors:snapshot.errors.filter(e=>e.stage!=='screenshot')};
   }
@@ -95,7 +101,7 @@ export class QzoneMemory {
       if(!media.path||media.status!=='downloaded'||!media.path.startsWith('runtime/memory/people/'+snapshot.person+'/'))continue;
       const file=safePath(this.root,media.path),st=fs.statSync(file);if(st.size>4194304||st.size>budget)continue;budget-=st.size;
       const bytes=fs.readFileSync(file),mime=imageMime(bytes);
-      parts.push({type:'text',text:JSON.stringify({source:'QQ空间说说附件',postId:post.id,position:post.position,kind:media.kind,...(media.kind==='video_cover'?{viewed:'cover_only'}:{})})},{type:'image_url',image_url:{url:'data:'+mime+';base64,'+bytes.toString('base64'),detail:'high'}});
+      parts.push({type:'text',text:JSON.stringify({source:'QQ空间说说附件',owner:post.owner,postId:post.id,position:post.position,kind:media.kind,...(media.kind==='video_cover'?{viewed:'cover_only'}:{})})},{type:'image_url',image_url:{url:'data:'+mime+';base64,'+bytes.toString('base64'),detail:'high'}});
     }return parts;
   }
   async close(){await Promise.allSettled(this.pending);}

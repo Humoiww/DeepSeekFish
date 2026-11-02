@@ -3,6 +3,7 @@ export interface Message {
   mentioned: boolean; bot?: boolean; event: 'mention' | 'ordinary';
   // Transport-only download handles; never archive URLs or expose them to models.
   images?: {url?:string;file?:string;stickerHint:boolean}[];
+  forwards?: {id?:string;content?:unknown[];title?:string}[];
 }
 export type Reason = 'mention' | 'name' | 'auto' | 'interest' | 'opportunity' | 'random';
 export interface Usage { input: number; output: number }
@@ -18,6 +19,7 @@ export type ChatPart={type:'text';text:string}|{type:'image_url';image_url:{url:
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'|'tool'; content: string|ChatPart[];tool_calls?:ToolCall[];tool_call_id?:string }
 export interface Transport {
   status: string;
+  identity?():Promise<{userId:string}>;
   send(message: Message, text: string): Promise<void>;
   file(message: Message, path: string): Promise<void>;
   meme?(message:Message,original:Buffer):Promise<void>;

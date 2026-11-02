@@ -53,7 +53,28 @@ test('each Space post keeps its own ID/text/media; third-post queries cannot fal
     assert.equal(space.remembered('20002','g2',{mode:'recent',since:0}),undefined);
     f.store.db.prepare('UPDATE qzone_observations SET observed=?').run(dayStart()-3*86400000);
     assert.equal(space.remembered('20002','private:20002',{mode:'recent',since:dayStart()-86400000}),undefined);
-    await assert.rejects(async()=>space.read('30003','private:20002',{index:1,count:1}),/PERSON_SCOPE/);
+    await assert.rejects(async()=>space.read('30003','private:40004',{index:1,count:1}),/PERSON_SCOPE/);
     await space.close();
+  }finally{f.cleanup();}
+});
+test('Space targets distinguish bot, speaker and explicit accounts; missing target never defaults to speaker',async()=>{
+  const f=fixture({qqTransport:'onebot',privateUsers:['20002']});try{
+    const out=makeDir(f.root,'runtime/outputs/owners'),generated=await new MockImageProvider().generate('',out);if(generated.status!=='ok')throw Error('fixture');
+    const png=fs.readFileSync(generated.path),lookups:string[]=[];
+    const qq={identity:async()=>({userId:'90009'}),qzoneSession:async()=>({cookies:'private-cookie',bkn:'123'})} as unknown as OneBotTransport;
+    const http=(async(input:any)=>{const url=new URL(String(input)),owner=url.searchParams.get('uin');
+      if(owner){lookups.push(owner);return new Response(JSON.stringify({code:0,total:1,msglist:[{tid:'post-'+owner,uin:owner,content:'posted by '+owner,created_time:100,pic:[{url3:'https://qpic.cn/'+owner+'.png'}]}]}));}
+      return new Response(png);
+    }) as typeof fetch;
+    const space=new QzoneMemory(f.root,f.store,qq,f.cfg,http,async()=>{throw Error('no screenshot fixture');});
+    for(const [target,owner,relation] of [['self','90009','self'],['speaker','20002','speaker'],['30003','30003','other']]){
+      const resolved=await space.resolveTarget(target,'20002');assert.equal(resolved,owner);
+      const snapshot=await space.read(resolved,'private:20002',{index:1,count:1}),context=space.context(snapshot,{self:'90009',speaker:'20002'});
+      assert.deepEqual(context.spaceOwner,{qq:owner,relation});assert.equal(context.posts[0].owner,owner);assert.equal(JSON.parse((space.images(snapshot)[0] as any).text).owner,owner);
+    }
+    assert.deepEqual(lookups,['90009','20002','30003']);
+    await assert.rejects(space.resolveTarget(undefined,'20002'),/TARGET_REQUIRED/);
+    assert.equal(space.remembered('90009','private:20002',{mode:'recent',since:0})?.posts[0].owner,'90009');
+    assert.equal(space.remembered('30003','private:20002',{mode:'recent',since:0})?.posts[0].owner,'30003');
   }finally{f.cleanup();}
 });

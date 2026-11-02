@@ -8,6 +8,7 @@ import { FishError,codeOf,type Message,type Transport } from '../types.js';
 import { echoKey } from './adapter.js';
 import { verifyPng } from '../image/provider.js';
 import { imageMime } from '../memory/people.js';
+import { forwardHandle } from './forward.js';
 
 function id(value:unknown,signed=false):string|undefined{
   if(typeof value==='number'&&!Number.isSafeInteger(value))return;
@@ -19,7 +20,7 @@ export function normalizeOneBot(event:any,self:string):Message|undefined{
   if(event?.post_type!=='message'||!['group','private'].includes(event.message_type)||id(event.self_id)!==self||!Array.isArray(event.message)||event.message.length>256)return;
   const user=id(event.user_id),group=event.message_type==='private'&&user?'private:'+user:id(event.group_id),messageId=id(event.message_id,true);
   if(!group||!user||!messageId||user===self||!Number.isSafeInteger(event.time))return;
-  let mentioned=event.message_type==='private',text='';const images:NonNullable<Message['images']>=[];
+  let mentioned=event.message_type==='private',text='';const images:NonNullable<Message['images']>=[],forwards:NonNullable<Message['forwards']>=[];
   for(const segment of event.message){
     if(segment?.type==='text'&&typeof segment.data?.text==='string')text+=segment.data.text.slice(0,16000);
     else if(segment?.type==='at'){
@@ -33,12 +34,16 @@ export function normalizeOneBot(event:any,self:string):Message|undefined{
         text+='[图片 '+images.length+']';
       }else text+='[图片：本条超过4张，未读取]';
     }
+    else if(forwardHandle(segment)){
+      if(forwards.length<16){forwards.push(forwardHandle(segment)!);text+='[转发聊天记录 '+forwards.length+']';}
+      else text+='[转发聊天记录：本条超过16份]';
+    }
     else if(segment?.type==='record')text+='[语音：未转写]';
     else if(segment?.type==='face')text+='[表情]';
     else if(segment?.type==='file')text+='[文件：未读取内容]';
     if(text.length>=16000)break;
   }
-  return {id:messageId,group,user,text:text.trim().slice(0,16000)||(mentioned&&event.message_type==='group'?'[@你]':''),at:event.time*1000,mentioned,event:mentioned?'mention':'ordinary',...(images.length?{images}:{})};
+  return {id:messageId,group,user,text:text.trim().slice(0,16000)||(mentioned&&event.message_type==='group'?'[@你]':''),at:event.time*1000,mentioned,event:mentioned?'mention':'ordinary',...(images.length?{images}:{}),...(forwards.length?{forwards}:{})};
 }
 export function onebotCredential(root:string):string{
   const file=safePath(root,'runtime/data/onebot-credentials.json');
@@ -46,7 +51,7 @@ export function onebotCredential(root:string):string{
   if(typeof token!=='string'||!token||token.length>512||/[\r\n\0]/.test(token))throw new FishError('ONEBOT_TOKEN_MISSING');
   return token;
 }
-type Action='get_login_info'|'get_group_list'|'get_status'|'send_group_msg'|'send_private_msg'|'get_stranger_info'|'get_cookies'|'get_image';
+type Action='get_login_info'|'get_group_list'|'get_status'|'send_group_msg'|'send_private_msg'|'get_stranger_info'|'get_cookies'|'get_image'|'get_forward_msg';
 type Pending={resolve:(value:any)=>void;reject:(error:Error)=>void;timer:NodeJS.Timeout;action:Action;started:number;conversation:string};
 const IMAGE_SEND_TIMEOUT_MS=60000;
 const IMAGE_RESPONSE_TIMEOUT_MS=75000;
@@ -131,6 +136,12 @@ export class OneBotTransport implements Transport {
     await this.open();const groups=await this.call('get_group_list',{});
     if(!Array.isArray(groups))throw new FishError('ONEBOT_INVALID_GROUP_LIST');
     return {self:this.self,groups:groups.slice(0,1000).filter(g=>id(g.group_id)).map(g=>({id:String(g.group_id),name:String(g.group_name??'').slice(0,128)}))};
+  }
+  async identity():Promise<{userId:string}>{await this.open();return {userId:this.self};}
+  async readForward(id:string):Promise<unknown[]>{
+    if(typeof id!=='string'||!id||id.length>512||/[\s\x00-\x1f]/.test(id))throw new FishError('QQ_FORWARD_ID_INVALID');
+    await this.open();const result=await this.call('get_forward_msg',{message_id:id},30000);
+    if(!Array.isArray(result?.messages))throw new FishError('QQ_FORWARD_RESPONSE_INVALID');return result.messages;
   }
   async readPerson(user:string):Promise<any>{
     if(!id(user))throw new FishError('ONEBOT_INVALID_TARGET');await this.open();

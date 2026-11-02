@@ -23,6 +23,7 @@ import { QQMedia } from './qq/media.js';
 import { PROJECT_TIMEZONE } from './time.js';
 import { dailyStatus } from './qq/daily-qzone.js';
 import { newsStatus } from './qq/daily-news.js';
+import { ForwardRecords } from './qq/forward.js';
 
 export function createApp(root:string,mock:boolean,override:Partial<Config>={},demo=false){
   prepare(root);loadSecrets(root);
@@ -46,11 +47,13 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
     new OneBotTransport(root,config.onebotUrl,onebotCredential(root),store,m=>bot.receive(m),group=>conversationAllowed(cfg(),group)):
     new QQTransport(creds!.appId,creds!.appSecret,store,m=>bot.receive(m),group=>cfg().groups.includes(group));
   }catch(e){store.close();throw e;}
+  const media=transport instanceof OneBotTransport?new QQMedia(root,store,file=>(transport as OneBotTransport).imageUrl(file)):undefined;
+  const forwards=transport instanceof OneBotTransport?new ForwardRecords(store,transport,group=>conversationAllowed(cfg(),group),media):undefined;
   bot=new Bot(root,cfg,store,ledger,model,tasks,search,mock?new MockImageProvider():new CodexImageProvider(),transport,
     transport instanceof OneBotTransport?new PersonMemory(root,store,transport,cfg):undefined,
     transport instanceof OneBotTransport?new QQImageClient(root):undefined,
     transport instanceof OneBotTransport?new QzoneMemory(root,store,transport,cfg):undefined,
-    transport instanceof OneBotTransport?new QQMedia(root,store,file=>(transport as OneBotTransport).imageUrl(file)):undefined);
+    media,forwards);
   const tokenPath=safePath(root,'runtime/data/admin-token');
   if(!fs.existsSync(tokenPath))writePrivate(root,'runtime/data/admin-token',randomBytes(32).toString('hex'));
   const token=fs.readFileSync(tokenPath,'utf8').trim();

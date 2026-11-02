@@ -9,7 +9,7 @@ import { resolveCharacterReference } from '../image/character-reference.js';
 import { readReference,type SelectedReference } from '../image/references.js';
 
 export type ImageSource='all'|'character'|'avatar'|'qzone'|'generated'|'received'|'collected'|'web';
-export interface LibraryImage {id:string;source:Exclude<ImageSource,'all'>;label:string;postId?:string;position?:number;observedAt?:number;messageId?:string;sourceImageId?:string;sourceUrl?:string;path:string}
+export interface LibraryImage {id:string;source:Exclude<ImageSource,'all'>;label:string;owner?:string;postId?:string;position?:number;observedAt?:number;messageId?:string;sourceImageId?:string;sourceUrl?:string;path:string}
 export class QQImageLibrary{
   constructor(private root:string,private broker:Store){}
   private entries(conversation:string,user:string):LibraryImage[]{
@@ -38,18 +38,18 @@ export class QQImageLibrary{
       }
       for(const [table,kind] of [['qzone_observations','qzone'],['person_observations','avatar']] as const){
         if(!db?.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;
-        const rows=db.prepare('SELECT id,observed,data FROM '+table+' WHERE conversation=? AND person=? AND observed>=? ORDER BY observed DESC,rowid DESC LIMIT 30').all(conversation,user,dayStart()-86400000) as {id:string;observed:number;data:string}[];
+        const rows=db.prepare('SELECT id,person,observed,data FROM '+table+' WHERE conversation=?'+(kind==='avatar'?' AND person=?':'')+' AND observed>=? ORDER BY observed DESC,rowid DESC LIMIT 30').all(conversation,...(kind==='avatar'?[user]:[]),dayStart()-86400000) as {id:string;person:string;observed:number;data:string}[];
         const seen=new Set<string>();
         for(const row of rows){
-          const data=JSON.parse(row.data);
+          const data=JSON.parse(row.data),owner=row.person;if(!/^[1-9]\d{0,19}$/.test(owner))continue;
           const append=(id:string,label:string,relative:unknown,extra:Partial<LibraryImage>={})=>{
-            if(typeof relative!=='string'||!relative.startsWith('runtime/memory/people/'+user+'/')||seen.has(id))return;
-            seen.add(id);images.push({id,source:kind,label,observedAt:row.observed,path:safePath(this.root,relative),...extra});
+            if(typeof relative!=='string'||!relative.startsWith('runtime/memory/people/'+owner+'/')||seen.has(id))return;
+            seen.add(id);images.push({id,source:kind,label,owner,observedAt:row.observed,path:safePath(this.root,relative),...extra});
           };
           if(kind==='avatar')append('avatar-'+row.id,'对方 QQ 头像（不是空间动态）',data.avatar);
           else for(const post of data.posts??[])for(const [i,m] of (post.media??[]).entries()){
-            if(m.status!=='downloaded')continue;
-            append('qzone-'+post.id+'-'+i,'空间第'+post.position+'条'+(m.kind==='video_cover'?'视频封面':'配图')+'：'+String(post.text??'').slice(0,90),m.path,{postId:post.id,position:post.position});
+            if(m.status!=='downloaded'||post.owner!==undefined&&post.owner!==owner)continue;
+            append('qzone-'+owner+'-'+post.id+'-'+i,'QQ '+owner+' 空间第'+post.position+'条'+(m.kind==='video_cover'?'视频封面':'配图')+'：'+String(post.text??'').slice(0,90),m.path,{postId:post.id,position:post.position});
           }
         }
       }
@@ -71,7 +71,7 @@ export class QQImageLibrary{
     if(!Array.isArray(ids)||ids.length>3||ids.some(id=>typeof id!=='string'||id.length>180)||new Set(ids).size!==ids.length)throw new FishError('IMAGE_REFERENCE_IDS_INVALID');
     if(!ids.length)return [];
     const entries=this.entries(conversation,user);
-    return ids.map(id=>{const found=entries.find(i=>i.id===id);if(!found)throw new FishError('IMAGE_REFERENCE_NOT_AVAILABLE');return {id:found.id,label:found.label,path:found.path};});
+    return ids.map(id=>{const found=entries.find(i=>i.id===id)??(id.startsWith('qzone-')?entries.find(i=>i.owner===user&&i.id==='qzone-'+user+'-'+id.slice(6)):undefined);if(!found)throw new FishError('IMAGE_REFERENCE_NOT_AVAILABLE');return {id:found.id,label:found.label,path:found.path};});
   }
   view(conversation:string,user:string,ids:unknown){
     const selected=this.select(conversation,user,ids);let budget=12582912;
