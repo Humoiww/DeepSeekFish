@@ -67,6 +67,12 @@ function settings(){if(!state)return;closeDrawers(false);$('model').value=state.
 $('refresh-quota').onclick=async()=>{const button=$('refresh-quota');button.disabled=true;try{renderStatus(await api('codex-quota/refresh',{}));}catch(e){toast(explain(e.message));}finally{button.disabled=false;}};
 $('reset-images').onclick=()=>{$('reset-images-error').textContent='';$('reset-images-dialog').showModal();};
 $('reset-images-form').onsubmit=async e=>{e.preventDefault();e.submitter.disabled=true;try{renderStatus(await api('images/reset',{}));$('reset-images-dialog').close();toast('本地生图计数已重置；Codex 账号额度未改变。');}catch(err){$('reset-images-error').textContent=explain(err.message);}finally{e.submitter.disabled=false;}};
+$('reset-tokens').onclick=async()=>{
+  const button=$('reset-tokens');if(button.disabled)return;button.disabled=true;button.textContent='正在重置…';
+  try{const result=await api('tokens/reset',{});renderStatus(result);const r=result.tokenReset;
+    toast('今日 token 用量已重置'+(r.retainedTokens?'；运行中或未确认的 '+r.retainedTokens.toLocaleString()+' tokens 仍保留。':'，QQ 和网页已同步。'));
+  }catch(err){toast(explain(err.message));}finally{button.disabled=false;button.textContent='Reset 今日 tokens';}
+};
 $('settings-button').onclick=settings;$('setup-button').onclick=settings;
 $('qq-button').onclick=async()=>{closeDrawers(false);$('qq-error').textContent='';$('qq-dialog').showModal();await refreshQQ(true);};
 async function refreshQQ(fill=false){

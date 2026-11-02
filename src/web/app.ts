@@ -214,6 +214,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     configureQQ:(input:Record<string,unknown>)=>{if(input.enabled&&!key())throw new FishError('DEEPSEEK_KEY_MISSING');return configureQQ(root,input,settings.model);},qqStatus:()=>qqStatus(root,budgetStore),
     startQuota:()=>quota.start(),refreshQuota:async()=>{await quota.refresh(true);return status();},
     resetImages:()=>{if(active.size)throw new FishError('IMAGE_RESET_BUSY_OR_UNCERTAIN');ledger.resetImages();return status();},
+    resetTokens:()=>{const tokenReset=ledger.resetTokens();return {...status(),tokenReset};},
     image:(sid:unknown,id:unknown)=>images.read(session(sid).id,id),workspace:(id:unknown)=>new SessionWorkspace(root,session(id).id)};
 }
 export type WebApp=ReturnType<typeof createWebApp>;

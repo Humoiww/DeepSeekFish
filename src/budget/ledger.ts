@@ -43,6 +43,26 @@ export class Ledger {
     this.store.db.prepare('UPDATE image_jobs SET reset=1 WHERE day=?').run(day);
     this.store.audit('local-reset','web',JSON.stringify({images,pairedCodex:paired.count,pairedMs:paired.ms}));return {images,pairedCodex:paired.count};
   });}
+  /** Human reset of today's settled token allowance across QQ/Web scopes.
+   * Outstanding charges remain, so late settlement cannot subtract below zero. */
+  resetTokens(){return this.store.transaction(()=>{
+    const day=dayKey(),before=this.value('tokens','*',day),webBefore=this.value('webTokens','*',day);
+    const outstanding=this.store.db.prepare("SELECT * FROM reservations WHERE day=? AND kind IN ('model','search') AND state IN ('held','unknown')").all(day) as unknown as Reservation[];
+    const retained=new Map<string,{tokens:number;webTokens:number}>();let pendingTokens=0,uncertainTokens=0;
+    for(const r of outstanding){
+      const tokens=r.input+r.output,webTokens=r.kind==='search'?r.input:0;
+      if(r.state==='held')pendingTokens+=tokens;else uncertainTokens+=tokens;
+      for(const scope of ['*','g:'+r.grp]){
+        const current=retained.get(scope)??{tokens:0,webTokens:0};current.tokens+=tokens;current.webTokens+=webTokens;retained.set(scope,current);
+      }
+    }
+    const rows=this.store.db.prepare("SELECT DISTINCT scope FROM counters WHERE day=? AND metric IN ('tokens','webTokens')").all(day) as {scope:string}[];
+    for(const scope of new Set(['*',...rows.map(r=>r.scope),...retained.keys()]))for(const metric of ['tokens','webTokens'] as const){
+      this.add(metric,(retained.get(scope)?.[metric]??0)-this.value(metric,scope,day),scope,day);
+    }
+    const retainedTokens=pendingTokens+uncertainTokens,result={day,clearedTokens:Math.max(0,before-retainedTokens),clearedWebTokens:Math.max(0,webBefore-this.value('webTokens','*',day)),retainedTokens,pendingTokens,uncertainTokens};
+    this.store.audit('local-token-reset','web',JSON.stringify(result));return result;
+  });}
   private charge(kind:Kind,group:string,user:string,input:number,output:number,ms:number,day=dayKey(),imageJob=false):string{
     const cfg=this.config(); const id=randomUUID();
     if (![input,output,ms].every(n => Number.isSafeInteger(n) && n >= 0)) throw new FishError('INVALID_RESERVATION');

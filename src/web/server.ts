@@ -65,6 +65,10 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         else if(url.pathname==='/api/qq')value=app.configureQQ(b);
         else if(url.pathname==='/api/codex-quota/refresh')value=await app.refreshQuota();
         else if(url.pathname==='/api/images/reset')value=app.resetImages();
+        else if(url.pathname==='/api/tokens/reset'){
+          if(Object.keys(b).length)throw new FishError('INVALID_TOKEN_RESET_REQUEST');
+          value=app.resetTokens();
+        }
         else if(url.pathname==='/api/chat'){
           const abort=new AbortController();
           const disconnected=()=>{if(!res.writableEnded)abort.abort();};res.once('close',disconnected);
