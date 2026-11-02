@@ -7,6 +7,7 @@ import { FishError } from '../types.js';
 import { publicUrl } from './provider.js';
 import { pageEvidence } from './evidence.js';
 import { bilibiliSpace } from './bilibili.js';
+import { tiebaPage } from './tieba.js';
 
 export function publicAddress(address:string):boolean{
   if(isIP(address)===4){
@@ -20,8 +21,10 @@ export function publicAddress(address:string):boolean{
 }
 export interface PublicResource {url:string;type:string;bytes:Buffer}
 export type PublicReader=(url:string,limit:number,signal?:AbortSignal)=>Promise<PublicResource>;
+export type PublicPoster=(url:string,body:URLSearchParams,signal?:AbortSignal)=>Promise<PublicResource>;
 /** Pin checked DNS addresses on every hop; never forward cookies, auth or local files. */
-export const readPublic:PublicReader=async(raw,limit,signal)=>{
+export const readPublic:PublicReader=(raw,limit,signal)=>requestPublic(raw,limit,signal);
+async function requestPublic(raw:string,limit:number,signal?:AbortSignal,post?:Buffer):Promise<PublicResource>{
   const joined=AbortSignal.any([AbortSignal.timeout(20000),...(signal?[signal]:[])]);
   for(let hop=0;hop<6;hop++){
     joined.throwIfAborted();
@@ -34,11 +37,12 @@ export const readPublic:PublicReader=async(raw,limit,signal)=>{
     if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw new FishError('WEB_PRIVATE_ADDRESS');
     const address=addresses.find(a=>a.family===4)??addresses[0];
     const response=await new Promise<{status:number;location?:string;type:string;bytes:Buffer}>((resolve,reject)=>{
-      const request=(url.protocol==='https:'?https:http).get(url,{
-        agent:false,signal:joined,
+      const options={
+        agent:false as const,signal:joined,
         headers:{'User-Agent':'DeepSeekFish/0.1 (+https://github.com/Humoiww/DeepSeekFish)','Accept':'text/html,application/xhtml+xml,text/plain,image/*;q=0.9,*/*;q=0.5','Accept-Encoding':'identity'},
         lookup:((_host:any,opts:any,cb:any)=>opts.all?cb(null,[address]):cb(null,address.address,address.family)) as any,
-      },res=>{
+      };
+      const onResponse=(res:http.IncomingMessage)=>{
         const status=res.statusCode??0,type=String(res.headers['content-type']??'');
         if([301,302,303,307,308].includes(status)){res.destroy();resolve({status,location:res.headers.location,type,bytes:Buffer.alloc(0)});return;}
         if(status<200||status>=300){res.destroy();reject(new FishError('WEB_HTTP_'+status));return;}
@@ -47,13 +51,22 @@ export const readPublic:PublicReader=async(raw,limit,signal)=>{
         const chunks:Buffer[]=[];let size=0;
         res.on('data',chunk=>{size+=chunk.length;if(size>limit){res.destroy(new FishError('WEB_BODY_TOO_LARGE'));return;}chunks.push(chunk);});
         res.on('error',reject);res.on('end',()=>resolve({status,type,bytes:Buffer.concat(chunks)}));
-      });request.on('error',reject);
+      };
+      const request=post?https.request(url,{...options,method:'POST',maxVersion:'TLSv1.2',headers:{...options.headers,'Content-Type':'application/x-www-form-urlencoded','Content-Length':String(post.length)}},onResponse):(url.protocol==='https:'?https:http).get(url,options,onResponse);
+      request.on('error',reject);if(post)request.end(post);
     });
-    if(response.location){raw=new URL(response.location,url).href;continue;}
+    if(response.location){if(post)throw new FishError('WEB_POST_REDIRECT_REJECTED');raw=new URL(response.location,url).href;continue;}
     if(response.status>=300)throw new FishError('WEB_REDIRECT_INVALID');
     return {url:url.href,type:response.type,bytes:response.bytes};
   }
   throw new FishError('WEB_REDIRECT_LIMIT');
+}
+/** Only these public read APIs accept a POST body; models cannot choose an API action. */
+export const postPublic:PublicPoster=(raw,body,signal)=>{
+  const url=new URL(raw);
+  if(url.origin!=='https://tiebac.baidu.com'||url.search||url.hash||!['/c/f/frs/page','/c/f/pb/page','/c/f/pb/floor'].includes(url.pathname))throw new FishError('WEB_POST_TARGET_DENIED');
+  const bytes=Buffer.from(body.toString());if(bytes.length>16384)throw new FishError('WEB_BODY_TOO_LARGE');
+  return requestPublic(url.href,2097152,signal,bytes);
 };
 export function imageAddress(raw:string,base?:string){
   const u=new URL(raw,base);
@@ -115,9 +128,12 @@ function jsonAssets(value:unknown,base:string){
     }
   };visit(value);return {title:'公开JSON数据',text:JSON.stringify(value).slice(0,200000),images:[...images.values()],links:[...links.values()]};
 }
-export async function browsePage(url:string,offset=0,signal?:AbortSignal,reader:PublicReader=readPublic,query='',textOffset=0){
+export async function browsePage(url:string,offset=0,signal?:AbortSignal,reader:PublicReader=readPublic,query='',textOffset=0,poster:PublicPoster=postPublic){
   if(!Number.isSafeInteger(offset)||offset<0||offset>100000||!Number.isSafeInteger(textOffset)||textOffset<0||textOffset>200000||typeof query!=='string'||query.length>200)throw new FishError('WEB_OFFSET_INVALID');
   if(typeof url!=='string'||url.length>8192||!publicUrl(url))throw new FishError('WEB_PUBLIC_URL_REQUIRED');
+  const tieba=await tiebaPage(url,poster,signal);
+  if(tieba)return {...tieba,text:tieba.text.slice(textOffset,textOffset+5000),textOffset,nextTextOffset:textOffset+5000<tieba.text.length?textOffset+5000:null,
+    images:tieba.images.slice(offset,offset+25),links:tieba.links.slice(offset,offset+25),totalImages:tieba.images.length,totalLinks:tieba.links.length,nextOffset:Math.max(tieba.images.length,tieba.links.length)>offset+25?offset+25:null};
   const feed=await bilibiliSpace(url,reader,signal);
   if(feed)return {...feed,text:feed.text.slice(textOffset,textOffset+5000),textOffset,nextTextOffset:textOffset+5000<feed.text.length?textOffset+5000:null,
     images:feed.images.slice(offset,offset+25),links:feed.links.slice(offset,offset+25),totalImages:feed.images.length,totalLinks:feed.links.length,nextOffset:Math.max(feed.images.length,feed.links.length)>offset+25?offset+25:null};

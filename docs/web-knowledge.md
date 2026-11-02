@@ -42,6 +42,23 @@ runtime/tools/node/bin/node scripts/check-bilibili-public.mjs 目标数字UID
 
 参考的社区 skill/方法：[B 站 API skill](https://github.com/Nek0Neko/claude-skill-bilibili-api)、[browser-harness 的 B 站导航说明](https://github.com/browser-use/browser-harness/blob/main/agent-workspace/domain-skills/bilibili/navigation.md)、[BiliStalkerMCP](https://github.com/222wcnm/BiliStalkerMCP)。Skill 提供调用知识；MCP 的动态能力仍依赖底层 B 站接口和必要登录态，安装名称本身不会消除 412。本次复用现有 TypeScript 工具实现可用公开读取，不额外安装 Python/MCP 框架。
 
+### 贴吧自主浏览
+
+QQ 每轮的 `browse_page` 可直接打开 `https://tieba.baidu.com/f?kw=吧名`；吧名由模型选择，无固定名单或聊天关键词路由。列表返回帖子链接、作者、发帖时间和置顶标记。打开 `/p/帖子ID` 读取正文与楼层，再沿 `commentsUrl` 读取楼中楼，沿 `nextPage` 翻页；正文过长用 `textOffset` 续读。论坛列表为摘要，不代表读完了帖子；置顶不代表最新。帖子原图可接现有 `download_image`、看图和收藏流程。
+
+2026-11-02 在此 VPS 定位：网页 GET 返回 403，DeepSeek Fetch 返回 404，但贴吧客户端的公开只读表单 POST 可返回 JSON。实现参考社区 [aiotieba](https://github.com/lumina37/aiotieba) 的接口与签名方法，并针对实际返回兼容旧版 JSON：`tiebac.baidu.com/c/f/frs/page`、`/c/f/pb/page`、`/c/f/pb/floor`。只有这三个读取地址允许 POST；使用 TLS 1.2（保留证书校验）、公共 DNS 校验和地址绑定，无账号、Cookie 或 BDUSS。没有新增依赖、代理或登录流程，也没有开放发帖/点赞等写操作。
+
+工具保留真实 ID、作者、发布时间、父楼关联、API 报告数量与当前返回数量，不将头像当成帖子配图。只保证公开返回的页面；删除、隐藏、需登录或未来风控拒绝的内容可能缺失，错误如实返回。只读请求无第三方 API 费用，模型读取内容仍计入原有 token 预算。
+
+本次实测：deepseek 吧列表、明日方舟帖子楼层与楼中楼均成功；列表第二页取得不同帖子，帖子第二页从后续楼层继续，原图完成下载/解码。真实 DeepSeek 在只收到“吧名你自己挑，看看正文和回复”的请求、使用同一套 QQ 工具时，自选明日方舟吧，再选帖子读取三层发言，随后自然回复。该隔离验收未发送 QQ 消息，三轮模型共 20,710 tokens，计入现有账本。15 项定向测试通过，未重复全量测试。
+
+可复现检查（构建后运行，不调用付费模型、不发送 QQ 消息）：
+
+```bash
+runtime/tools/node/bin/node scripts/check-tieba-public.mjs '你想看的吧名'
+runtime/tools/node/bin/node scripts/check-tieba-public.mjs 'https://tieba.baidu.com/p/帖子ID'
+```
+
 ## 5000-token 知识库
 
 位置：`runtime/data/knowledge.sqlite`，与人格独立。QQ、网页、网页生图规划、每日空间文案的 system prompt 都完整包含当前知识库，不做两天裁剪。聊天归档仍保留原来的两日自动回忆规则。
