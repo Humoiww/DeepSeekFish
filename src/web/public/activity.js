@@ -2,7 +2,7 @@
 (()=>{
   document.addEventListener('exploration-history',async e=>{closeDrawers();for(const id of ['activity-state','activity-conversation','activity-from','activity-to','activity-query'])$(id).value='';$('activity-kind').value='exploration';offset=0;$('activity-dialog').showModal();await refresh(true);if(e.detail)await openDetail('exploration:'+e.detail);});
   const kindNames={qq:'QQ 对话',web:'网页对话',news:'早间新闻',memory:'记忆回顾',diary:'空间动态',image:'Codex 生图',audit:'系统事件',exploration:'自主探索'};
-  const stateNames={unconfirmed:'送达未确认',paused:'资源暂停',cancelled:'已停止',interrupted:'重启中断',completed:'已完成',failed:'失败',partial:'部分失败',running:'进行中',pending:'等待结果',unknown:'状态未记录'};
+  const stateNames={unconfirmed:'送达未确认',paused:'已暂停',cancelled:'已停止',interrupted:'重启中断',completed:'已完成',failed:'失败',partial:'部分失败',running:'进行中',pending:'等待结果',unknown:'状态未记录'};
   const toolNames={read_curiosity:'翻阅好奇心日志',write_curiosity:'更新好奇心日志',read_exploration:'回看探索',send_message:'主动私聊',propose_project:'提出创意',finish_exploration:'结束闲逛',publish_qzone:'发布空间',reply:'回复消息',search_web:'联网搜索',fetch_page:'查询网页',browse_page:'浏览网页',download_image:'下载图片',generate_image:'请求生图',send_image:'发送成图',send_meme:'发送表情',list_images:'浏览图库',view_images:'查看原图',collect_meme:'收藏表情',remember_images:'记录图片',get_knowledge:'读取知识库',update_knowledge:'更新知识库',recall_chat:'翻阅聊天历史',read_forward:'读取转发记录',get_qzone:'读取空间动态',get_person:'查看 QQ 资料',get_quota:'查看额度',read_tool_result:'继续读取工具结果',draft_news:'准备新闻',finish_memory:'完成记忆回顾',image_plan:'设计画面',codex_record:'Codex 返回结果'};
   let offset=0,next=null,selected=null,sequence=0,detailSequence=0,searchTimer,items=[];
   const number=n=>Number(n||0).toLocaleString('zh-CN');
@@ -11,9 +11,10 @@
   const cacheText=u=>u.cacheKnownCalls?'缓存输入 '+number(u.cachedInput)+' / 未缓存输入 '+number(u.uncachedInput)+(u.cacheUnknownInput?'；另有 '+number(u.cacheUnknownInput)+' 输入未拆分':''):'缓存拆分：未记录';
   function usagePanel(u){
     const panel=node('div','activity-usage-panel');
-    for(const [label,value] of [['输入 token',number(u.input)],['缓存输入',u.cacheKnownCalls?number(u.cachedInput):'未记录'],['未缓存输入',u.cacheKnownCalls?number(u.uncachedInput):'未记录'],['输出 token',number(u.output)]]){const cell=node('div');cell.append(node('small','',label),node('strong','',value));panel.append(cell);}
+    for(const [label,value] of [['输入 token',u.known?number(u.input):'未返回'],['缓存输入',u.cacheKnownCalls?number(u.cachedInput):'未记录'],['未缓存输入',u.cacheKnownCalls?number(u.uncachedInput):'未记录'],['输出 token',u.known?number(u.output):'未返回']]){const cell=node('div');cell.append(node('small','',label),node('strong','',value));panel.append(cell);}
     if(u.cacheUnknownInput)panel.append(node('p','activity-usage-note','另有 '+number(u.cacheUnknownInput)+' 输入 token 未记录缓存拆分。'));
     if(u.unreportedCalls)panel.append(node('p','activity-usage-note',number(u.unreportedCalls)+' 次模型调用未提供用量，未计入这些数字。'));
+    if(u.unconfirmedTokens)panel.append(node('p','activity-usage-note',number(u.unconfirmedTokens)+' token 预留未确认，并非已确认消耗；账本保留这笔预留。'));
     return panel;
   }
   const date=n=>n?new Date(n).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong',hour12:false,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}):'时间未记录';
@@ -21,6 +22,21 @@
   function block(title,value,expanded=false){
     const details=node('details','activity-block'),summary=node('summary','',title);details.open=expanded;details.append(summary);
     const text=typeof value==='string'?value:JSON.stringify(value,null,2),pre=node('pre','activity-json',text);details.append(pre);return details;
+  }
+  function requestBlock(request){
+    const details=node('details','activity-block');details.append(node('summary','','本次实际输入 · '+(request.messages?.length||0)+' 条消息'));
+    const roles={system:'系统',user:'用户',assistant:'大肥鱼',tool:'工具结果'};
+    for(const [i,m] of (request.messages||[]).entries()){
+      const part=node('details','activity-block');part.open=m.role==='user'||m.role==='assistant';
+      part.append(node('summary','',(i+1)+'. '+m.role+' · '+(roles[m.role]||m.role)+(m.tool_call_id?' · '+m.tool_call_id:'')),node('pre','activity-json',typeof m.content==='string'?m.content:JSON.stringify(m.content,null,2)));
+      if(m.tool_calls?.length)part.append(block('原生工具调用',m.tool_calls,true));details.append(part);
+    }
+    const {messages,...options}=request;details.append(block('模型参数与当轮可用工具',options));return details;
+  }
+  function failureSummary(e){
+    const d=e.diagnostic??e.result?.diagnostic,items=Array.isArray(d)?d:d?[d]:[];
+    const causes=items.map(item=>{const chain=[];for(let at=item;at;at=at.cause)chain.push((at.name?at.name+': ':'')+(at.message||at.code||''));return chain.join('\n↳ ');});
+    return [e.name+(e.modelCall?' · 调用 #'+e.modelCall:'')+(e.round===undefined?'':' · 第 '+(e.round+1)+' 轮')+(e.durationMs===undefined?'':' · '+(e.durationMs/1000).toFixed(2)+' 秒'),e.result?.error,...(causes.length?causes:['旧记录未保存更多异常详情'])].filter(Boolean).join('\n');
   }
   function tag(state){return node('span','activity-state state-'+state,stateNames[state]||state);}
   function stats(t){
@@ -49,9 +65,11 @@
       const download=node('button','quiet-button','下载记录');download.type='button';download.onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(r,null,2)],{type:'application/json'})),a=node('a');a.href=url;a.download=r.id.replace(':','-')+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
       toolbar.append(back,tag(r.state),download);box.append(toolbar,node('h3','',kindNames[r.kind]||r.kind),node('p','activity-detail-meta',date(r.at)+' · '+conversation(r.conversation)+(r.speaker?' · 发言者 '+r.speaker:'')+(r.durationMs!==null?' · '+(r.durationMs/1000).toFixed(1)+' 秒':'')));
       box.append(block(r.kind==='image'?'生图提示词':'问题 / 任务',r.title,true));
+      const failures=r.events.filter(e=>e.state==='failed');
+      if(failures.length)box.append(block('失败位置与原因',failures.map(failureSummary).join('\n\n'),true));
       if(r.reply)box.append(block('回复 / 结果',r.reply,true));
-      box.append(node('p','activity-detail-meta',r.usage.known?'已记录输入 '+number(r.usage.input)+' + 输出 '+number(r.usage.output)+' = '+number(r.usage.total)+' token':'这条记录没有保存 DeepSeek token 用量。'));
-      if(r.usage.known)box.append(usagePanel(r.usage));
+      box.append(node('p','activity-detail-meta',r.usage.known?'已记录输入 '+number(r.usage.input)+' + 输出 '+number(r.usage.output)+' = '+number(r.usage.total)+' token':r.usage.unreportedCalls?'模型没有返回 token 用量，实际消耗未确认。':'这条记录没有保存 DeepSeek token 用量。'));
+      if(r.usage.known||r.usage.calls)box.append(usagePanel(r.usage));
       if(r.related.length){const related=node('div','activity-related');related.append(node('span','','关联生图记录：'));for(const id of r.related){const b=node('button','quiet-button',id.slice(6,14)+' ↗');b.type='button';b.onclick=()=>openDetail(id);related.append(b);}box.append(related);}
       if(r.kind==='image')void previewImage(r.id,box,version);
       box.append(node('h3','',r.events.length?'调用与动作':'没有保存调用明细'));
@@ -69,6 +87,9 @@
         if(e.result?.billing)step.append(node('p','activity-step-meta','联网请求 '+e.result.billing.requests+' 次 · 折算 '+number(e.result.billing.chargedTokens)+' token'+(e.result.billing.cached?' · 缓存命中':'')+(e.result.billing.uncertain?' · 费用未确认，保留预留量':'')));
         if(e.type==='tool')step.append(node('p','activity-step-meta','以上为 DeepSeek 决策调用用量；搜索、GPT 生图等工具的独立服务费用不算作这里的对话 token。'));
         if(e.round!==undefined||e.at)step.append(node('p','activity-step-meta',(e.round!==undefined?'第 '+(e.round+1)+' 轮':'')+(e.at?' · '+date(e.at):'')));
+        if(e.durationMs!==undefined)step.append(node('p','activity-step-meta','耗时 '+(e.durationMs/1000).toFixed(2)+' 秒'));
+        if(e.request)step.append(requestBlock(e.request));
+        if(e.diagnostic)step.append(block('实际异常 · 原因链与堆栈',e.diagnostic,true));
         if(e.args!==undefined)step.append(block('调用参数',e.args,true));if(e.result!==undefined)step.append(block('返回结果',e.result,true));
         if(e.phases?.length)step.append(block('执行阶段',e.phases));if(e.callId)step.append(node('small','activity-call-id',e.callId));box.append(step);
       }

@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { safePath,makeDir,writePrivate } from '../paths.js';
+import { safePath,makeDir,writePrivate,writePrivateAtomic } from '../paths.js';
 import { Store,redact } from '../storage/db.js';
 import { type Config,conversationAllowed } from '../config.js';
-import { type BudgetedModel } from '../agent/model.js';
+import { type BudgetedModel,modelPayload } from '../agent/model.js';
+import {traceModel} from '../agent/model-trace.js';
+import {diagnosticSafe,errorDiagnostic} from '../diagnostics.js';
 import { TurnContext,contextTools } from '../agent/context.js';
 import { FishError,codeOf,type ChatMessage,type ModelTool,type Transport,type Message } from '../types.js';
 import { qqChatTools,imageLibraryTools } from './chat-tools.js';
@@ -55,7 +57,7 @@ export class DailyNews {
     store.db.exec('CREATE TABLE IF NOT EXISTS daily_news(day TEXT PRIMARY KEY,owner TEXT NOT NULL,state TEXT NOT NULL,draft TEXT,error TEXT,updated INTEGER NOT NULL,lease INTEGER NOT NULL DEFAULT 0,lock TEXT,attempts INTEGER NOT NULL DEFAULT 0)');
   }
   private config(){const s=newsSettings(this.root),c=this.cfg();if(!s?.enabled||!c.enabled||!conversationAllowed(c,'private:'+s.owner))throw new FishError('DAILY_NEWS_DISABLED');return s;}
-  private log(name:string,data:unknown){makeDir(this.root,'runtime/logs/daily-news');writePrivate(this.root,'runtime/logs/daily-news/'+name+'.json',redact(JSON.stringify(data,null,2)));}
+  private log(name:string,data:unknown){makeDir(this.root,'runtime/logs/daily-news');writePrivateAtomic(this.root,'runtime/logs/daily-news/'+name+'.json',JSON.stringify(diagnosticSafe(data),null,2));}
   private row(day:string){return this.store.db.prepare('SELECT * FROM daily_news WHERE day=?').get(day) as NewsRow|undefined;}
   private save(day:string,values:Record<string,unknown>){const fields=Object.entries({...values,updated:this.now()});this.store.db.prepare('UPDATE daily_news SET '+fields.map(([k])=>k+'=?').join(',')+' WHERE day=?').run(...fields.map(([,v])=>v) as any[],day);const {lock:_lock,...row}=this.row(day)!;this.log(day,row);}
 
@@ -63,11 +65,12 @@ export class DailyNews {
   async remember(){
     const s=this.config(),trace:any[]=[],file='memory-'+randomUUID(),context=new TurnContext(),used=new Set<string>();
     const tools=[...recallTools,...contextTools,...knowledgeTools,memoryDecision];
+    const startedAt=this.now(),saveTrace=()=>this.log(file,{startedAt,at:this.now(),conversation:'private:'+s.owner,trace});
     const messages:ChatMessage[]=[{role:'system',content:qqPrompt(this.root)},{role:'user',content:JSON.stringify({task:'这是后台记忆回顾，不发QQ消息。近期私聊在recent；自己判断哪些知识、偏好、约定或经验值得长期记住，也可以不更新。当前QQ工具在qqTools，联网方法在qqWebTools；历史失败是当时的情况，不代表现在不能做。',qqTools:this.cfg().qqTransport==='onebot'?[...qqChatTools(true,this.cfg().images,true),...imageLibraryTools(),...forwardTools].map(t=>t.function.name):[],qqWebTools:this.cfg().search?[...webTools,...browseTools].map(t=>({name:t.function.name,description:t.function.description})):[],...newsMemory(this.store,s.owner,this.now())})}];
     try{
       for(let round=0;round<4;round++){
         context.compact(round);
-        const r=await this.model.complete('private:'+s.owner,'memory-review',messages,{tools,requireTool:true});trace.push({round,...r});
+        const r=await traceModel(trace,saveTrace,modelPayload(this.cfg(),messages,this.cfg().maxOutputTokens,{tools,requireTool:true}),round,onReservation=>this.model.complete('private:'+s.owner,'memory-review',messages,{tools,requireTool:true,onReservation}));
         if(!r.tool_calls?.length||r.finishReason==='length')throw new FishError('MEMORY_REVIEW_INVALID');
         messages.push({role:'assistant',content:r.text,tool_calls:r.tool_calls});
         for(const call of r.tool_calls){
@@ -85,13 +88,13 @@ export class DailyNews {
               result=args.memory===undefined?{ok:true,...knowledgeSnapshot(this.root)}:updateKnowledge(this.root,args.memory);
               trace.push({tool:call.function.name,result});if(result.ok)return result;
             }else throw new FishError('TOOL_NOT_ALLOWED');
-          }catch(e){result={error:codeOf(e)};}
+          }catch(e){result={error:codeOf(e)};trace.push({tool:call.function.name,callId:call.id,phase:'error',diagnostic:errorDiagnostic(e)});}
           messages[0]={role:'system',content:qqPrompt(this.root)};
           trace.push({tool:call.function.name,result});messages.push(context.result(call.function.name,call.id,result,round));
         }
       }
       throw new FishError('MEMORY_REVIEW_INCOMPLETE');
-    }finally{this.log(file,{at:this.now(),trace});}
+    }catch(e){trace.push({error:codeOf(e),diagnostic:errorDiagnostic(e),phase:'run'});throw e;}finally{saveTrace();}
   }
 
   private async compose(owner:string,day:string){
@@ -99,10 +102,11 @@ export class DailyNews {
     const tools=[...webTools,...browseTools.filter(t=>t.function.name==='browse_page'),...recallTools,...contextTools,...knowledgeTools,draftNews];
     const messages:ChatMessage[]=[{role:'system',content:qqPrompt(this.root)},{role:'user',content:JSON.stringify({task:'每天早上的新闻私聊。自由挑你感兴趣、或与我们聊过的话题相关的新消息，查过来源和发布时间后，按你自己的性格分享给我，附来源链接。近期私聊在recent。',now:new Date(this.now()).toISOString(),...newsMemory(this.store,owner,this.now())})}];
     const trace:any[]=[],sources=new Set<string>(),used=new Set<string>(),context=new TurnContext();
+    const file='research-'+day+'-'+randomUUID(),startedAt=this.now(),saveTrace=()=>this.log(file,{startedAt,at:this.now(),conversation:'private:'+owner,trace});
     try{
       for(let round=0;round<8;round++){
         context.compact(round);
-        const r=await this.model.complete('private:'+owner,'daily-news',messages,{tools,requireTool:true});trace.push({round,...r});
+        const r=await traceModel(trace,saveTrace,modelPayload(this.cfg(),messages,this.cfg().maxOutputTokens,{tools,requireTool:true}),round,onReservation=>this.model.complete('private:'+owner,'daily-news',messages,{tools,requireTool:true,onReservation}));
         if(!r.tool_calls?.length||r.finishReason==='length')throw new FishError('DAILY_NEWS_DRAFT_INVALID');
         messages.push({role:'assistant',content:r.text,tool_calls:r.tool_calls});
         for(const call of r.tool_calls){
@@ -134,12 +138,12 @@ export class DailyNews {
                 trace.push({draft:{text:full,sources:urls},memory});return {text:full,sources:urls};
               }
             }else throw new FishError('TOOL_NOT_ALLOWED');
-          }catch(e){result={error:codeOf(e)};}
+          }catch(e){result={error:codeOf(e)};trace.push({tool:call.function.name,callId:call.id,phase:'error',diagnostic:errorDiagnostic(e)});}
           trace.push({tool:call.function.name,result});messages.push(context.result(call.function.name,call.id,result,round));
         }
       }
       throw new FishError('DAILY_NEWS_TOOL_LIMIT');
-    }finally{this.log('research-'+day+'-'+randomUUID(),{at:this.now(),trace});}
+    }catch(e){trace.push({error:codeOf(e),diagnostic:errorDiagnostic(e),phase:'run'});throw e;}finally{saveTrace();}
   }
 
   async run(){

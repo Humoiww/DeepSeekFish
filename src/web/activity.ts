@@ -5,15 +5,17 @@ import { FishError,type Usage } from '../types.js';
 import { inputCache } from '../usage.js';
 import { MAX_IMAGE_BYTES } from '../image/limits.js';
 import { safePath } from '../paths.js';
+import {diagnosticSafe} from '../diagnostics.js';
 
 export type ActivityKind='qq'|'web'|'news'|'memory'|'diary'|'image'|'audit'|'exploration';
-type Step={type:string;name:string;state?:string;at?:number;args?:unknown;result?:any;usage?:Usage;callId?:string;round?:number;phases?:unknown[];modelCall?:number;decision?:{call:number;usage?:Usage;actions:string[]}};
-type UsageSummary={input:number;output:number;total:number;calls:number;known:boolean;cachedInput:number;uncachedInput:number;cacheKnownCalls:number;cacheUnknownInput:number;unreportedCalls:number};
+type Step={type:string;name:string;state?:string;at?:number;durationMs?:number;request?:any;diagnostic?:any;args?:unknown;result?:any;usage?:Usage;callId?:string;round?:number;phases?:unknown[];modelCall?:number;decision?:{call:number;usage?:Usage;actions:string[]}};
+type UsageSummary={input:number;output:number;total:number;calls:number;known:boolean;cachedInput:number;uncachedInput:number;cacheKnownCalls:number;cacheUnknownInput:number;unreportedCalls:number;unconfirmedTokens:number};
 type RecordItem={id:string;kind:ActivityKind;title:string;conversation:string;speaker:string;at:number;updated:number;durationMs:number|null;state:string;usage:UsageSummary;counts:{tools:number;search:number;fetch:number;browse:number;downloads:number;images:number;sends:number};reply:string;errors:number;events:Step[];related:string[];raw:unknown};
 const kinds=new Set(['qq','web','news','memory','diary','image','audit','exploration']);
 const secret=/^(?:authorization|cookie|set-cookie|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|skey|p_skey|rkey)$/i;
 /** Log data is display-only. Never expose credentials, signed media handles or inline binaries. */
 export function activitySafe(value:any,root='',depth=0):any{
+  if(depth===0)value=diagnosticSafe(value);
   if(depth>24)return '[层级过深，已省略]';
   if(typeof value==='string'){
     let text=redact(value).replace(/data:[^;\s]+;base64,[A-Za-z0-9+/=]+/g,'[图片数据省略]')
@@ -38,7 +40,7 @@ function resultState(value:any){
 }
 function base(id:string,kind:ActivityKind,d:any,mtime:number):RecordItem{
   const at=time(d.startedAt??d.created??d.inputContext?.context?.currentTurn?.at??d.at??d.updated)||mtime;
-  return {id,kind,title:'',conversation:d.conversation??'',speaker:d.inputContext?.context?.qqIdentity?.speaker??'',at,updated:time(d.finishedAt??d.updated??d.at)||mtime,durationMs:d.finishedAt&&d.startedAt?Math.max(0,d.finishedAt-d.startedAt):null,state:'unknown',usage:{input:0,output:0,total:0,calls:0,known:false,cachedInput:0,uncachedInput:0,cacheKnownCalls:0,cacheUnknownInput:0,unreportedCalls:0},counts:{tools:0,search:0,fetch:0,browse:0,downloads:0,images:0,sends:0},reply:'',errors:0,events:[],related:[],raw:d};
+  return {id,kind,title:'',conversation:d.conversation??'',speaker:d.inputContext?.context?.qqIdentity?.speaker??'',at,updated:time(d.finishedAt??d.updated??d.at)||mtime,durationMs:d.finishedAt&&d.startedAt?Math.max(0,d.finishedAt-d.startedAt):null,state:'unknown',usage:{input:0,output:0,total:0,calls:0,known:false,cachedInput:0,uncachedInput:0,cacheKnownCalls:0,cacheUnknownInput:0,unreportedCalls:0,unconfirmedTokens:0},counts:{tools:0,search:0,fetch:0,browse:0,downloads:0,images:0,sends:0},reply:'',errors:0,events:[],related:[],raw:d};
 }
 function addUsage(r:RecordItem,usage:any):Usage|undefined{
   r.usage.calls++;
@@ -55,29 +57,40 @@ function count(r:RecordItem,name:string){
 }
 function traceRecord(r:RecordItem,trace:any[]){
   let currentModel:Step|undefined;
+  const diagnostic=(e:any)=>e.diagnostic??(e.diagnostics?.length?e.diagnostics:undefined)??(e.error==='INTERNAL_ERROR'?{missing:true,message:'旧版本只保存了 INTERNAL_ERROR，没有保留原始异常，无法从该记录恢复具体原因。'}:undefined);
   const recordModel=(e:any,calls:any[])=>{
-    currentModel={type:'model',name:'DeepSeek',modelCall:r.usage.calls+1,round:e.round,usage:addUsage(r,e.usage),state:e.error?'failed':e.state??'completed',result:{text:e.assistant??e.text??'',finishReason:e.finishReason,error:e.error,toolCalls:calls?.map((c:any)=>c.function?.name??c.name)}};
+    currentModel={type:'model',name:'DeepSeek',modelCall:e.notRequested?undefined:r.usage.calls+1,round:e.round,at:e.startedAt,durationMs:e.durationMs,request:e.request,diagnostic:diagnostic(e),usage:e.notRequested?undefined:addUsage(r,e.usage),state:e.error?'failed':e.state??'completed',result:{text:e.assistant??e.text??'',finishReason:e.finishReason,error:e.error,responseId:e.responseId,reservation:e.reservation,notRequested:e.notRequested,toolCalls:calls?.map((c:any)=>c.function?.name??c.name)}};
+    if(e.reservation?.state==='unknown')r.usage.unconfirmedTokens+=finite(e.reservation.reservedTokens??e.reservation.retainedTokens);
     r.events.push(currentModel);
   };
   for(const e of trace){
     const calls=e.toolCalls??e.tool_calls;
-    if(e.name==='model_usage'||e.usage||Array.isArray(calls))recordModel(e,calls);
+    const isModel=e.kind==='model'||e.name==='model_usage'||e.usage||Array.isArray(calls);
+    if(isModel)recordModel(e,calls);
     if(e.contextInput)r.events.push({type:'context',name:'本轮输入规模',round:e.round,result:e.contextInput});
     if(e.continuation)r.events.push({type:'context',name:'探索继续提示',round:e.round,result:e.continuation});
     if(e.name!=='model_usage'&&Array.isArray(calls))for(const c of calls){const name=c.function?.name??'unknown';count(r,name);r.events.push({type:'tool',name,callId:c.id,round:e.round,args:obj(c.function?.arguments),state:'pending',modelCall:currentModel?.modelCall});}
     if(e.tool&&Object.hasOwn(e,'result')){
-      let step=r.events.find(s=>s.type==='tool'&&s.name===e.tool&&s.state==='pending');
+      let step=r.events.find(s=>s.type==='tool'&&(e.callId?s.callId===e.callId:s.name===e.tool&&s.state==='pending'));
       if(!step){step={type:'tool',name:e.tool};r.events.push(step);count(r,e.tool);}
-      step.result=obj(e.result);step.state=resultState(step.result);if(step.state==='failed'||step.state==='partial')r.errors++;
+      step.result=obj(e.result);step.state=resultState(step.result);step.diagnostic=diagnostic(e);step.at=e.startedAt;step.durationMs=e.finishedAt&&e.startedAt?e.finishedAt-e.startedAt:undefined;if(step.state==='failed'||step.state==='partial')r.errors++;
       if(step.name==='reply'&&step.result?.sent===true){r.reply=String((step.args as any)?.text??'');r.state='completed';}
       if(step.result?.imageId)r.related.push('image:'+step.result.imageId);
       if(step.name==='finish_memory'&&step.result?.ok)r.state='completed';
     }else if(e.tool&&e.phase){const step=[...r.events].reverse().find(s=>s.name===e.tool);if(step)(step.phases??=[]).push(e);else r.events.push({type:'phase',name:e.tool,at:e.at,result:e});}
     if(e.draft){r.reply=e.draft.text??'';r.state='completed';const step=r.events.find(s=>s.name==='draft_news'&&s.state==='pending');if(step){step.state='completed';step.result=e.draft;}r.events.push({type:'result',name:'草稿',result:e.draft});}
-    if(e.error){r.state='failed';r.errors++;r.events.push({type:'error',name:String(e.error),round:e.round,result:e});}
+    if(e.error){
+      r.state='failed';
+      // A final catch may repeat the model failure; retain raw evidence without
+      // presenting the same exception as a second failed action.
+      const duplicate=(e.phase==='run'||e.phase==='turn')&&r.events.some(s=>s.result?.error===e.error&&s.state==='failed');
+      if(!duplicate){r.errors++;if(!isModel)r.events.push({type:'error',name:String(e.error),state:'failed',round:e.round,diagnostic:diagnostic(e),result:e});}
+    }
     if(e.assistant&&!calls?.length&&!e.error)r.reply=e.assistant;
     if(e.name&&e.name!=='model_usage'){
-      count(r,e.name);const state=e.state??resultState(e.result);r.events.push({type:'tool',name:e.name,state,args:e.args,result:obj(e.result),round:e.round,callId:e.callId,modelCall:e.round===currentModel?.round?currentModel?.modelCall:undefined});if(state==='failed')r.errors++;
+      let step=e.callId?r.events.find(s=>s.type==='tool'&&s.callId===e.callId):undefined;
+      if(!step){step={type:'tool',name:e.name};count(r,e.name);r.events.push(step);}
+      const state=e.state??resultState(e.result);Object.assign(step,{state,args:e.args,result:obj(e.result),diagnostic:diagnostic(e),round:e.round,callId:e.callId,modelCall:step.modelCall??(e.round===currentModel?.round?currentModel?.modelCall:undefined)});if(state==='failed')r.errors++;
     }
   }
   for(const model of r.events.filter(e=>e.type==='model')){

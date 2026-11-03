@@ -1,17 +1,18 @@
 import type { Config } from '../config.js';
-import { FishError,codeOf,type Usage } from '../types.js';
+import { FishError,codeOf,type Usage,type CompletionOptions } from '../types.js';
 import { recordPrompt } from '../prompt-record.js';
 import { Ledger } from '../budget/ledger.js';
-import { boundedJson,inputBound,ModelResponseError } from '../agent/model.js';
+import { deepSeekRequest,inputBound,ModelResponseError } from '../agent/model.js';
+import {errorDiagnostic} from '../diagnostics.js';
 import { deepSeekUsage } from '../usage.js';
 
 export interface ToolCall {id:string;type:'function';function:{name:string;arguments:string}}
 export interface WireMessage {role:'system'|'user'|'assistant'|'tool';content:string;tool_calls?:ToolCall[];tool_call_id?:string}
 export interface WebTool {type:'function';function:{name:string;description:string;parameters:Record<string,unknown>}}
-export interface WebCompletion {content:string;tool_calls?:ToolCall[];usage?:Usage}
+export interface WebCompletion {content:string;tool_calls?:ToolCall[];usage?:Usage;finishReason?:string;responseId?:string}
 export class WebModel {
   constructor(private key:()=>string,private cfg:()=>Config,private ledger:Ledger,readonly mock:boolean,private http:typeof fetch=fetch){}
-  async complete(group:string,messages:WireMessage[],tools:WebTool[],signal:AbortSignal,final=false):Promise<WebCompletion>{
+  async complete(group:string,messages:WireMessage[],tools:WebTool[],signal:AbortSignal,final=false,onReservation?:CompletionOptions['onReservation']):Promise<WebCompletion>{
     if(!this.mock&&!this.key())throw new FishError('DEEPSEEK_KEY_MISSING');
     signal.throwIfAborted();
     const cfg=this.cfg(),payload={model:cfg.model,messages,max_tokens:cfg.maxOutputTokens,stream:false,thinking:{type:'disabled'},
@@ -20,6 +21,7 @@ export class WebModel {
     const reservation=this.ledger.reserve('model',group,'webui-local',bound,cfg.maxOutputTokens);
     let reportedUsage:Usage|undefined;
     try{
+      onReservation?.({id:reservation,reservedTokens:bound+cfg.maxOutputTokens});
       recordPrompt(this.ledger.store,tools.some(t=>t.function.name==='generate_image')?'image':'web',payload);
       if(this.mock){
         const last=messages.at(-1)!;let result:WebCompletion;
@@ -40,18 +42,14 @@ export class WebModel {
         else result={content:'【离线演示】收到：'+last.content+'\n\n这里是独立对话窗口。切换到「受限助手」，可以尝试让我创建 notes.md 或查看工作区文件。真实对话请在设置中保存 DeepSeek API Key，并使用正式模式启动。'};
         const usage={input:Math.min(bound,120),output:Math.min(cfg.maxOutputTokens,80)};this.ledger.settle(reservation,usage);return {...result,usage};
       }
-      const res=await this.http('https://api.deepseek.com/chat/completions',{method:'POST',redirect:'error',
-        headers:{authorization:'Bearer '+this.key(),'content-type':'application/json'},body:JSON.stringify(payload),
-        signal:AbortSignal.any([signal,AbortSignal.timeout(30000)])});
-      if(!res.ok){await res.body?.cancel();throw new FishError('DEEPSEEK_HTTP_'+res.status);}
-      const data=await boundedJson(res),m=data.choices?.[0]?.message,usage=deepSeekUsage(data.usage);
+      const data=await deepSeekRequest(this.http,this.key(),payload,signal),m=data.choices?.[0]?.message,usage=deepSeekUsage(data.usage);
       if(!usage||!m||m.content!=null&&typeof m.content!=='string')throw new FishError('DEEPSEEK_INVALID_RESPONSE');
       reportedUsage=usage;this.ledger.settle(reservation,usage);
       if(this.ledger.store.getMeta('budgetFault'))throw new FishError('BUDGET_USAGE_FAULT');
       const calls=m.tool_calls;
       if(calls!==undefined&&(!Array.isArray(calls)||calls.length>6||calls.some((c:any)=>c.type!=='function'||typeof c.id!=='string'||c.id.length>120||typeof c.function?.name!=='string'||typeof c.function?.arguments!=='string'||c.function.arguments.length>16000)))throw new FishError('INVALID_TOOL_CALL');
       if(!m.content&&!calls?.length)throw new FishError('DEEPSEEK_EMPTY_RESPONSE');
-      return {content:m.content??'',...(calls?.length?{tool_calls:calls}: {}),usage};
-    }catch(e){this.ledger.settle(reservation);this.ledger.error();if(reportedUsage)throw new ModelResponseError(codeOf(e),reportedUsage,{});throw e;}
+      return {content:m.content??'',...(calls?.length?{tool_calls:calls}: {}),usage,finishReason:data.choices?.[0]?.finish_reason,responseId:data.id};
+    }catch(e){this.ledger.settle(reservation);this.ledger.error();if(reportedUsage)throw new ModelResponseError(codeOf(e),reportedUsage,errorDiagnostic(e));throw e;}
   }
 }

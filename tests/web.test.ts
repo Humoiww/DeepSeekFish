@@ -85,7 +85,7 @@ test('plain chat never executes tool calls; agent tool allowlist denies shell, p
     await w.app.chat(a.id,'try tools','chat',new AbortController().signal,()=>{});
     assert.equal(requests[0].tools,undefined);assert.equal(w.app.detail(a.id).turns[0].answer,'TOOL_LIMIT_OR_DISABLED');
     const b=w.app.createSession();await w.app.chat(b.id,'try tools','agent',new AbortController().signal,()=>{});
-    const t=w.app.detail(b.id).turns[0],actions=t.trace.filter((e:any)=>e.name!=='model_usage');assert.equal(t.state,'completed');assert.equal(actions.length,3);assert.ok(actions.every((e:any)=>e.state==='failed'));assert.equal(t.trace.filter((e:any)=>e.name==='model_usage').length,2);
+    const t=w.app.detail(b.id).turns[0],actions=t.trace.filter((e:any)=>e.name&&e.name!=='model_usage');assert.equal(t.state,'completed');assert.equal(actions.length,3);assert.ok(actions.every((e:any)=>e.state==='failed'));assert.equal(t.trace.filter((e:any)=>e.kind==='model').length,2);
     assert.deepEqual(w.app.workspace(b.id).list(),[]);assert.ok(!fs.existsSync(path.join(w.f.root,'runtime/workspace/secret.txt')));
   }finally{await w.close();}
 });
@@ -102,6 +102,23 @@ test('tool loops and concurrency are bounded; cancellation stops upstream and re
     await assert.rejects(h.app.chat(a.id,'concurrent','chat',abort.signal,()=>{}),/CHAT_BUSY/);
     abort.abort();await pending;assert.equal(h.app.detail(a.id).busy,false);assert.equal(h.app.detail(a.id).turns[0].answer,'CHAT_CANCELLED');
   }finally{await h.close();}
+});
+test('failed web turns retain actual native dialogue, provider exception and incomplete usage',async()=>{
+ let calls=0;const w=web(false,(async()=>{
+  if(++calls===1)return reply({content:'看看文件',tool_calls:[call('read-files','list_files',{})]});
+  throw new DOMException('upstream timed out','TimeoutError');
+ }) as typeof fetch);
+ try{
+  w.app.configure({apiKey:'fixture-key'});const s=w.app.createSession();await w.app.chat(s.id,'看看文件','agent',new AbortController().signal,()=>{});
+  const turn=w.app.detail(s.id).turns[0];assert.equal(turn.state,'failed');assert.equal(turn.answer,'DEEPSEEK_TIMEOUT');
+  const db=new Store(w.f.root,'webui.sqlite');try{
+   const row=db.db.prepare('SELECT context FROM web_turns WHERE id=?').get(turn.id) as any,dialogue=JSON.parse(row.context);
+   assert.deepEqual(dialogue.map((m:any)=>m.role),['user','assistant','tool']);assert.equal(dialogue[1].tool_calls[0].id,dialogue[2].tool_call_id);
+  }finally{db.close();}
+  const detail=await w.app.activityDetail('web:'+turn.id),models=detail.events.filter(e=>e.type==='model');
+  assert.equal(detail.usage.calls,2);assert.equal(detail.usage.total,30);assert.equal(detail.usage.unreportedCalls,1);assert.ok(detail.usage.unconfirmedTokens>0);
+  assert.equal(models[1].state,'failed');assert.equal(models[1].diagnostic.cause.name,'TimeoutError');assert.equal(models[1].request.messages.at(-1).role,'tool');assert.equal(detail.counts.tools,1);
+ }finally{await w.close();}
 });
 test('WebUI budget is checked before HTTP, no-key requests cost nothing, and QQ recovery preserves active web leases',async()=>{
   let calls=0;const http=(async()=>{calls++;return reply({content:'hello'});}) as typeof fetch;

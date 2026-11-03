@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import {randomUUID} from 'node:crypto';
 import { FishError } from './types.js';
 
 /** Reject links/reparse-point junctions in EVERY existing ancestor, including the root. */
@@ -39,4 +40,10 @@ export function writePrivate(root: string, relative: string, contents: string): 
   const p = safePath(root, relative);
   if (fs.existsSync(p) && fs.lstatSync(p).nlink !== 1) throw new FishError('PATH_HARDLINK');
   fs.writeFileSync(p, contents, { mode: 0o600 });
+}
+/** Readers keep either the previous complete trace or the next complete trace. */
+export function writePrivateAtomic(root:string,relative:string,contents:string):void{
+  const p=safePath(root,relative),tmp=safePath(root,relative+'.'+randomUUID()+'.tmp');
+  if(fs.existsSync(p)&&fs.lstatSync(p).nlink!==1)throw new FishError('PATH_HARDLINK');
+  try{fs.writeFileSync(tmp,contents,{mode:0o600,flag:'wx'});fs.renameSync(tmp,p);}finally{fs.rmSync(tmp,{force:true});}
 }

@@ -4,6 +4,8 @@ import type { Config } from '../config.js';
 import { Store,redact } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
 import { FishError } from '../types.js';
+import {modelPayload} from '../agent/model.js';
+import {traceModel} from '../agent/model-trace.js';
 import { imagePrompt } from '../prompts.js';
 import { isCharacterPortrait,resolveCharacterReference } from '../image/character-reference.js';
 import { verifyPng } from '../image/provider.js';
@@ -56,14 +58,15 @@ export class WebImages{
     verifyArtifact(file,artifact,this.cfg().maxArtifactBytes);verifyPng(this.root,'runtime/outputs/'+id+'/image.png',this.cfg().maxArtifactBytes);
     return fs.readFileSync(file);
   }
-  async generate(sid:string,turnId:string,request:string,history:WireMessage[],model:WebModel,signal:AbortSignal,emit:(e:any)=>void,confirmed=false){
+  async generate(sid:string,turnId:string,request:string,history:WireMessage[],model:WebModel,signal:AbortSignal,emit:(e:any)=>void,confirmed=false,audit?:{trace:any[];save:()=>void}){
     const cfg=this.cfg(),character=isCharacterPortrait(request);
     checkImageCapacity(this.root,cfg,this.ledger,this.mock);
     if(character)resolveCharacterReference(this.root);
     emit({type:'thinking',stage:'planning',round:1});
     const system=imagePrompt(this.root,character);
-    const completion=await model.complete('web:'+sid,[{role:'system',content:system},...history,{role:'user',content:request}],[imageTool],signal);
-    emit({type:'model_usage',usage:completion.usage});
+    const messages:WireMessage[]=[{role:'system',content:system},...history,{role:'user',content:request}];
+    const completion=audit?await traceModel(audit.trace,audit.save,modelPayload(cfg,messages,cfg.maxOutputTokens,{tools:[imageTool]}),0,onReservation=>model.complete('web:'+sid,messages,[imageTool],signal,false,onReservation)):await model.complete('web:'+sid,messages,[imageTool],signal);
+    if(!audit)emit({type:'model_usage',usage:completion.usage});
     signal.throwIfAborted();
     if(completion.tool_calls?.length!==1||completion.tool_calls[0].function.name!=='generate_image')throw new FishError('IMAGE_PLAN_REQUIRED');
     let args:unknown;try{args=JSON.parse(completion.tool_calls[0].function.arguments);}catch{throw new FishError('INVALID_IMAGE_PLAN');}

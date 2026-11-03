@@ -221,6 +221,16 @@ test('unreported model usage is shown as an uncertain reservation, not zero-cost
  const f=setup();try{const row=await run(f,provider(async()=>{throw new FishError('DEEPSEEK_HTTP_503');}));assert.equal(row.state,'failed');assert.equal(row.tokens,0);assert.ok(row.unknown_tokens>0);assert.equal(f.ledger.value('tokens'),row.unknown_tokens);const read=explorationRead(f.root,f.state,row.id);assert.ok('trace' in read&&read.trace.some((e:any)=>e.usageUnreported&&e.reservation.state==='unknown'));assert.equal(f.sent(),0);}finally{f.cleanup();}
 });
 
+test('tool exceptions are inspectable by the owner but host diagnostics never enter model recall',async()=>{
+ const f=setup();let n=0;
+ const worker=new ExplorationWorker(f.state,{async complete(_g,_u,m){if(++n===1)return call('broken-web','browse_page',{url:'https://example.com/one'});assert.ok(!JSON.stringify(m).includes('PRIVATE_STACK_MARKER'));return quiet();}}, {...f.services,browse:async()=>{throw new TypeError('PRIVATE_STACK_MARKER',{cause:new Error('bad response')});}});
+ try{
+  const run=f.state.manual().run;await worker.tick();await worker.idle();const full=explorationRead(f.root,f.state,run.id),recall=explorationRead(f.root,f.state,run.id,0,'20002');
+  assert.match(JSON.stringify(full),/PRIVATE_STACK_MARKER/);assert.ok(!JSON.stringify(recall).includes('PRIVATE_STACK_MARKER'));assert.ok(!JSON.stringify(recall).includes('"request":'));
+  const activity=await new ActivityHistory(f.root,f.store,f.store).detail('exploration:'+run.id),step=activity.events.find(e=>e.name==='browse_page')!;assert.equal(step.callId,'broken-web');assert.equal(step.diagnostic.name,'TypeError');assert.equal(step.diagnostic.cause.message,'bad response');
+ }finally{await worker.stop();f.cleanup();}
+});
+
 test('long exploration compacts whole native tool groups while full earlier actions remain readable',async()=>{
  const f=setup();f.set({maxOutputTokens:4096});let n=0,maximum=0;
  try{const row=await run(f,provider(async messages=>{

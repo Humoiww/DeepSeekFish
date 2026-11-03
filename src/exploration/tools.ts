@@ -24,6 +24,7 @@ import type {PersonMemory} from '../memory/people.js';
 import {forwardTools,type ForwardRecords} from '../qq/forward.js';
 import type {QzonePublisher} from '../qq/qzone-publish.js';
 import {ExplorationState,type ExplorationRun} from './state.js';
+import {errorDiagnostic} from '../diagnostics.js';
 
 const tool=(name:string,description:string,properties:Record<string,unknown>={},required:string[]=[]):ModelTool=>({type:'function',function:{name,description,parameters:{type:'object',properties,required,additionalProperties:false}}});
 const string={type:'string'};
@@ -44,6 +45,8 @@ export interface ExplorationServices{
 }
 export class ExplorationTools{
  private memory:MemoryJournal;private seen=new Set<string>();
+ private diagnostics:Record<string,any>[]=[];
+ takeDiagnostics(){return this.diagnostics.splice(0);}
  constructor(private s:ExplorationServices,private run:ExplorationRun,private context:TurnContext,private signal:AbortSignal){this.memory=new MemoryJournal(s.root,s.state.store);}
  private guard(){this.signal.throwIfAborted();this.s.state.guard(this.run.id,this.run.lock!);}
  private message(key=''):Message{return {id:'explore:'+this.run.id+':'+createHash('sha256').update(key).digest('hex').slice(0,20),group:'private:'+this.run.owner,user:this.run.owner,text:'自主探索',at:Date.now(),mentioned:false,event:'ordinary'};}
@@ -66,7 +69,7 @@ export class ExplorationTools{
   db.db.prepare("INSERT INTO exploration_effects VALUES (?,?,?,?,?,'unconfirmed',?,NULL)").run(key,this.run.id,this.run.owner,kind,fingerprint,Date.now());
   let result:any;
   try{result=await operation();result={...result,deliveryStatus:result?.deliveryStatus??'confirmed'};}
-  catch(e){result={deliveryStatus:'unconfirmed',error:codeOf(e),retryScheduled:false};}
+  catch(e){this.diagnostics.push(errorDiagnostic(e));result={deliveryStatus:'unconfirmed',error:codeOf(e),retryScheduled:false};}
   db.db.prepare('UPDATE exploration_effects SET state=?,result=? WHERE id=?').run(result.deliveryStatus,JSON.stringify(result),key);
   if(result.deliveryStatus==='confirmed')db.db.prepare('UPDATE exploration_runs SET shared=shared+1 WHERE id=?').run(this.run.id);
   return result;
@@ -95,13 +98,13 @@ export class ExplorationTools{
     let billing:WebCharge|undefined;
     const charged=(usage:WebCharge)=>{billing=usage;store.db.prepare('UPDATE exploration_runs SET web_tokens=web_tokens+? WHERE id=?').run(usage.chargedTokens,this.run.id);};
     try{const result=name==='search_web'?searchEvidence(await s.search.search(args.query,m.group,'exploration',args.fresh,charged)):await s.search.fetch(args.url,m.group,'exploration',args.offset,args.fresh,charged);return out({...result,billing});}
-    catch(e){return out({error:codeOf(e),billing});}
+    catch(e){this.diagnostics.push(errorDiagnostic(e));return out({error:codeOf(e),billing});}
   }
   if(name==='browse_page')return out(await (s.browse??browsePage)(args.url,args.offset,this.signal,undefined,args.query,args.textOffset));
   if(name==='download_image'){
     const urls=args.urls??[args.url];if(args.urls&&args.url||!Array.isArray(urls)||!urls.length||urls.length>12||urls.some(u=>typeof u!=='string'))throw new FishError('INVALID_TOOL_ARGS');
     const images:any[]=[],parts:ChatPart[]=[];
-    for(const url of [...new Set<string>(urls)]){this.guard();try{const d=await(s.download??downloadWebImage)(url,this.signal);this.guard();const image=await s.media.fromWeb(m.group,d.bytes,d.url);this.seen.add(image.id);images.push({saved:true,image});parts.push(...s.media.parts(m.group,[{id:image.id,messageId:m.id,position:0}]));}catch(e){images.push({url,error:codeOf(e)});}}
+    for(const url of [...new Set<string>(urls)]){this.guard();try{const d=await(s.download??downloadWebImage)(url,this.signal);this.guard();const image=await s.media.fromWeb(m.group,d.bytes,d.url);this.seen.add(image.id);images.push({saved:true,image});parts.push(...s.media.parts(m.group,[{id:image.id,messageId:m.id,position:0}]));}catch(e){this.diagnostics.push(errorDiagnostic(e));images.push({url,error:codeOf(e)});}}
     return out(args.urls?{images}:images[0],parts);
   }
   if(name==='list_images')return out(s.library.list(m.group,m.user,args.source??'all',args.offset??0));
@@ -115,7 +118,7 @@ export class ExplorationTools{
       const [original]=s.library.select(m.group,m.user,[item.imageId]);
       if(!this.seen.has(item.imageId)){const preview=await this.execute('view_images',{imageIds:[item.imageId]},callId);parts.push(...preview.parts??[]);images.push({imageId:item.imageId,saved:false,preview:true});}
       else images.push({saved:true,meme:await s.media.collect(m.group,item.imageId,fs.readFileSync(original.path),item.description,item.tags)});
-    }catch(e){images.push({imageId:item?.imageId,error:codeOf(e)});}}
+    }catch(e){this.diagnostics.push(errorDiagnostic(e));images.push({imageId:item?.imageId,error:codeOf(e)});}}
     return out(args.images?{images}:images[0],parts);
   }
   if(name==='find_memes')return out(s.media.browse(m.group,args.query,args.offset??0));

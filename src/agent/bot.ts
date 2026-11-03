@@ -5,7 +5,9 @@ import { conversationAllowed,type Config } from '../config.js';
 import { Store, redact } from '../storage/db.js';
 import { Ledger,TokenBudgetError } from '../budget/ledger.js';
 import { SocialGate } from '../social/gate.js';
-import { BudgetedModel,ModelResponseError } from './model.js';
+import { BudgetedModel,ModelResponseError,modelPayload } from './model.js';
+import {traceModel} from './model-trace.js';
+import {diagnosticSafe,errorDiagnostic} from '../diagnostics.js';
 import { FishError, codeOf, type Message, type Transport,type ChatMessage,type ModelResult } from '../types.js';
 import { Tasks, type Task } from '../codex/tasks.js';
 import { searchEvidence,type SearchService } from '../search/provider.js';
@@ -23,7 +25,7 @@ import { qqResources,qqImageActivity } from '../qq/resources.js';
 import { qqChatTools,imageLibraryTools } from '../qq/chat-tools.js';
 import { QQImageClient } from '../qq/image-client.js';
 import { validateImagePlan } from '../web/images.js';
-import { writePrivate } from '../paths.js';
+import { writePrivateAtomic } from '../paths.js';
 import { QzoneMemory } from '../memory/qzone.js';
 import { hasToolMarkup } from './tool-protocol.js';
 import { QQMedia,mediaTools } from '../qq/media.js';
@@ -125,7 +127,7 @@ export class Bot {
       const maxRounds=16,maxCalls=64;let repaired=false,protocolRepairs=0;
       const tracePath='runtime/logs/qq/'+randomUUID()+'.json';makeDir(this.root,'runtime/logs/qq');
       const startedAt=Date.now();let finishedAt:number|undefined,traceState='running';
-      const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),startedAt,finishedAt,state:traceState,system:SYSTEM,inputContext:{context,dialogue},toolPolicy:'model-choice',imageRequested,received:incoming,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
+      const saveTrace=()=>writePrivateAtomic(this.root,tracePath,JSON.stringify(diagnosticSafe({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),startedAt,finishedAt,state:traceState,system:SYSTEM,inputContext:{context,dialogue},toolPolicy:'model-choice',imageRequested,received:incoming,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace}),null,2));
       saveTrace();
       try{
         for(let round=0;round<maxRounds;round++){
@@ -138,16 +140,14 @@ export class Bot {
           const options={tools:offered,requireTool:true,...(closing?{toolChoice:sendingAtClose?'send_image':'reply'}:{}),signal:this.controller.signal};
           trace.push({round,...(closing?{closing:true}:{}),contextInput:{...contextMetrics(messages,offered),...compacted}});
           let completion:ModelResult;
-          try{completion=await this.model.complete(last.group,last.user,messages,options);}
+          try{completion=await traceModel(trace,saveTrace,modelPayload(this.cfg(),messages,this.cfg().maxOutputTokens,options),round,onReservation=>this.model.complete(last.group,last.user,messages,{...options,onReservation}));}
           catch(e){
             if(e instanceof ModelResponseError){
-              trace.push({round,error:e.code,providerResponse:e.diagnostic,usage:e.usage});saveTrace();
               if(protocolRepairs++<2&&round<maxRounds-1){
                 messages.push({role:'system',content:e.code==='DEEPSEEK_TOOL_OUTPUT_TRUNCATED'?'上一次工具参数被输出长度截断，这批动作尚未执行。请拆成较小批次，输出完整JSON后继续。':'上一次工具返回格式无效，这批动作尚未执行。请按工具参数格式重新调用。'});continue;
               }
             }throw e;
           }
-          trace.push({round,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
           if(hasToolMarkup(completion.text)){
             if(!completion.tool_calls?.length){
               const tool=closing?offered[0]:tools.find(t=>completion.text.includes(t.function.name));
@@ -155,8 +155,8 @@ export class Bot {
               repaired=true;trace.push({protocolRepair:{tool:tool.function.name}});
               // Re-request native JSON using an already allowed tool. Never
               // parse or execute the model's textual protocol as a command.
-              completion=await this.model.complete(last.group,last.user,messages,{tools:offered,toolChoice:tool.function.name,signal:this.controller.signal});
-              trace.push({round,repair:true,assistant:completion.text,toolCalls:completion.tool_calls,usage:completion.usage,finishReason:completion.finishReason});
+              const repairOptions={tools:offered,toolChoice:tool.function.name,signal:this.controller.signal};
+              completion=await traceModel(trace,saveTrace,modelPayload(this.cfg(),messages,this.cfg().maxOutputTokens,repairOptions),round,onReservation=>this.model.complete(last.group,last.user,messages,{...repairOptions,onReservation}),{repair:true});
               if(!completion.tool_calls?.some(call=>call.function.name===tool.function.name))throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');
             }
             if(hasToolMarkup(completion.text))completion={...completion,text:''};
@@ -168,7 +168,7 @@ export class Bot {
           let said=false;const viewedIds:string[]=[];let classified=false;let finished=false;
           for(const call of completion.tool_calls){
             if(used.has(call.id))throw new FishError('DUPLICATE_TOOL_CALL');used.add(call.id);calls++;
-            let result:unknown,media:ReturnType<PersonMemory['images']>=[];let imageAttempt=false;
+            let result:unknown,media:ReturnType<PersonMemory['images']>=[];let imageAttempt=false,diagnostic;const toolStartedAt=Date.now();
             try{
               if(!offered.some(t=>t.function.name===call.function.name))throw new FishError('TOOL_NOT_ALLOWED');
               const args=JSON.parse(call.function.arguments);
@@ -324,8 +324,8 @@ export class Bot {
                   }
                 }
               }
-            }catch(e){result={...(result&&typeof result==='object'?result:{}),error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};}
-            trace.push({tool:call.function.name,result,images:media.filter(p=>p.type==='image_url').length});
+            }catch(e){result={...(result&&typeof result==='object'?result:{}),error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};diagnostic=errorDiagnostic(e);}
+            trace.push({tool:call.function.name,callId:call.id,result,diagnostic,startedAt:toolStartedAt,finishedAt:Date.now(),images:media.filter(p=>p.type==='image_url').length});
             if(imageAttempt){
               imageOutcome=result as Record<string,unknown>;
               const outcome=imageOutcome;
@@ -353,9 +353,9 @@ export class Bot {
           }
           for(const id of viewedIds)visibleImages.add(id);
         }
-      }catch(e){traceState='failed';trace.push({error:codeOf(e),...(e instanceof ModelResponseError&&!trace.some(t=>t.providerResponse===e.diagnostic)?{usage:e.usage,providerResponse:e.diagnostic}:{})});throw e;}finally{finishedAt=Date.now();if(traceState==='running')traceState='completed';saveTrace();}
+      }catch(e){traceState='failed';trace.push({error:codeOf(e),phase:'turn',diagnostic:errorDiagnostic(e),at:Date.now()});throw e;}finally{finishedAt=Date.now();if(traceState==='running')traceState='completed';saveTrace();}
       this.gate.record(last.group);this.store.audit('speech',last.group,reason);
-    }catch(e){this.store.audit('error',last.group,codeOf(e));if(!spontaneous&&this.accepting)await this.send(last,e instanceof TokenBudgetError?e.notice:'当前无法回答：'+codeOf(e));}
+    }catch(e){this.store.audit('error',last.group,JSON.stringify(errorDiagnostic(e)));if(!spontaneous&&this.accepting)await this.send(last,e instanceof TokenBudgetError?e.notice:'当前无法回答：'+codeOf(e));}
     finally{if(lease)this.ledger.settle(lease);}
   }
   private async send(m:Message,text:string):Promise<void>{

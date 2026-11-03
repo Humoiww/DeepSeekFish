@@ -80,3 +80,15 @@ test('activity endpoints use existing owner authentication and never reveal cred
   for(const secret of ['secret-key','secret-cookie','secret-password','secret-rkey','base64,AAAA'])assert.ok(!safe.includes(secret));
  }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await app.close();f.cleanup();}
 });
+
+test('legacy internal failures say diagnostics were not recorded and repeated tools match by native ID',async()=>{
+ const f=fixture(),app=createWebApp(f.root,true);try{
+  log(f.root,'qq','legacy-error',{state:'failed',trace:[{round:0,toolCalls:[],error:'INTERNAL_ERROR',usageUnreported:true,reservation:{state:'unknown',retainedTokens:14514}}]});
+  const old=await app.activityDetail('qq:legacy-error');assert.equal(old.usage.unconfirmedTokens,14514);assert.equal(old.events.find(e=>e.type==='model')?.diagnostic.missing,true);
+  log(f.root,'qq','two-browse',{trace:[{round:0,usage:{input:12,output:3},toolCalls:[call('a','browse_page',{url:'https://a.example'}),call('b','browse_page',{url:'https://b.example'})]},
+   {tool:'browse_page',callId:'b',result:{error:'INTERNAL_ERROR'},diagnostic:{name:'TypeError',message:'second failed'}}, {tool:'browse_page',callId:'a',result:{text:'first page'}}]});
+  // A fresh reader avoids the intentional directory scan throttle.
+  const {ActivityHistory}=await import('../src/web/activity.js');const two=await new ActivityHistory(f.root,f.store,f.store).detail('qq:two-browse');
+  assert.equal(two.events.find(e=>e.callId==='a')?.state,'completed');assert.equal(two.events.find(e=>e.callId==='b')?.diagnostic.message,'second failed');assert.equal(two.counts.browse,2);assert.equal(two.usage.total,15);
+ }finally{await app.close();f.cleanup();}
+});

@@ -24,7 +24,9 @@ import { AppServerQuotaReader,CodexQuotaMonitor,type QuotaReader } from '../code
 import { MemoryJournal,dayStart } from '../memory/journal.js';
 import { startQQImageBroker } from '../qq/image-broker.js';
 import { ActivityHistory } from './activity.js';
-import { ModelResponseError } from '../agent/model.js';
+import { modelPayload } from '../agent/model.js';
+import {traceModel} from '../agent/model-trace.js';
+import {diagnosticSafe,errorDiagnostic} from '../diagnostics.js';
 import { PROJECT_TIMEZONE } from '../time.js';
 import { dailyStatus } from '../qq/daily-qzone.js';
 import { newsStatus } from '../qq/daily-news.js';
@@ -158,7 +160,8 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     store.db.prepare('INSERT INTO web_turns VALUES (?,?,?,?,?,?,?,?)').run(turnId,s.id,current[0].content,'','[]','[]','running',Date.now());
     store.db.prepare('UPDATE web_sessions SET title=?,updated=? WHERE id=?').run(s.title==='新的对话'?redact(text.trim()).slice(0,26):s.title,Date.now(),s.id);
     let answer='',calls=0;
-    const record=(event:any,publish=true)=>{trace.push(event);store.db.prepare('UPDATE web_turns SET trace=? WHERE id=?').run(JSON.stringify(trace),turnId);if(publish)emit({type:'tool',event});};
+    const saveTrace=()=>store.db.prepare('UPDATE web_turns SET trace=?,context=? WHERE id=?').run(JSON.stringify(diagnosticSafe(trace)),JSON.stringify(diagnosticSafe(current)),turnId);
+    const record=(event:any,publish=true)=>{trace.push(event);saveTrace();if(publish)emit({type:'tool',event});};
     try{
       memory.record({id:turnId+':user',conversation:'web:'+s.id,actor:'webui-local',role:'user',text:current[0].content,at:Date.now(),source:'web'});
       emit({type:'start',turnId});
@@ -168,7 +171,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
           else if(e.type==='image_plan')record({name:'image_plan',state:'completed',plan:e.plan,character:e.character,mock:e.mock,result:JSON.stringify(e.plan)});
           else if(e.type==='codex_record')record({name:'codex_record',state:e.error?'failed':'completed',result:JSON.stringify(e.record,null,2)});
           else emit(e);
-        },imageConfirmed===true);
+        },imageConfirmed===true,{trace,save:saveTrace});
         answer=image.mock?'【离线演示】画面方案和出图流程已走通。下方是固定的 1×1 PNG 测试占位，不是 AI 作品；未调用 DeepSeek 或 Codex。':'画好啦，图片已通过校验，可以预览或下载。';
         current.push({role:'assistant',content:answer});
         store.db.prepare("UPDATE web_turns SET answer=?,context=?,state='completed' WHERE id=?").run(answer,JSON.stringify(current),turnId);
@@ -178,8 +181,8 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       const used=new Set<string>();
       for(let round=0;round<4;round++){
         joined.throwIfAborted();emit({type:'thinking',round:round+1});
-        const m=await model.complete('web:'+s.id,[...sent,...current],offered,joined,round===3||calls>=6);
-        record({name:'model_usage',state:'completed',round,usage:m.usage,toolCalls:m.tool_calls?.map(c=>({id:c.id,name:c.function.name}))},false);
+        const messages=[...sent,...current],final=round===3||calls>=6;
+        const m=await traceModel(trace,saveTrace,modelPayload(cfg(),messages,cfg().maxOutputTokens,{tools:offered,final}),round,onReservation=>model.complete('web:'+s.id,messages,offered,joined,final,onReservation));
         joined.throwIfAborted();
         if(!m.tool_calls?.length){answer=redact(m.content).slice(0,16000);current.push({role:'assistant',content:answer});break;}
         if(!offered.length||round===3||calls+m.tool_calls.length>6)throw new FishError('TOOL_LIMIT_OR_DISABLED');
@@ -193,7 +196,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
             result=await execute(s,c.function.name,JSON.parse(c.function.arguments));
             if(c.function.name==='update_knowledge')sent[0]={role:'system',content:webPrompt(root)};
             record({name:c.function.name,state:'completed',round,callId:c.id,args:JSON.parse(c.function.arguments),result:redact(JSON.stringify(result))});
-          }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};record({name:c.function.name,state:'failed',round,callId:c.id,args:c.function.arguments,result:JSON.stringify(result)});}
+          }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};record({name:c.function.name,state:'failed',round,callId:c.id,args:c.function.arguments,result:JSON.stringify(result),diagnostic:errorDiagnostic(e)});}
           current.push({role:'tool',tool_call_id:c.id,content:['get_knowledge','update_knowledge'].includes(c.function.name)?JSON.stringify(result):redact(JSON.stringify(result)).slice(0,18000)});
         }
       }
@@ -202,8 +205,8 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       memory.record({id:turnId+':assistant',conversation:'web:'+s.id,actor:'DeepSeekFish',role:'assistant',text:answer,at:Date.now(),source:'web'});
       emit({type:'answer',text:answer});emit({type:'done',turnId});
     }catch(e){
-      if(e instanceof ModelResponseError&&e.usage)record({name:'model_usage',state:'failed',usage:e.usage,error:e.code},false);
       const error=joined.aborted?'CHAT_CANCELLED':codeOf(e);
+      record({error,phase:'turn',diagnostic:errorDiagnostic(e),at:Date.now()},false);
       store.db.prepare("UPDATE web_turns SET answer=?,state='failed' WHERE id=?").run(error,turnId);emit({type:'error',error});
     }finally{active.delete(s.id);}
   }

@@ -52,7 +52,8 @@ test('QQ completes ten new downloads, classifications and deliveries; one failed
   round++;
   if(round===1)return {text:'',tool_calls:[call('download_image',{urls:Array.from({length:11},(_,i)=>'https://example.com/'+(i===10?99:i)+'.webp')})],usage:{input:100,output:100}};
   if(round===2){
-   const results=JSON.parse(String(messages.find(m=>m.role==='tool')!.content)).images;assert.equal(results.filter((r:any)=>r.saved).length,10);assert.equal(results[10].error,'WEB_HTTP_404');saved.push(...results.filter((r:any)=>r.saved).map((r:any)=>r.image.id));
+   const content=messages.find(m=>m.role==='tool')!.content;
+   const results=JSON.parse(typeof content==='string'?content:content[0].type==='text'?content[0].text:'').images;assert.equal(results.filter((r:any)=>r.saved).length,10);assert.equal(results[10].error,'WEB_HTTP_404');saved.push(...results.filter((r:any)=>r.saved).map((r:any)=>r.image.id));
    assert.equal(messages.flatMap(m=>Array.isArray(m.content)?m.content:[]).filter(p=>p.type==='image_url').length,10);
    // Ten independent native calls reproduce the previous >4 / >8 failure, without synthetic truncation.
    return {text:'',tool_calls:saved.map((id,i)=>call('collect_meme',{imageId:id,description:'新图'+i,tags:['新图']},'collect'+i)),usage:{input:100,output:100}};
