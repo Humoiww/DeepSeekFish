@@ -80,6 +80,9 @@ test('bot sees actual images, classifies memes automatically, and later chooses 
   const provider:Model={kind:'fixture',async complete(messages,_max,options){
     round++;
     if(round===1){
+      assert.deepEqual(messages.map(m=>m.role),['system','system','user']);
+      assert.ok(Array.isArray(messages.at(-1)!.content));
+      assert.match((messages.at(-1)!.content[0] as {text:string}).text,/本轮消息/);
       assert.equal(options?.toolChoice,undefined);const visible=messages.flatMap(m=>Array.isArray(m.content)?m.content:[]);
       assert.equal(visible.filter(p=>p.type==='image_url').length,3);assert.ok(!JSON.stringify(messages).includes('transient-handle'));
       storedId=(options!.tools!.find(t=>t.function.name==='remember_images')!.function.parameters.properties as any).images.items.properties.id.enum[0];
@@ -149,7 +152,7 @@ test('the model can collect its generated pictures, then send several originals 
     round++;assert.ok(options?.tools?.some(t=>t.function.name==='collect_meme'));
     const collection=(i:number)=>call('collect_meme',{imageId:'generated-'+sourceIds[i],description:'自己画的反应表情'+i,tags:['得意']},'collect'+round+'-'+i);
     if(round===1)return {text:'',tool_calls:[collection(0)],usage:{input:100,output:50}};
-    if(round===2){assert.equal(media.find('private:20002','').length,0);assert.ok(messages.some(m=>m.role==='tool'&&String(m.content).includes('preview')));return {text:'',tool_calls:[call('view_images',{imageIds:sourceIds.map(id=>'generated-'+id)})],usage:{input:100,output:20}};}
+    if(round===2){assert.equal(media.find('private:20002','').length,0);assert.ok(messages.some(m=>m.role==='tool'&&JSON.stringify(m.content).includes('preview')));return {text:'',tool_calls:[call('view_images',{imageIds:sourceIds.map(id=>'generated-'+id)})],usage:{input:100,output:20}};}
     if(round===3)return {text:'',tool_calls:[collection(0),collection(1)],usage:{input:100,output:80}};
     if(round===4){ids=messages.slice(-2).map(m=>JSON.parse(String(m.content)).meme.id);return {text:'',tool_calls:[call('send_meme',{ids})],usage:{input:100,output:30}};}
     if(round===5){const result=JSON.parse(String(messages.at(-1)?.content));assert.ok(result.images.every((m:any)=>m.sent));return {text:'',tool_calls:ids.map((id,i)=>call('send_meme',{id},'retry'+i)),usage:{input:100,output:30}};}

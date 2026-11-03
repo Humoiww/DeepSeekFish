@@ -6,7 +6,7 @@ import { Store, redact } from '../storage/db.js';
 import { Ledger,TokenBudgetError } from '../budget/ledger.js';
 import { SocialGate } from '../social/gate.js';
 import { BudgetedModel,ModelResponseError } from './model.js';
-import { FishError, codeOf, type Message, type Transport,type ChatMessage,type ChatPart,type ModelResult } from '../types.js';
+import { FishError, codeOf, type Message, type Transport,type ChatMessage,type ModelResult } from '../types.js';
 import { Tasks, type Task } from '../codex/tasks.js';
 import { searchEvidence,type SearchService } from '../search/provider.js';
 import { knowledgeTools,knowledgeSnapshot,updateKnowledge } from '../memory/knowledge.js';
@@ -112,9 +112,12 @@ export class Bot {
         character:{appearance:appearancePrompt(this.root),referenceId:'character'},actions:qqImageActivity(this.ledger,last.group,last.id,contextIds),
         ...this.media?.context(last.group,contextSince,contextUntil,contextIds),...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
       const dialogue=dialogueMessages(recent,batch);
-      const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
+      const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'system',content:payload},...dialogue];
       const turnContext=new TurnContext();
-      if(incoming.length)messages.push(turnContext.images({role:'user',content:this.media!.parts(last.group,incoming)},-1));
+      if(incoming.length){
+        const current=messages.at(-1)!;
+        messages[messages.length-1]=turnContext.images({...current,content:[{type:'text',text:String(current.content)},...this.media!.parts(last.group,incoming)]},-1);
+      }
       const tools=[...recallTools,...contextTools,...knowledgeTools,...(this.forwards?forwardTools:[]),...(c.search?[...webTools,...(this.media?browseTools:[])]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeSent=false;
       let imageOutcome:Record<string,unknown>|undefined;const memeResults=new Map<string,Record<string,unknown>>();
@@ -161,7 +164,7 @@ export class Bot {
           if(!completion.tool_calls?.length){if(imageOutcome?.created&&imageOutcome.deliveryStatus==='not_attempted'){messages.push({role:'system',content:'成图 '+imageOutcome.catalogId+' 尚未发送，先调用send_image。'});continue;}if(!completion.text.trim()){if(memeSent)break;throw new FishError('DEEPSEEK_EMPTY_RESPONSE');}await this.send(last,completion.text);break;}
           if(closing?completion.tool_calls.length!==1||completion.tool_calls[0].function.name!==(sendingAtClose?'send_image':'reply'):calls+completion.tool_calls.length>maxCalls)throw new FishError('QQ_TOOL_LIMIT');
           messages.push({role:'assistant',content:completion.text,tool_calls:completion.tool_calls});
-          let said=false;const roundMedia:ChatPart[]=[];const viewedIds:string[]=[];let classified=false;let finished=false;
+          let said=false;const viewedIds:string[]=[];let classified=false;let finished=false;
           for(const call of completion.tool_calls){
             if(used.has(call.id))throw new FishError('DUPLICATE_TOOL_CALL');used.add(call.id);calls++;
             let result:unknown,media:ReturnType<PersonMemory['images']>=[];let imageAttempt=false;
@@ -273,7 +276,7 @@ export class Bot {
                 const outcome=result as Record<string,unknown>;
                 if(imageOutcome?.catalogId===args.imageId)imageOutcome={...imageOutcome,...outcome,next:undefined};
                 const background=JSON.parse(String(messages[1].content));
-                messages[1]={role:'user',content:JSON.stringify({...background,actions:{...qqImageActivity(this.ledger,last.group,last.id,contextIds),lastImage:{created:outcome.created,delivery:outcome.delivered?'sent':outcome.deliveryStatus,catalogId:args.imageId,referenceIds:((outcome.references??[]) as {id:string}[]).map(r=>r.id),retryScheduled:false}}})};
+                messages[1]={role:'system',content:JSON.stringify({...background,actions:{...qqImageActivity(this.ledger,last.group,last.id,contextIds),lastImage:{created:outcome.created,delivery:outcome.delivered?'sent':outcome.deliveryStatus,catalogId:args.imageId,referenceIds:((outcome.references??[]) as {id:string}[]).map(r=>r.id),retryScheduled:false}}})};
               }else if(call.function.name==='list_images'){
                 if(!this.imageClient||Object.keys(args).some(k=>!['source','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
                 result=await this.imageClient.list(last,args.source??'all',args.offset??0,this.controller.signal);
@@ -333,22 +336,20 @@ export class Bot {
               // Preserve the native call/result chain so completion cannot be
               // mistaken for a new request. Keep current facts in the background.
               const {character:_appearance,...chatContext}=context;
-              messages[1]={role:'user',content:JSON.stringify({...chatContext,actions:{...qqImageActivity(this.ledger,last.group,last.id,contextIds),lastImage:image},...qqResources(this.cfg(),this.ledger,last.group,last.user)})};
+              messages[1]={role:'system',content:JSON.stringify({...chatContext,actions:{...qqImageActivity(this.ledger,last.group,last.id,contextIds),lastImage:image},...qqResources(this.cfg(),this.ledger,last.group,last.user)})};
               trace.push({replyContext:{image,previewImages:0}});
             }
             if(call.function.name==='generate_image'&&result&&typeof result==='object'){const {manifest:_manifest,conversation:_conversation,resources:_resources,...visible}=result as Record<string,unknown>;result=visible;}
             saveTrace();
-            messages.push(turnContext.result(call.function.name,call.id,result,round));
-            roundMedia.push(...media);
+            messages.push(turnContext.result(call.function.name,call.id,result,round,media));
           }
           if(finished)break;
           if(classified){
             // Refresh memory without forgetting the operation just completed.
             const background=JSON.parse(String(messages[1].content));
-            messages[1]={role:'user',content:JSON.stringify({...background,...this.media!.context(last.group,contextSince,Date.now(),contextIds)})};
+            messages[1]={role:'system',content:JSON.stringify({...background,...this.media!.context(last.group,contextSince,Date.now(),contextIds)})};
             trace.push({classificationStored:true,nativeResultsRetained:true});saveTrace();
           }
-          if(roundMedia.length)messages.push(turnContext.images({role:'user',content:[{type:'text',text:'工具返回的原图，图片ID、来源或说说ID标在各图前'},...roundMedia]},round));
           for(const id of viewedIds)visibleImages.add(id);
         }
       }catch(e){trace.push({error:codeOf(e)});throw e;}finally{saveTrace();}

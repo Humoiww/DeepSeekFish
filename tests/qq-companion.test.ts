@@ -42,8 +42,12 @@ test('QQ sends the model-authored remark before fetching Space, then continues f
   const qzone={resolveTarget:async(target:string,speaker:string)=>{assert.equal(target,'speaker');return speaker;},remembered:()=>undefined,lastIndex:()=>1,read:async(_person:string,_conversation:string,selection:any)=>{assert.equal(f.transport.sent[0].text,'哟，你又整什么活了？');assert.equal(selection.index,3);return {};},context:()=>({source:'QQ空间本人说说列表',posts:[{id:'third-post',position:3,text:'海边散步'}]}),images:()=>[{type:'text',text:'说说 third-post 的附件'},{type:'image_url',image_url:{url:'data:image/png;base64,AA=='}}],close:async()=>{}} as unknown as QzoneMemory;
   const provider:Model={kind:'fixture',async complete(messages,_max,options){turns++;assert.ok(options?.tools?.some(t=>t.function.name==='get_qzone'));
     if(turns===1){assert.equal(options?.toolChoice,undefined);assert.ok(options?.tools?.some(t=>t.function.name==='get_person'));assert.ok(messages.every(m=>typeof m.content==='string'));assert.ok(!String(messages[0].content).includes('区分发布时间'));return {text:'',tool_calls:[call('get_qzone',{target:'speaker',index:3,count:1,remark:'哟，你又整什么活了？'})],usage:{input:100,output:30}};}
-    assert.equal(messages.filter(m=>m.role==='tool').length,1);assert.ok(Array.isArray(messages.at(-1)!.content));
-    assert.equal(JSON.parse(String(messages.find(m=>m.role==='tool')!.content)).posts[0].id,'third-post');
+    const tool=messages.at(-1)!;
+    assert.equal(messages.filter(m=>m.role==='tool').length,1);assert.equal(tool.role,'tool');assert.ok(Array.isArray(tool.content));
+    assert.equal(JSON.parse((tool.content[0] as {text:string}).text).posts[0].id,'third-post');
+    assert.equal(tool.tool_call_id,messages.find(m=>m.tool_calls)?.tool_calls![0].id);
+    assert.equal(messages.filter(m=>m.role==='user').length,1,'tool images are not new QQ messages');
+    assert.match(String(messages.find(m=>m.role==='user')!.content),/来，再看看我上上条动态/);
     return {text:'你这海面拍得还挺会挑时候嘛。',usage:{input:300,output:30}};
   }};
   f=setup(provider,person,undefined,qzone);
@@ -75,6 +79,7 @@ test('QQ browses originals and passes model-selected image IDs through to GPT',a
     if(round===1){assert.equal(options?.toolChoice,undefined);return {text:'',tool_calls:[call('list_images',{source:'character'})],usage:{input:100,output:20}};}
     if(round===2)return {text:'',tool_calls:[call('view_images',{imageIds:['character']})],usage:{input:100,output:20}};
     if(round===3){
+      assert.equal(messages.at(-1)!.role,'tool');assert.equal(messages.filter(m=>m.role==='user').length,1);
       assert.ok(Array.isArray(messages.at(-1)!.content));assert.ok((messages.at(-1)!.content as any[]).some(p=>p.type==='image_url'));
       return {text:'把这张设定图一起丢给她。',tool_calls:[call('generate_image',{remark:'把这张设定图一起丢给她。',referenceIds:['character'],...plan})],usage:{input:100,output:80}};
     }

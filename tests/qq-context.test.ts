@@ -20,6 +20,8 @@ test('default dialogue is six recent messages including the current question; lo
   const huge=message('长'.repeat(10000),{at:18}),current=message('当前问题',{at:19});
   assert.deepEqual(recentDialogue([huge,current],[current]),[current]);
   assert.deepEqual(recentDialogue(history,[history[10]]).map(m=>m.id),['5','6','7','8','9','10'],'queued future questions must not leak into this answer');
+  const first=message('早',{id:'first',at:1}),news=message('今早新闻',{id:'news',user:'DeepSeekFish',at:2}),last=message('辛苦了',{id:'last',at:3});
+  assert.deepEqual(recentDialogue([first,news,last],[first,last]).map(m=>m.id),['first','news','last'],'a buffered batch must not reorder a real intervening assistant message');
 });
 
 test('explicit recall pages dates and keywords within the conversation, with full long messages still recoverable',()=>{
@@ -124,21 +126,21 @@ test('QQ ends a long tool turn through native reply even if the closing response
  finally{await bot.stop();f.cleanup();}
 });
 
-test('an idle gap keeps the morning news and greeting together, without filling slots with yesterday',()=>{
+test('overnight history remains native dialogue alongside the morning news and current question',()=>{
  const now=Date.parse('2026-11-03T08:01:00+08:00');
  const yesterday=message('昨天的小说问题',{id:'old',at:now-10*3600000});
  const news=message('今天的新闻',{id:'daily-news:2026-11-03',user:'DeepSeekFish',at:now-60000});
  const greeting=message('早，辛苦了',{id:'current',at:now});
- assert.deepEqual(recentDialogue([yesterday,news,greeting],[greeting]).map(m=>m.id),[news.id,greeting.id]);
+ assert.deepEqual(recentDialogue([yesterday,news,greeting],[greeting]).map(m=>m.id),[yesterday.id,news.id,greeting.id]);
  const reply=message('早呀',{id:'answer',user:'DeepSeekFish',at:now+1000}),question=message('？',{id:'question',at:now+2000});
- assert.deepEqual(recentDialogue([yesterday,news,greeting,reply,question],[question]).map(m=>m.id),[news.id,greeting.id,reply.id,question.id]);
+ assert.deepEqual(recentDialogue([yesterday,news,greeting,reply,question],[question]).map(m=>m.id),[yesterday.id,news.id,greeting.id,reply.id,question.id]);
  // Midnight itself does not break an active exchange.
  const midnight=message('接着聊',{id:'midnight',at:now-8*3600000});
  const before=message('刚才的话',{id:'before',at:midnight.at-60000});
  assert.deepEqual(recentDialogue([before,midnight],[midnight]).map(m=>m.id),['before','midnight']);
 });
 
-test('fresh QQ turns exclude stale attachment prompts while old forwards and dialogue stay explicitly retrievable',async()=>{
+test('QQ preserves overnight speaker roles and current question without creating a user turn for runtime state',async()=>{
  const {ForwardRecords}=await import('../src/qq/forward.js'),{QQMedia}=await import('../src/qq/media.js');
  const {dialogueMessages}=await import('../src/agent/context.js');
  const fs=await import('node:fs');
@@ -149,9 +151,13 @@ test('fresh QQ turns exclude stale attachment prompts while old forwards and dia
  forwards.observe({...past,forwards:[{id:'yesterday-forward'}]});
  const provider:Model={kind:'fixture',async complete(messages,_max,options){
   rounds++;assert.ok(options?.tools?.some(t=>t.function.name==='read_forward'));assert.ok(options?.tools?.some(t=>t.function.name==='recall_chat'));
-  const context=JSON.parse(String(messages[1].content));assert.deepEqual(context.forwardedChats,[]);assert.deepEqual(context.recentImages,[]);
+  assert.equal(messages[1].role,'system');
+  const context=JSON.parse(String(messages[1].content));assert.equal(context.forwardedChats.length,1);assert.deepEqual(context.recentImages,[]);
   assert.equal(context.currentTurn.messageId,rounds===1?'greeting':'question');
-  assert.ok(!JSON.stringify(messages).includes('昨天的小说问题'));assert.match(String(messages[2].content),/早间新闻/);
+  assert.match(String(messages[2].content),/昨天的小说问题/);assert.equal(messages[2].role,'user');
+  assert.equal(messages[3].role,'assistant');assert.match(String(messages[3].content),/昨天的回复/);
+  assert.equal(messages[4].role,'assistant');assert.match(String(messages[4].content),/早间新闻/);
+  assert.equal(messages.at(-1)!.role,'user');
   assert.match(String(messages.at(-1)!.content),rounds===1?/本轮消息.*早，辛苦了/:/本轮消息.*？/);
   return {text:rounds===1?'早呀。':'怎么啦？',usage:{input:100,output:20}};
  }};
@@ -160,6 +166,7 @@ test('fresh QQ turns exclude stale attachment prompts while old forwards and dia
   await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');const saved=await media.fromWeb(group,fs.readFileSync(f.root+'/runtime/outputs/mock.png'),'https://example.com/old.png');
   f.store.db.prepare('UPDATE qq_media SET observed=?,description=? WHERE id=?').run(now-30000,'刚从昨天的转发中读取的旧图片',saved.id);
   f.store.observe(past,24,20);bot.memory.record({id:past.id,conversation:group,actor:past.user,role:'user',text:past.text,at:old});
+  f.store.observe(message('昨天的回复',{id:'old-reply',group,user:'DeepSeekFish',at:old+1000}),24,20);
   f.store.observe(message('今日新闻',{id:'daily-news:today',group,user:'DeepSeekFish',at:now-60000}),24,20);
   await bot.receive(message('早，辛苦了',{id:'greeting',group,user:'20002'}));await bot.flush();
   await bot.receive(message('？',{id:'question',group,user:'20002'}));await bot.flush();
@@ -170,4 +177,19 @@ test('fresh QQ turns exclude stale attachment prompts while old forwards and dia
   assert.ok(log.inputContext.context.currentTurn.messageId);assert.ok(log.inputContext.dialogue.length>=2);
   assert.match(String(dialogueMessages([past],[past])[0].content),/2026|202[0-9]/);
  }finally{await bot.stop();f.cleanup();}
+});
+
+test('tool images retain their own call IDs through text compaction and image retirement',()=>{
+ const ctx=new TurnContext();
+ const make=(id:string)=>ctx.result('read_forward',id,{text:'旧转发'.repeat(600)},0,[{type:'text',text:'转发图片 '+id},{type:'image_url',image_url:{url:'data:image/png;base64,AA=='}}]);
+ const one=make('forward-one'),two=make('forward-two');
+ for(const round of [0,2,3]){
+  ctx.compact(round);
+  for(const [m,id] of [[one,'forward-one'],[two,'forward-two']] as const){
+   assert.equal(m.role,'tool');assert.equal(m.tool_call_id,id);assert.ok(Array.isArray(m.content));
+   assert.ok(m.content.some(p=>p.type==='text'&&p.text.includes('转发图片 '+id)));
+   assert.equal(m.content.filter(p=>p.type==='image_url').length,round<3?1:0);
+   const data=JSON.parse((m.content[0] as {text:string}).text);assert.ok(round<2?data.text:data.resultId===id);
+  }
+ }
 });

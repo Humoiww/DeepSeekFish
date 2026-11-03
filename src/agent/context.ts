@@ -1,21 +1,20 @@
 import { knowledgeTokens } from '../memory/knowledge.js';
-import { FishError,type ChatMessage,type Message,type ModelTool } from '../types.js';
+import { FishError,type ChatMessage,type ChatPart,type Message,type ModelTool } from '../types.js';
 
 export const RECENT_MESSAGES=6;
-export const DIALOGUE_IDLE_MS=2*3600000;
 /** Keep this question intact; spend at most 1500 tokens on preceding dialogue. */
 export function recentDialogue(history:Message[],batch:Message[]):Message[]{
   const ids=new Set(batch.map(m=>m.id)),last=batch.at(-1)!;
   const previous=history.filter(m=>!ids.has(m.id)&&m.at<=last.at),selected:Message[]=[];
-  let tokens=0,newerAt=batch[0].at;
+  let tokens=0;
   for(const m of previous.reverse()){
-    // An idle gap starts a new live exchange. Older records remain recallable.
-    if(newerAt-m.at>DIALOGUE_IDLE_MS)break;
     const cost=knowledgeTokens(m.text)+16;
     if(selected.length+batch.length>=RECENT_MESSAGES||tokens+cost>1500)break;
-    selected.unshift(m);tokens+=cost;newerAt=m.at;
+    selected.unshift(m);tokens+=cost;
   }
-  return [...selected,...batch];
+  // A news delivery/previous answer may land between two buffered user messages.
+  // Keep its real position instead of moving all history ahead of the batch.
+  return [...selected,...batch].sort((a,b)=>a.at-b.at);
 }
 
 export const dialogueTime=(at:number)=>new Date(at+8*3600000).toISOString().slice(0,19)+'+08:00';
@@ -31,6 +30,12 @@ export const contextTools:ModelTool[]=[{type:'function',function:{name:'read_too
 const RECEIPTS=new Set(['generate_image','send_image','send_meme','collect_meme','remember_images','reply']);
 const WEB_TEXT_TOKENS=4000;
 type Result={message:ChatMessage;name:string;raw:string;data:any;round:number;body?:string};
+function resultText(result:Result,text:string){
+  // A tool may carry original images. Updating its text must keep those images
+  // attached to the same tool_call_id, never turn them into a new user turn.
+  const content=result.message.content;
+  result.message.content=Array.isArray(content)?[{type:'text',text},...content.slice(1)]:text;
+}
 // These pages put the actual body in text/content. Bilibili and similar
 // structured feeds put their bodies inside posts and keep their original view.
 function webBody(name:string,data:any):string|undefined{
@@ -62,11 +67,12 @@ function webView(id:string,r:Result,body:string,older=false){
 export class TurnContext {
   private results=new Map<string,Result>();
   private media:{message:ChatMessage;round:number}[]=[];
-  result(name:string,id:string,result:unknown,round:number):ChatMessage{
+  result(name:string,id:string,result:unknown,round:number,parts:ChatPart[]=[]):ChatMessage{
     const raw=JSON.stringify(result)??'null',message:ChatMessage={role:'tool',tool_call_id:id,content:raw};
     const saved={message,name,raw,data:result,round,body:webBody(name,result)};
     this.results.set(id,saved);
     if(saved.body!==undefined)message.content=JSON.stringify(webView(id,saved,saved.body));
+    if(parts.length){message.content=[{type:'text',text:String(message.content)},...parts];this.images(message,round);}
     return message;
   }
   images(message:ChatMessage,round:number):ChatMessage{this.media.push({message,round});return message;}
@@ -90,7 +96,7 @@ export class TurnContext {
         // Preserve exact readable text across tool rounds instead of replacing
         // it with the beginning of a JSON envelope (which often has no body).
         const body=clipTokens(r.body,remaining);remaining-=knowledgeTokens(body);
-        r.message.content=JSON.stringify(webView(id,r,body,round-r.round>=2));abridgedResults++;continue;
+        resultText(r,JSON.stringify(webView(id,r,body,round-r.round>=2)));abridgedResults++;continue;
       }
       // Keep native call/result pairs and delivery receipts; older long reads
       // become explicitly labelled excerpts, not fabricated summaries.
@@ -99,9 +105,9 @@ export class TurnContext {
         // Recovered slices are not new documents. Keep their original handle,
         // not another 1000-character copy of an escaped JSON chunk.
         const {resultId,tool,section,offset,nextOffset}=r.data;
-        r.message.content=JSON.stringify({resultId,tool,section,offset,nextOffset,previouslyRead:true,readWith:'read_tool_result'});abridgedResults++;continue;
+        resultText(r,JSON.stringify({resultId,tool,section,offset,nextOffset,previouslyRead:true,readWith:'read_tool_result'}));abridgedResults++;continue;
       }
-      r.message.content=JSON.stringify({resultId:id,abridged:true,tool:r.name,preview:r.raw.slice(0,1000),totalCharacters:r.raw.length,readWith:'read_tool_result'});abridgedResults++;
+      resultText(r,JSON.stringify({resultId:id,abridged:true,tool:r.name,preview:r.raw.slice(0,1000),totalCharacters:r.raw.length,readWith:'read_tool_result'}));abridgedResults++;
     }
     for(const item of this.media){
       if(round-item.round<3||typeof item.message.content==='string')continue;
