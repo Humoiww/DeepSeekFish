@@ -24,7 +24,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         res.statusCode=403;throw new FishError('LOCAL_ONLY');
       }
       const url=new URL(req.url??'/',origin);
-      const assets:Record<string,[string,string]>={'/':['index.html','text/html'],'/web.css':['web.css','text/css'],'/web.js':['web.js','text/javascript'],'/activity.js':['activity.js','text/javascript'],'/fish.svg':['fish.svg','image/svg+xml']};
+      const assets:Record<string,[string,string]>={'/':['index.html','text/html'],'/web.css':['web.css','text/css'],'/web.js':['web.js','text/javascript'],'/activity.js':['activity.js','text/javascript'],'/exploration.js':['exploration.js','text/javascript'],'/fish.svg':['fish.svg','image/svg+xml']};
       if(req.method==='GET'&&assets[url.pathname]){
         const [name,type]=assets[url.pathname];res.setHeader('Content-Type',type+'; charset=utf-8');
         res.end(fs.readFileSync(safePath(app.root,'src/web/public/'+name)));return;
@@ -38,6 +38,8 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       if(!equal(req.headers.authorization??'','Bearer '+app.token)){res.statusCode=401;throw new FishError('LOCAL_AUTH_REQUIRED');}
       let value:unknown;
       if(req.method==='GET'&&url.pathname==='/api/status')value=app.status();
+      else if(req.method==='GET'&&url.pathname==='/api/exploration')value=app.exploration.status();
+      else if(req.method==='GET'&&url.pathname==='/api/exploration/journal')value=app.exploration.journal({...Object.fromEntries(url.searchParams),offset:Number(url.searchParams.get('offset')??0),removed:url.searchParams.get('removed')==='true'});
       else if(req.method==='GET'&&url.pathname==='/api/activity')value=await app.activity(url.searchParams);
       else if(req.method==='GET'&&url.pathname==='/api/activity/detail')value=await app.activityDetail(url.searchParams.get('id'));
       else if(req.method==='GET'&&url.pathname==='/api/activity/image'){
@@ -67,6 +69,9 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
           value={launchUrl:origin+'/#bootstrap='+bootstrap,mock:app.mock};
         }
         else if(url.pathname==='/api/persona')value=app.savePersona(b);
+        else if(url.pathname==='/api/exploration/settings')value=app.exploration.save(b);
+        else if(url.pathname==='/api/exploration/run')value=app.exploration.manual();
+        else if(url.pathname==='/api/exploration/cancel')value=app.exploration.cancel();
         else if(url.pathname==='/api/settings')value=app.configure(b);
         else if(url.pathname==='/api/qq')value=app.configureQQ(b);
         else if(url.pathname==='/api/codex-quota/refresh')value=await app.refreshQuota();

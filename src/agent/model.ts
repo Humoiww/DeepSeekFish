@@ -97,7 +97,7 @@ export class BudgetedModel {
       }
       throw e;
     }
-    try { recordPrompt(this.ledger.store,user==='daily-qzone'?'daily':user==='daily-news'?'news':user==='memory-review'?'memory':'qq',modelPayload(this.cfg(),messages,max,options));const r=await this.provider.complete(messages,max,options);this.ledger.settle(id,r.usage);this.ledger.store.setMeta('modelStatus','last call succeeded');return r; }
+    try { recordPrompt(this.ledger.store,user==='exploration'?'exploration':user==='daily-qzone'?'daily':user==='daily-news'?'news':user==='memory-review'?'memory':'qq',modelPayload(this.cfg(),messages,max,options));const r=await this.provider.complete(messages,max,options);this.ledger.settle(id,r.usage);this.ledger.store.setMeta('modelStatus','last call succeeded');return r; }
     catch(e) { this.ledger.settle(id,e instanceof ModelResponseError?e.usage:undefined);if(e instanceof ModelResponseError){this.ledger.store.setMeta('model:last-invalid',redact(JSON.stringify({at:Date.now(),code:e.code,...e.diagnostic})));this.ledger.store.audit('model-invalid',group,JSON.stringify({code:e.code,issues:e.diagnostic.issues,finishReason:e.diagnostic.finishReason}));}this.ledger.error();this.ledger.store.setMeta('modelStatus','last call failed');throw e; }
   }
 }

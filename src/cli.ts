@@ -104,13 +104,14 @@ async function main():Promise<void>{
     const data=await response.json();if(!response.ok)throw new FishError(data.error??'WEBUI_API_ERROR');print(data);
   }else if(command==='start'){
     const app=createApp(root,args.includes('--mock'));let closing=false;
-    const stop=()=>{if(closing)return;closing=true;void (async()=>{await app.bot.stop();server.close();await once(server,'close');clearInterval(prune);app.store.close();})();};
+    const stop=()=>{if(closing)return;closing=true;void (async()=>{await app.exploration.stop();await app.bot.stop();server.close();await once(server,'close');clearInterval(prune);app.store.close();})();};
     const server=adminServer(app,stop);
     server.listen(app.cfg().port,'127.0.0.1');await once(server,'listening');
     app.tasks.recover();
     app.store.prune(app.cfg().historyHours,app.cfg().windowSize);
     const prune=setInterval(()=>app.store.prune(app.cfg().historyHours,app.cfg().windowSize),60000);prune.unref();
     if('start' in app.transport)(app.transport as any).start();
+    app.exploration.start();
     process.once('SIGINT',stop);process.once('SIGTERM',stop);
     print(`DeepSeekFish ${app.mock?'Mock':'Live'} 运行中：http://127.0.0.1:${app.cfg().port}；Ctrl+C 停止。`);
     print('本机令牌位于 runtime/data/admin-token。真实 Codex 无人值守执行关闭。');

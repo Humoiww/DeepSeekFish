@@ -7,6 +7,7 @@ import { boundedJson } from '../agent/model.js';
 import { pageEvidence } from './evidence.js';
 
 export interface SearchResult { title:string; url:string; snippet:string; summary?:string; date?:string|null; siteName?:string|null; retrievedAt?:string }
+export type WebCharge={requests:number;chargedTokens:number;cached:boolean;uncertain?:boolean;reservationId?:string};
 export const searchEvidence=(results:SearchResult[])=>({source:'DeepSeek Search',evidence:'search_index',latestVerified:false,notice:'搜索排序不代表时间顺序；确认最新内容需读取原站列表及发布时间。',results});
 export interface FetchedPage {url:string;title:string;content:string;truncated:boolean;fetchedAt:string}
 export interface SearchProvider { search(query:string):Promise<SearchResult[]>;fetch?(url:string):Promise<FetchedPage> }
@@ -61,7 +62,7 @@ export class MockSearchProvider implements SearchProvider {
 export class SearchService {
   private pending=new Map<string,Promise<unknown>>();
   constructor(private provider:SearchProvider,private ledger:Ledger,private cfg:()=>Config) {}
-  async search(query:string,group:string,user:string,fresh=false):Promise<SearchResult[]> {
+  async search(query:string,group:string,user:string,fresh=false,charge?:(usage:WebCharge)=>void):Promise<SearchResult[]> {
     if(!this.cfg().search)throw new FishError('SEARCH_DISABLED');
     if(typeof query!=='string')throw new FishError('SEARCH_QUERY_LENGTH');
     query=query.trim();
@@ -71,24 +72,24 @@ export class SearchService {
     return this.cached<SearchResult[]>('search:'+query+'|'+this.cfg().searchCount,group,user,async()=>{
       const results=await this.provider.search(query),retrievedAt=new Date().toISOString();
       for(const result of results)result.retrievedAt=retrievedAt;return results;
-    },fresh);
+    },fresh,charge);
   }
-  async fetch(url:string,group:string,user:string,offset=0,fresh=false){
+  async fetch(url:string,group:string,user:string,offset=0,fresh=false,charge?:(usage:WebCharge)=>void){
     if(!this.cfg().search)throw new FishError('SEARCH_DISABLED');
     if(typeof url!=='string'||url.length>8192||!publicUrl(url))throw new FishError('FETCH_PUBLIC_URL_REQUIRED');
     if(!Number.isSafeInteger(offset)||offset<0||offset>200000)throw new FishError('FETCH_OFFSET_INVALID');
     const normalized=new URL(url);normalized.hash='';url=normalized.href;
     if(!this.provider.fetch)throw new FishError('FETCH_UNAVAILABLE');
     if(typeof fresh!=='boolean')throw new FishError('INVALID_TOOL_ARGS');
-    const page=await this.cached<FetchedPage>('fetch:'+url,group,user,()=>this.provider.fetch!(url),fresh);
+    const page=await this.cached<FetchedPage>('fetch:'+url,group,user,()=>this.provider.fetch!(url),fresh,charge);
     const content=page.content.slice(offset,offset+6000),nextOffset=offset+content.length<page.content.length?offset+content.length:null;
     return {...page,...pageEvidence(page.title,page.content),content,offset,totalCharacters:page.content.length,nextOffset,truncated:nextOffset!==null||page.truncated};
   }
-  private async cached<T>(identity:string,group:string,user:string,operation:()=>Promise<T>,fresh=false):Promise<T>{
+  private async cached<T>(identity:string,group:string,user:string,operation:()=>Promise<T>,fresh=false,charge?:(usage:WebCharge)=>void):Promise<T>{
     const key=createHash('sha256').update(identity).digest('hex');
     const cached=this.ledger.store.db.prepare('SELECT value FROM cache WHERE key=? AND expires>?').get(key,Date.now()) as any;
-    if(cached&&!fresh)return JSON.parse(cached.value);
-    const running=this.pending.get(key);if(running)return running as Promise<T>;
+    if(cached&&!fresh){charge?.({requests:0,chargedTokens:0,cached:true});return JSON.parse(cached.value);}
+    const running=this.pending.get(key);if(running){charge?.({requests:0,chargedTokens:0,cached:true});return running as Promise<T>;}
     const pending=(async()=>{
       const id=this.ledger.reserve('search',group,user);
       let billed:boolean|undefined;
@@ -96,7 +97,7 @@ export class SearchService {
         const result=await operation();billed=(result as any)?.billable??(Array.isArray(result)?result.length>0:!!(result as any)?.content?.trim());
         this.ledger.store.db.prepare('INSERT OR REPLACE INTO cache VALUES (?,?,?)').run(key,Date.now()+600000,JSON.stringify(result));
         return result;
-      }catch(e){if(/^(SEARCH|FETCH)_HTTP_/.test(codeOf(e)))billed=false;this.ledger.error();throw e;}finally{this.ledger.settleSearch(id,billed);}
+      }catch(e){if(/^(SEARCH|FETCH)_HTTP_/.test(codeOf(e)))billed=false;this.ledger.error();throw e;}finally{this.ledger.settleSearch(id,billed);charge?.({requests:1,chargedTokens:billed===false?0:Number((this.ledger.store.db.prepare('SELECT input FROM reservations WHERE id=?').get(id) as any).input),cached:false,uncertain:billed===undefined,reservationId:id});}
     })();
     this.pending.set(key,pending);try{return await pending;}finally{this.pending.delete(key);}
   }

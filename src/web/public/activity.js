@@ -1,8 +1,9 @@
 'use strict';
 (()=>{
-  const kindNames={qq:'QQ 对话',web:'网页对话',news:'早间新闻',memory:'记忆回顾',diary:'空间动态',image:'Codex 生图',audit:'系统事件'};
-  const stateNames={completed:'已完成',failed:'失败',partial:'部分失败',running:'进行中',pending:'等待结果',unknown:'状态未记录'};
-  const toolNames={reply:'回复消息',search_web:'联网搜索',fetch_page:'查询网页',browse_page:'浏览网页',download_image:'下载图片',generate_image:'请求生图',send_image:'发送成图',send_meme:'发送表情',list_images:'浏览图库',view_images:'查看原图',collect_meme:'收藏表情',remember_images:'记录图片',get_knowledge:'读取知识库',update_knowledge:'更新知识库',recall_chat:'翻阅聊天历史',read_forward:'读取转发记录',get_qzone:'读取空间动态',get_person:'查看 QQ 资料',get_quota:'查看额度',read_tool_result:'继续读取工具结果',draft_news:'准备新闻',finish_memory:'完成记忆回顾',image_plan:'设计画面',codex_record:'Codex 返回结果'};
+  document.addEventListener('exploration-history',async e=>{closeDrawers();for(const id of ['activity-state','activity-conversation','activity-from','activity-to','activity-query'])$(id).value='';$('activity-kind').value='exploration';offset=0;$('activity-dialog').showModal();await refresh(true);if(e.detail)await openDetail('exploration:'+e.detail);});
+  const kindNames={qq:'QQ 对话',web:'网页对话',news:'早间新闻',memory:'记忆回顾',diary:'空间动态',image:'Codex 生图',audit:'系统事件',exploration:'自主探索'};
+  const stateNames={unconfirmed:'送达未确认',paused:'资源暂停',cancelled:'已停止',interrupted:'重启中断',completed:'已完成',failed:'失败',partial:'部分失败',running:'进行中',pending:'等待结果',unknown:'状态未记录'};
+  const toolNames={read_curiosity:'翻阅好奇心日志',write_curiosity:'更新好奇心日志',read_exploration:'回看探索',send_message:'主动私聊',propose_project:'提出创意',finish_exploration:'结束闲逛',publish_qzone:'发布空间',reply:'回复消息',search_web:'联网搜索',fetch_page:'查询网页',browse_page:'浏览网页',download_image:'下载图片',generate_image:'请求生图',send_image:'发送成图',send_meme:'发送表情',list_images:'浏览图库',view_images:'查看原图',collect_meme:'收藏表情',remember_images:'记录图片',get_knowledge:'读取知识库',update_knowledge:'更新知识库',recall_chat:'翻阅聊天历史',read_forward:'读取转发记录',get_qzone:'读取空间动态',get_person:'查看 QQ 资料',get_quota:'查看额度',read_tool_result:'继续读取工具结果',draft_news:'准备新闻',finish_memory:'完成记忆回顾',image_plan:'设计画面',codex_record:'Codex 返回结果'};
   let offset=0,next=null,selected=null,sequence=0,detailSequence=0,searchTimer,items=[];
   const number=n=>Number(n||0).toLocaleString('zh-CN');
   const splitKnown=u=>Number.isSafeInteger(u?.cachedInput)&&Number.isSafeInteger(u?.uncachedInput);
@@ -24,7 +25,7 @@
   function tag(state){return node('span','activity-state state-'+state,stateNames[state]||state);}
   function stats(t){
     const box=$('activity-stats');box.replaceChildren();
-    for(const [label,value,note] of [['活动记录',t.records,'含异常 '+number(t.errors)+' 次'],['DeepSeek token',t.tokens,'输入 '+number(t.input)+' / 输出 '+number(t.output)+'\n'+cacheText(t)],['模型调用',t.modelCalls,'未提供用量 '+number(t.unknownUsage)+' 条'],['搜索 / 查询',t.search+t.fetch,'搜索 '+number(t.search)+' / 查询 '+number(t.fetch)],['浏览 / 下载',t.browse+t.downloads,'浏览 '+number(t.browse)+' / 下载 '+number(t.downloads)],['生图 / 发图',t.images+t.sends,'生图调用 '+number(t.images)+' / 发送调用 '+number(t.sends)]]){
+    for(const [label,value,note] of [['活动记录',t.records,'含异常 '+number(t.errors)+' 次'],['DeepSeek token',t.tokens,'输入 '+number(t.input)+' / 输出 '+number(t.output)+'\n'+cacheText(t)],['模型调用',t.modelCalls,'未提供用量 '+number(t.unknownUsage)+' 条'],['搜索 / 查询',t.search+t.fetch,'搜索 '+number(t.search)+' / 查询 '+number(t.fetch)],['浏览 / 下载',t.browse+t.downloads,'浏览 '+number(t.browse)+' / 下载 '+number(t.downloads)],['生图 / 分享',t.images+t.sends,'生图调用 '+number(t.images)+' / 发送调用 '+number(t.sends)]]){
       const card=node('div','activity-stat');card.append(node('span','',label),node('strong','',number(value)),node('small','',note));box.append(card);
     }
   }
@@ -65,6 +66,7 @@
         summary.append(node('span','activity-step-number',String(i+1)),title);
         if(e.state)summary.append(tag(e.state));step.append(summary);if(e.state==='failed')step.open=true;
         if(e.decision?.actions.length>1)step.append(node('p','activity-step-meta','共享动作：'+e.decision.actions.map(n=>toolNames[n]||n).join('、')+'。接口未提供各动作单独占用的 token。'));
+        if(e.result?.billing)step.append(node('p','activity-step-meta','联网请求 '+e.result.billing.requests+' 次 · 折算 '+number(e.result.billing.chargedTokens)+' token'+(e.result.billing.cached?' · 缓存命中':'')+(e.result.billing.uncertain?' · 费用未确认，保留预留量':'')));
         if(e.type==='tool')step.append(node('p','activity-step-meta','以上为 DeepSeek 决策调用用量；搜索、GPT 生图等工具的独立服务费用不算作这里的对话 token。'));
         if(e.round!==undefined||e.at)step.append(node('p','activity-step-meta',(e.round!==undefined?'第 '+(e.round+1)+' 轮':'')+(e.at?' · '+date(e.at):'')));
         if(e.args!==undefined)step.append(block('调用参数',e.args,true));if(e.result!==undefined)step.append(block('返回结果',e.result,true));

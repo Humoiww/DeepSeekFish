@@ -1,6 +1,7 @@
 import { networkPricing } from '../budget/pricing.js';
 import fs from 'node:fs';
-import { configureQQ,qqStatus } from '../qq/settings.js';
+import { configureQQ,qqStatus,readQQSettings } from '../qq/settings.js';
+import { ExplorationState } from '../exploration/state.js';
 import { randomBytes,randomUUID } from 'node:crypto';
 import { defaults,prepare,loadSecrets,loadConfig,validateConfig,MAX_DAILY_TOKENS,type Config } from '../config.js';
 import { safePath,writePrivate } from '../paths.js';
@@ -44,6 +45,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   const store=new Store(root,mock?'webui-mock.sqlite':'webui.sqlite');
   const budgetStore=new Store(root,mock?'webui-mock-budget.sqlite':'fish.sqlite');
   const activity=new ActivityHistory(root,store,budgetStore);
+  const exploration=new ExplorationState(budgetStore,()=>validateConfig({...loadConfig(root),...JSON.parse(budgetStore.getMeta('settings')??'{}'),...readQQSettings(root)}));
   store.db.exec(`CREATE TABLE IF NOT EXISTS web_sessions(id TEXT PRIMARY KEY,title TEXT,created INTEGER,updated INTEGER);
     CREATE TABLE IF NOT EXISTS web_turns(id TEXT PRIMARY KEY,sid TEXT,user TEXT,answer TEXT,trace TEXT,context TEXT,state TEXT,created INTEGER);`);
   const memory=new MemoryJournal(root,store);
@@ -213,6 +215,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   async function close(){accepting=false;await qqBroker?.close();for(const c of active.values())c.abort();await tasks.stop();
     while(active.size)await new Promise(resolve=>setTimeout(resolve,10));await quota.close();store.close();budgetStore.close();}
   return {root,mock,token,
+    exploration,
     activity:(params:URLSearchParams)=>activity.list(params),activityDetail:(id:unknown)=>activity.detail(id),activityImage:(id:unknown)=>activity.image(id),
     persona:()=>personaSettings(root),savePersona:(input:unknown)=>savePersona(root,input),
     prompts:()=>({systems:promptSystems(root),knowledge:knowledgeSnapshot(root),latest:promptSnapshots(budgetStore)}),

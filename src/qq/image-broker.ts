@@ -14,6 +14,7 @@ import { runCodexImage,type ImageRunner } from '../image/codex-smoke.js';
 import { CodexQuotaMonitor } from '../codex/quota.js';
 import { CodexRateLimitError } from '../codex/rate-limit.js';
 import { QQImageLibrary } from './image-library.js';
+import { ExplorationState } from '../exploration/state.js';
 
 /** Only the trusted QQ process can reach this private socket. No shell, paths,
  * login data, quota resets or ordinary Codex tasks are accepted. */
@@ -22,6 +23,7 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
   const ledger=new Ledger(store,cfg),socket=qqBrokerSocket(root),active=new Set<Promise<void>>(),controllers=new Set<AbortController>();
   store.db.exec('CREATE TABLE IF NOT EXISTS qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT,PRIMARY KEY(conversation,message_id))');
   const library=new QQImageLibrary(root,store);
+  const exploration=new ExplorationState(store,cfg);
   makeDir(root,'runtime/broker');
   if(fs.existsSync(socket)){const st=fs.lstatSync(socket);if(!st.isSocket()||st.uid!==process.getuid?.())throw new FishError('QQ_BROKER_PATH_OCCUPIED');fs.unlinkSync(socket);}
   let closing=false;
@@ -46,6 +48,13 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
         if(body.op==='view'){res.end(JSON.stringify(library.view(body.conversation,body.user,body.referenceIds)));return;}
         if(body.op!=='image'||!c.images)throw new FishError('IMAGE_DISABLED');
         if(typeof body.messageId!=='string'||!body.messageId.trim()||body.messageId.length>200||typeof body.request!=='string'||body.request.length>2000||!body.request.trim())throw new FishError('INVALID_QQ_IMAGE_REQUEST');
+        const checkBackground=()=>{
+          if(!body.messageId.startsWith('explore:'))return;
+          const id=/^explore:([a-f0-9-]{36}):[a-f0-9]{20}$/.exec(body.messageId)?.[1];
+          if(!id||!exploration.settings().allowImages)throw new FishError('EXPLORATION_IMAGE_DISABLED');
+          const run=exploration.get(id);exploration.guard(id,run.lock??'');
+          if(run.owner!==body.user||body.conversation!=='private:'+run.owner)throw new FishError('QQ_BROKER_TARGET_DENIED');
+        };checkBackground();
         const existing=()=>store.db.prepare('SELECT state,image_id AS imageId,error FROM qq_image_requests WHERE conversation=? AND message_id=?').get(body.conversation,body.messageId);
         const previous=existing();
         if(previous){res.end(JSON.stringify({...previous,alreadyRequested:true,resources:qqResources(c,ledger,body.conversation,body.user)}));return;}
@@ -55,6 +64,7 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
         if(!claimed){res.end(JSON.stringify({...existing(),alreadyRequested:true,resources:qqResources(c,ledger,body.conversation,body.user)}));return;}
         try{
           const before=await quota.beforeImage();
+          checkBackground();
           const prompt='用户这次想画：'+body.request+'\n'+Object.entries(imageFields).map(([k,label])=>label+'：'+plan[k as keyof typeof plan]).join('\n');
           const character=selected.some(i=>i.id==='character');
           // QQ's model already chose the scene and references. Selecting its

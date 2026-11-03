@@ -24,6 +24,10 @@ import { PROJECT_TIMEZONE } from './time.js';
 import { dailyStatus } from './qq/daily-qzone.js';
 import { newsStatus } from './qq/daily-news.js';
 import { ForwardRecords } from './qq/forward.js';
+import { ExplorationState } from './exploration/state.js';
+import { ExplorationWorker } from './exploration/worker.js';
+import { QQImageLibrary } from './qq/image-library.js';
+import { QzonePublisher } from './qq/qzone-publish.js';
 
 export function createApp(root:string,mock:boolean,override:Partial<Config>={},demo=false){
   prepare(root);loadSecrets(root);
@@ -49,11 +53,15 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
   }catch(e){store.close();throw e;}
   const media=transport instanceof OneBotTransport?new QQMedia(root,store,file=>(transport as OneBotTransport).imageUrl(file)):undefined;
   const forwards=transport instanceof OneBotTransport?new ForwardRecords(store,transport,group=>conversationAllowed(cfg(),group),media):undefined;
+  const people=transport instanceof OneBotTransport?new PersonMemory(root,store,transport,cfg):undefined;
+  const imageClient=transport instanceof OneBotTransport?new QQImageClient(root):undefined;
+  const qzone=transport instanceof OneBotTransport?new QzoneMemory(root,store,transport,cfg):undefined;
   bot=new Bot(root,cfg,store,ledger,model,tasks,search,mock?new MockImageProvider():new CodexImageProvider(),transport,
-    transport instanceof OneBotTransport?new PersonMemory(root,store,transport,cfg):undefined,
-    transport instanceof OneBotTransport?new QQImageClient(root):undefined,
-    transport instanceof OneBotTransport?new QzoneMemory(root,store,transport,cfg):undefined,
+    people,imageClient,qzone,
     media,forwards);
+  store.db.exec('CREATE TABLE IF NOT EXISTS qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT,PRIMARY KEY(conversation,message_id))');
+  const explorationState=new ExplorationState(store,()=>({...cfg(),enabled:cfg().enabled&&readQQSettings(root).enabled!==false})),exploration=new ExplorationWorker(explorationState,model,{root,cfg,ledger,search,transport,tasks,media:media??new QQMedia(root,store),library:new QQImageLibrary(root,store),images:imageClient,people,qzone,forwards,
+    ...(transport instanceof OneBotTransport?{publisher:async()=>new QzonePublisher(transport as OneBotTransport,(await transport.identity()).userId)}:{})});
   const tokenPath=safePath(root,'runtime/data/admin-token');
   if(!fs.existsSync(tokenPath))writePrivate(root,'runtime/data/admin-token',randomBytes(32).toString('hex'));
   const token=fs.readFileSync(tokenPath,'utf8').trim();
@@ -70,6 +78,7 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
     try{return fs.existsSync(safePath(root,'runtime/codex-home/auth.json'));}catch{return false;}
   }
   const status=()=>({mode:mock?'mock':'live',enabled:cfg().enabled,qq:transport.status,privateUsers:cfg().privateUsers,
+    exploration:explorationState.status(),
     dailyQzone:dailyStatus(root,store),
     dailyNews:newsStatus(root,store),
     memory:{archive:'runtime/memory/days',automaticDays:2,timezone:PROJECT_TIMEZONE,events:(store.db.prepare('SELECT count(*) AS n FROM memory_events').get() as any).n,persona:'personas/active.json'},
@@ -83,6 +92,6 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
     groups:cfg().groups.map(group=>({group,ordinaryMessages:store.getMeta('qqOrdinary:'+group)?'observed':'unverified; mention-only capability assumed'})),
     groupCount:cfg().groups.length,tasks:tasks.list().map(t=>({id:t.id,group:t.grp,state:t.state,created:t.created,result:t.result})),
     recent:store.db.prepare('SELECT at,kind,grp,detail FROM audit ORDER BY id DESC LIMIT 30').all()});
-  return {root,store,ledger,model,tasks,bot,transport,token,cfg,set,status,mock};
+  return {root,store,ledger,model,tasks,bot,transport,token,cfg,set,status,mock,exploration,explorationState};
 }
 export type App=ReturnType<typeof createApp>;

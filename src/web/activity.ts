@@ -6,11 +6,11 @@ import { inputCache } from '../usage.js';
 import { MAX_IMAGE_BYTES } from '../image/limits.js';
 import { safePath } from '../paths.js';
 
-export type ActivityKind='qq'|'web'|'news'|'memory'|'diary'|'image'|'audit';
+export type ActivityKind='qq'|'web'|'news'|'memory'|'diary'|'image'|'audit'|'exploration';
 type Step={type:string;name:string;state?:string;at?:number;args?:unknown;result?:any;usage?:Usage;callId?:string;round?:number;phases?:unknown[];modelCall?:number;decision?:{call:number;usage?:Usage;actions:string[]}};
 type UsageSummary={input:number;output:number;total:number;calls:number;known:boolean;cachedInput:number;uncachedInput:number;cacheKnownCalls:number;cacheUnknownInput:number;unreportedCalls:number};
 type RecordItem={id:string;kind:ActivityKind;title:string;conversation:string;speaker:string;at:number;updated:number;durationMs:number|null;state:string;usage:UsageSummary;counts:{tools:number;search:number;fetch:number;browse:number;downloads:number;images:number;sends:number};reply:string;errors:number;events:Step[];related:string[];raw:unknown};
-const kinds=new Set(['qq','web','news','memory','diary','image','audit']);
+const kinds=new Set(['qq','web','news','memory','diary','image','audit','exploration']);
 const secret=/^(?:authorization|cookie|set-cookie|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|skey|p_skey|rkey)$/i;
 /** Log data is display-only. Never expose credentials, signed media handles or inline binaries. */
 export function activitySafe(value:any,root='',depth=0):any{
@@ -33,6 +33,7 @@ const time=(v:any)=>typeof v==='string'?Date.parse(v)||0:finite(v);
 function resultState(value:any){
   const r=obj(value);if(r?.error||r?.ok===false||r?.success===false||r?.state==='failed')return 'failed';
   if(Array.isArray(r?.images)&&r.images.some((i:any)=>i.error))return r.images.every((i:any)=>i.error)?'failed':'partial';
+  if(r?.deliveryStatus==='unconfirmed')return 'unconfirmed';
   if(r?.deliveryStatus==='failed')return 'failed';return 'completed';
 }
 function base(id:string,kind:ActivityKind,d:any,mtime:number):RecordItem{
@@ -49,7 +50,7 @@ function addUsage(r:RecordItem,usage:any):Usage|undefined{
 }
 function count(r:RecordItem,name:string){
   r.counts.tools++;
-  const key: keyof RecordItem['counts']|undefined=({search_web:'search',fetch_page:'fetch',browse_page:'browse',download_image:'downloads',generate_image:'images',send_image:'sends',send_meme:'sends'} as Record<string,keyof RecordItem['counts']>)[name];
+  const key: keyof RecordItem['counts']|undefined=({search_web:'search',fetch_page:'fetch',browse_page:'browse',download_image:'downloads',generate_image:'images',send_image:'sends',send_meme:'sends',send_message:'sends',publish_qzone:'sends'} as Record<string,keyof RecordItem['counts']>)[name];
   if(key)r.counts[key]++;
 }
 function traceRecord(r:RecordItem,trace:any[]){
@@ -98,8 +99,8 @@ function parseLog(id:string,kind:ActivityKind,d:any,mtime:number):RecordItem{
     r.reply=obj(d.draft)?.text??'';r.state=({sent:'completed',published:'completed',completed:'completed',failed:'failed',sending:'running',running:'running'} as any)[d.state]??'unknown';
     r.events=[{type:'result',name:r.title,result:d}];if(d.image_id)r.related=['image:'+d.image_id];if(d.error)r.errors=1;return r;
   }
-  r.title=kind==='qq'?String(d.request??'QQ 对话'):kind==='memory'?'后台记忆回顾':'早间新闻检索';
-  traceRecord(r,d.trace??[]);if(['running','completed','failed'].includes(d.state))r.state=d.state;
+  r.title=kind==='exploration'?String(d.request??'自主探索'):kind==='qq'?String(d.request??'QQ 对话'):kind==='memory'?'后台记忆回顾':'早间新闻检索';
+  traceRecord(r,d.trace??[]);if(['running','completed','failed','paused','cancelled','interrupted'].includes(d.state))r.state=d.state;
   return r;
 }
 function queryDate(raw:string|null,end=false){
@@ -118,7 +119,7 @@ export class ActivityHistory {
     if(this.scanning)return this.scanning;if(Date.now()-this.lastScan<1500)return;
     this.scanning=(async()=>{
       const found=new Set<string>();
-      for(const [folder,defaultKind] of [['qq','qq'],['daily-news','news'],['daily-qzone','diary'],['codex','image']] as const){
+      for(const [folder,defaultKind] of [['qq','qq'],['daily-news','news'],['daily-qzone','diary'],['codex','image'],['exploration','exploration']] as const){
         const dir=path.join(this.root,'runtime/logs',folder);let entries:string[];
         try{const s=await fs.lstat(dir);if(!s.isDirectory()||s.isSymbolicLink())continue;entries=await fs.readdir(dir);}catch{continue;}
         for(const name of entries){
@@ -132,6 +133,9 @@ export class ActivityHistory {
         }
       }
       for(const id of this.cache.keys())if(!found.has(id))this.cache.delete(id);
+      if(this.shared.db.prepare("SELECT name FROM sqlite_master WHERE name='exploration_runs'").get()){
+        for(const [id,cached] of this.cache)if(cached.record.kind==='exploration'){const row=this.shared.db.prepare('SELECT state,note,finished FROM exploration_runs WHERE id=?').get(id.slice(12)) as any;if(row){cached.record.state=row.state;cached.record.reply=row.note??cached.record.reply;}}
+      }
       this.lastScan=Date.now();
     })();try{await this.scanning;}finally{this.scanning=undefined;}
   }
@@ -147,7 +151,7 @@ export class ActivityHistory {
   async list(params:URLSearchParams){
     const kind=params.get('kind')||'',state=params.get('state')||'',q=(params.get('q')??'').trim().toLowerCase(),conversation=params.get('conversation')||'';
     const from=queryDate(params.get('from')),to=queryDate(params.get('to'),true),offset=Number(params.get('offset')??0),limit=20;
-    if(kind&&!kinds.has(kind)||state&&!['completed','failed','running','unknown'].includes(state)||q.length>200||conversation.length>120||!Number.isSafeInteger(offset)||offset<0||from!==null&&to!==null&&from>=to)throw new FishError('ACTIVITY_QUERY_INVALID');
+    if(kind&&!kinds.has(kind)||state&&!['completed','failed','running','unknown','paused','cancelled','interrupted'].includes(state)||q.length>200||conversation.length>120||!Number.isSafeInteger(offset)||offset<0||from!==null&&to!==null&&from>=to)throw new FishError('ACTIVITY_QUERY_INVALID');
     await this.scan();let records=kind==='audit'?this.auditRecords():[...this.cache.values()].map(v=>v.record).concat(this.webRecords());
     const conversations=[...new Set(records.map(r=>r.conversation).filter(Boolean))].sort();
     records=records.filter(r=>(!kind||r.kind===kind)&&(!state||(state==='failed'?r.state==='failed'||r.errors>0:r.state===state))&&(!conversation||r.conversation===conversation)&&(from===null||r.at>=from)&&(to===null||r.at<to)&&(!q||JSON.stringify([r.title,r.reply,r.conversation,r.speaker,r.events]).toLowerCase().includes(q))).sort((a,b)=>b.at-a.at||b.id.localeCompare(a.id));

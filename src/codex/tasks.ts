@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Config } from '../config.js';
+import {conversationAllowed,type Config} from '../config.js';
 import { makeDir } from '../paths.js';
 import { Store, redact } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
@@ -19,7 +19,12 @@ export class Tasks {
   }
   enqueue(message:Message,request:string,brief:string):Task{
     if(!this.cfg().codex)throw new FishError('CODEX_DISABLED');
+    return this.propose(message,request,brief);
+  }
+  /** A proposal can wait while execution is disabled; only approve() can run it. */
+  propose(message:Message,request:string,brief:string):Task{
     if(!this.cfg().admins.includes(message.user))throw new FishError('ADMIN_REQUIRED');
+    if(!conversationAllowed(this.cfg(),message.group))throw new FishError('TASK_ACCESS_REVOKED');
     if(!request.trim()||request.length>1500||!brief.trim()||brief.length>1500)throw new FishError('INVALID_TASK_BRIEF');
     const pending=Number((this.store.db.prepare("SELECT count(*) AS n FROM tasks WHERE state='waiting'").get() as any).n);
     if(pending>=20)throw new FishError('TASK_QUEUE_FULL');
@@ -35,7 +40,7 @@ export class Tasks {
   list():Task[]{return this.store.db.prepare('SELECT * FROM tasks ORDER BY created DESC LIMIT 50').all() as unknown as Task[];}
   approve(id:string):void{
     const task=this.get(id),c=this.cfg();
-    if(!c.enabled||!c.codex||!c.admins.includes(task.usr)||!c.groups.includes(task.grp))throw new FishError('TASK_ACCESS_REVOKED');
+    if(!c.enabled||!c.codex||!c.admins.includes(task.usr)||!conversationAllowed(c,task.grp))throw new FishError('TASK_ACCESS_REVOKED');
     if(task.state!=='waiting'||Date.now()-task.created>86400000)throw new FishError('TASK_NOT_WAITING');
     if(this.active)throw new FishError('CODEX_BUSY');
     const reservation=this.ledger.reserve('codex',task.grp,task.usr,0,0,c.codexTimeoutMs+5000);

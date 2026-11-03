@@ -43,6 +43,10 @@ WebUI 地址为 **http://127.0.0.1:17862**，与 QQ 管理页的 17861 端口分
 
 完整说明见 [WebUI](docs/webui.md)。目前包括画面方案 → Codex 调用 → PNG 回传的链路、浏览器流程及官方 API 请求格式已用 Mock/假 HTTP/假 runner 验证；真实 DeepSeek → Codex 全链路仍待实际生图验收；Codex 官方只读额度接口已连接项目账号实测。
 
+## 随机刻自主探索
+
+左侧「自主探索」可设置随机唤醒、手动测试，并查看兴趣日志和每个动作的 token 用量。默认关闭；启用后每 9～11 分钟以 2.8% 概率唤醒一次，工具和是否私聊由模型自行选择。自主生图与公开发空间各有独立开关。详见 [实现与操作说明](docs/autonomous-exploration.md)。
+
 ## Linux 快速部署
 
 需要 Bash；Linux x64 / arm64 缺少 Node 时，脚本可通过 Python 3 + tar 自动准备官方便携版 Node/npm。支持 npm 官方 Codex payload 提供的 Linux x64 / arm64。普通聊天、搜索和 Mock 不需要 Docker、systemd 或 bubblewrap，也不需要 sudo。也可使用已有 Node.js **24.9+** 和 npm，或把[官方 Node 便携发行包](https://nodejs.org/en/download)手动解压到 `runtime/tools/node/`。

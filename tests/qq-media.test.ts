@@ -1,3 +1,4 @@
+import {MAX_IMAGE_BYTES} from '../src/image/limits.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -37,7 +38,7 @@ test('real GIF and animated WebP frames are read in order; static formats remain
     const d=await decodeMedia(data);assert.equal(d.pages,1);assert.equal(d.frames.length,1);
   }
   await assert.rejects(decodeMedia(Buffer.from('<svg></svg>')));
-  await assert.rejects(decodeMedia(Buffer.alloc(10485761)),/TOO_LARGE/);
+  await assert.rejects(decodeMedia(Buffer.alloc(MAX_IMAGE_BYTES+1)),/TOO_LARGE/);
 });
 test('incoming originals are deduplicated, scoped, durable and never retain download credentials',async()=>{
   const f=fixture(),bytes=await animation();let fetches=0;

@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"><meta name="color-scheme" content="light"><title>DeepSeekFish · 本地助手</title><link rel="icon" href="/fish.svg" type="image/svg+xml"><link rel="stylesheet" href="/web.css"><script src="/web.js" defer></script><script src="/activity.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"><meta name="color-scheme" content="light"><title>DeepSeekFish · 本地助手</title><link rel="icon" href="/fish.svg" type="image/svg+xml"><link rel="stylesheet" href="/web.css"><script src="/web.js" defer></script><script src="/activity.js" defer></script><script src="/exploration.js" defer></script></head>
 <body>
 <div class="app-shell">
   <!-- Mobile app-shell is a stacking context; keep its backdrop beside the drawers. -->
@@ -13,6 +13,7 @@
     <div class="sidebar-bottom">
       <div class="budget-box"><div><span>今日对话用量</span><strong id="budget-text">—</strong></div><div class="meter"><i id="budget-bar"></i></div><small id="budget-detail">每次请求前检查预算</small><button id="reset-tokens" class="budget-reset" type="button" title="重置 QQ 和网页共用的今日 token 用量，保留调用记录">Reset 今日 tokens</button></div>
       <button id="qq-button" class="sidebar-action"><span>◉</span> QQ 对话 <span class="arrow">↗</span></button>
+      <button id="exploration-button" class="sidebar-action"><span>♧</span> 自主探索 <span class="arrow">↗</span></button>
       <button id="activity-button" class="sidebar-action"><span>≡</span> 活动记录 <span class="arrow">↗</span></button>
       <button id="persona-button" class="sidebar-action"><span>✎</span> 人格与提示词 <span class="arrow">↗</span></button>
       <button id="settings-button" class="sidebar-action"><span>⚙</span> 连接与设置 <span class="arrow">↗</span></button>
@@ -78,7 +79,7 @@
     <details class="persona-appearance"><summary>外观描述</summary><label>外观文字<textarea id="persona-appearance" rows="5" maxlength="4000"></textarea><small>只修改文字，设定图仍使用已有图片。</small></label></details>
   </section>
   <section id="persona-viewer" hidden>
-    <label>提示词入口<select id="prompt-channel"><option value="qq">QQ 对话</option><option value="web">网页聊天 / 受限助手</option><option value="image">网页生图规划</option><option value="portrait">网页生图规划 · 自拍</option><option value="daily">每日 QQ 空间动态</option><option value="news">每日新闻私聊</option><option value="memory">后台记忆回顾</option></select></label>
+    <label>提示词入口<select id="prompt-channel"><option value="qq">QQ 对话</option><option value="web">网页聊天 / 受限助手</option><option value="image">网页生图规划</option><option value="portrait">网页生图规划 · 自拍</option><option value="daily">每日 QQ 空间动态</option><option value="news">每日新闻私聊</option><option value="memory">后台记忆回顾</option><option value="exploration">自主探索</option></select></label>
     <p id="prompt-info" class="dialog-description"></p>
     <label>当前完整 system 提示词（已保存版本）<textarea id="prompt-system" readonly rows="12"></textarea></label>
     <div class="persona-tabs"><button id="prompt-refresh" type="button">刷新实际记录</button><button id="prompt-copy" type="button">复制系统提示词</button></div>
@@ -102,8 +103,8 @@
 <dialog id="activity-dialog" class="activity-dialog" aria-labelledby="activity-title">
   <header class="activity-heading"><div><h2 id="activity-title">肥鱼的活动记录</h2><p>对话、调用与结果 · 香港时间</p></div><button id="activity-refresh" class="quiet-button" type="button">刷新</button><button id="activity-close" class="icon-button" type="button" aria-label="关闭活动记录">×</button></header>
   <form id="activity-filters" class="activity-filters">
-    <label>来源<select id="activity-kind"><option value="">对话与任务</option><option value="qq">QQ 对话</option><option value="web">网页对话</option><option value="news">早间新闻</option><option value="memory">记忆回顾</option><option value="diary">空间动态</option><option value="image">Codex 生图</option><option value="audit">系统事件</option></select></label>
-    <label>状态<select id="activity-state"><option value="">全部状态</option><option value="completed">已完成</option><option value="failed">包含错误</option><option value="running">进行中</option><option value="unknown">状态未记录</option></select></label>
+    <label>来源<select id="activity-kind"><option value="">对话与任务</option><option value="qq">QQ 对话</option><option value="web">网页对话</option><option value="news">早间新闻</option><option value="memory">记忆回顾</option><option value="exploration">自主探索</option><option value="diary">空间动态</option><option value="image">Codex 生图</option><option value="audit">系统事件</option></select></label>
+    <label>状态<select id="activity-state"><option value="">全部状态</option><option value="completed">已完成</option><option value="failed">包含错误</option><option value="running">进行中</option><option value="unknown">状态未记录</option><option value="paused">资源暂停</option><option value="cancelled">已停止</option><option value="interrupted">重启中断</option></select></label>
     <label>会话<select id="activity-conversation"><option value="">全部会话</option></select></label>
     <label>开始日期<input id="activity-from" type="date"></label><label>结束日期<input id="activity-to" type="date"></label>
     <label class="activity-search">搜索<input id="activity-query" type="search" maxlength="200" placeholder="问题、回复、工具名或错误"></label>
@@ -115,4 +116,32 @@
 </dialog>
 
 <div class="toast" id="toast" role="status" hidden></div>
+
+<dialog id="exploration-dialog" aria-labelledby="exploration-title">
+  <div class="dialog-heading"><h2 id="exploration-title">自主探索</h2><button id="exploration-close" class="icon-button" type="button" aria-label="关闭自主探索">×</button></div>
+  <p class="hint">偶尔醒来，自己决定去哪看看。没有每日任务，也可以安静结束。</p>
+  <p id="exploration-error" class="form-error" role="alert"></p>
+  <form id="exploration-form">
+    <fieldset id="exploration-fields" disabled>
+      <label class="check"><input id="explore-enabled" type="checkbox">启用随机刻探索</label>
+      <label>私聊主人 QQ<select id="explore-owner" required></select><small>来自 QQ 设置中的已授权私聊账号。</small></label>
+      <div class="exploration-grid"><label>最短间隔（分钟）<input id="explore-minMinutes" type="number" min="0.1" max="10080" step="0.1" required></label><label>最长间隔（分钟）<input id="explore-maxMinutes" type="number" min="0.1" max="10080" step="0.1" required></label></div>
+      <label>每次触发概率（%）<input id="explore-probability" type="number" min="0" max="100" step="0.01" required></label>
+      <p id="exploration-estimate" class="hint"></p>
+      <details><summary>资源与额外能力</summary>
+        <label>单次最长运行（分钟）<input id="explore-maxRunMinutes" type="number" min="1" max="1440" step="1" required></label>
+        <label>单次模型 token 预算<input id="explore-runTokens" type="number" min="0" max="10000000" step="1" required><small>0 表示只用现有共享日额度；预算到达会保留进度。联网继续按价格计入共享额度。</small></label>
+        <label class="check"><input id="explore-allowImages" type="checkbox">允许她自主请 GPT 生图</label>
+        <label class="check"><input id="explore-allowPublicPosts" type="checkbox">允许她自主公开发布 QQ 空间</label>
+        <small>不影响日常聊天和已有每日任务。Codex 工程提案仍需你审批。</small>
+      </details>
+      <div class="dialog-footer"><span id="exploration-saved" role="status"></span><button class="primary-button" type="submit">保存设置</button></div>
+    </fieldset>
+  </form>
+  <section aria-label="运行状态"><h3>现在</h3><div id="exploration-status" class="exploration-status"></div><div class="exploration-actions"><button id="exploration-run" type="button" class="primary-button" disabled>现在醒来一次</button><button id="exploration-cancel" type="button" class="quiet-button" disabled>停止这次探索</button><button id="exploration-refresh" type="button" class="quiet-button">刷新</button></div><p class="hint">手动唤醒使用已保存设置，会消耗共享额度，也可能私聊主人。</p></section>
+  <section><h3>最近的探索</h3><div id="exploration-recent"></div><button id="exploration-history" type="button" class="quiet-button">全部活动与逐步 token 用量 ↗</button></section>
+  <details id="exploration-journal"><summary>好奇心日志</summary><form id="exploration-search"><label>找一段兴趣或想法<input id="exploration-query" type="search" maxlength="200"></label><button type="submit" class="quiet-button">查找</button></form><div id="exploration-entries"></div><button id="exploration-more" type="button" class="quiet-button" hidden>再看一些</button></details>
+  <details><summary>她提出的创意</summary><div id="exploration-proposals"></div></details>
+</dialog>
+
 </body></html>
