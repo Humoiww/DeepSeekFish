@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture } from './helpers.js';
-import { DeepSeekModel, BudgetedModel } from '../src/agent/model.js';
+import { DeepSeekModel, BudgetedModel, ModelResponseError } from '../src/agent/model.js';
+import { deepSeekUsage } from '../src/usage.js';
 import { DeepSeekSearchProvider, SearchService, publicUrl } from '../src/search/provider.js';
 import { normalize } from '../src/qq/adapter.js';
 import fs from 'node:fs';
@@ -12,11 +13,25 @@ test('real DeepSeek wire schema and usage settlement through fake HTTP, no paid 
     const http=(async(url:any,opts:any)=>{
       calls++;assert.equal(url,'https://api.deepseek.com/chat/completions');assert.equal(opts.redirect,'error');
       const body=JSON.parse(opts.body);assert.equal(body.max_tokens,256);assert.equal(body.thinking.type,'disabled');
-      return new Response(JSON.stringify({choices:[{message:{content:'回答'}}],usage:{prompt_tokens:12,completion_tokens:3}}));
+      return new Response(JSON.stringify({choices:[{message:{content:'回答'}}],usage:{prompt_tokens:12,completion_tokens:3,prompt_cache_hit_tokens:8,prompt_cache_miss_tokens:4}}));
     }) as typeof fetch;
     const model=new BudgetedModel(new DeepSeekModel('fixture-key',f.cfg,http),f.ledger,f.cfg);
-    assert.equal(await model.call('g','u',[{role:'user',content:'hello'}]),'回答');assert.equal(f.ledger.value('tokens'),15);
+    const result=await model.complete('g','u',[{role:'user',content:'hello'}]);assert.equal(result.text,'回答');assert.deepEqual(result.usage,{input:12,output:3,cachedInput:8,uncachedInput:4});assert.equal(f.ledger.value('tokens'),15);
     f.set({dailyTokens:15});await assert.rejects(model.call('g','u',[{role:'user',content:'hello'}]),/TOKEN_BUDGET/);assert.equal(calls,1);
+  }finally{f.cleanup();}
+});
+test('cache usage accepts documented fields, retains zero, and never invents missing or inconsistent splits',async()=>{
+  const base={prompt_tokens:100,completion_tokens:20};
+  assert.deepEqual(deepSeekUsage(base),{input:100,output:20});
+  assert.deepEqual(deepSeekUsage({...base,prompt_cache_hit_tokens:0,prompt_cache_miss_tokens:100}),{input:100,output:20,cachedInput:0,uncachedInput:100});
+  assert.deepEqual(deepSeekUsage({...base,prompt_tokens_details:{cached_tokens:70}}),{input:100,output:20,cachedInput:70,uncachedInput:30});
+  assert.deepEqual(deepSeekUsage({...base,prompt_cache_miss_tokens:25}),{input:100,output:20,cachedInput:75,uncachedInput:25});
+  for(const details of [{prompt_cache_hit_tokens:90,prompt_cache_miss_tokens:20},{prompt_cache_hit_tokens:101},{prompt_cache_hit_tokens:-1},{prompt_cache_hit_tokens:'70'},{prompt_cache_hit_tokens:0.5}])assert.deepEqual(deepSeekUsage({...base,...details}),{input:100,output:20});
+  const f=fixture();try{
+    const provider=new DeepSeekModel('fixture-key',f.cfg,(async()=>new Response(JSON.stringify({choices:[{finish_reason:'length',message:{content:'',tool_calls:[{id:'bad',type:'function',function:{name:'reply',arguments:'{'}}]}}],usage:{...base,prompt_cache_hit_tokens:80,prompt_cache_miss_tokens:20}}))) as typeof fetch);
+    const model=new BudgetedModel(provider,f.ledger,f.cfg);
+    await assert.rejects(model.complete('g','u',[{role:'user',content:'hello'}]),(error:any)=>error instanceof ModelResponseError&&error.usage?.cachedInput===80&&error.usage?.uncachedInput===20);
+    assert.equal(f.ledger.value('tokens'),120);
   }finally{f.cleanup();}
 });
 test('official Search API sends bounded request; filters private sources; caches and prechecks quota',async()=>{

@@ -353,7 +353,7 @@ export class Bot {
           }
           for(const id of viewedIds)visibleImages.add(id);
         }
-      }catch(e){traceState='failed';trace.push({error:codeOf(e)});throw e;}finally{finishedAt=Date.now();if(traceState==='running')traceState='completed';saveTrace();}
+      }catch(e){traceState='failed';trace.push({error:codeOf(e),...(e instanceof ModelResponseError&&!trace.some(t=>t.providerResponse===e.diagnostic)?{usage:e.usage,providerResponse:e.diagnostic}:{})});throw e;}finally{finishedAt=Date.now();if(traceState==='running')traceState='completed';saveTrace();}
       this.gate.record(last.group);this.store.audit('speech',last.group,reason);
     }catch(e){this.store.audit('error',last.group,codeOf(e));if(!spontaneous&&this.accepting)await this.send(last,e instanceof TokenBudgetError?e.notice:'当前无法回答：'+codeOf(e));}
     finally{if(lease)this.ledger.settle(lease);}

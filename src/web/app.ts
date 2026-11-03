@@ -23,6 +23,7 @@ import { AppServerQuotaReader,CodexQuotaMonitor,type QuotaReader } from '../code
 import { MemoryJournal,dayStart } from '../memory/journal.js';
 import { startQQImageBroker } from '../qq/image-broker.js';
 import { ActivityHistory } from './activity.js';
+import { ModelResponseError } from '../agent/model.js';
 import { PROJECT_TIMEZONE } from '../time.js';
 import { dailyStatus } from '../qq/daily-qzone.js';
 import { newsStatus } from '../qq/daily-news.js';
@@ -176,7 +177,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       for(let round=0;round<4;round++){
         joined.throwIfAborted();emit({type:'thinking',round:round+1});
         const m=await model.complete('web:'+s.id,[...sent,...current],offered,joined,round===3||calls>=6);
-        record({name:'model_usage',state:'completed',round,usage:m.usage},false);
+        record({name:'model_usage',state:'completed',round,usage:m.usage,toolCalls:m.tool_calls?.map(c=>({id:c.id,name:c.function.name}))},false);
         joined.throwIfAborted();
         if(!m.tool_calls?.length){answer=redact(m.content).slice(0,16000);current.push({role:'assistant',content:answer});break;}
         if(!offered.length||round===3||calls+m.tool_calls.length>6)throw new FishError('TOOL_LIMIT_OR_DISABLED');
@@ -199,6 +200,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       memory.record({id:turnId+':assistant',conversation:'web:'+s.id,actor:'DeepSeekFish',role:'assistant',text:answer,at:Date.now(),source:'web'});
       emit({type:'answer',text:answer});emit({type:'done',turnId});
     }catch(e){
+      if(e instanceof ModelResponseError&&e.usage)record({name:'model_usage',state:'failed',usage:e.usage,error:e.code},false);
       const error=joined.aborted?'CHAT_CANCELLED':codeOf(e);
       store.db.prepare("UPDATE web_turns SET answer=?,state='failed' WHERE id=?").run(error,turnId);emit({type:'error',error});
     }finally{active.delete(s.id);}

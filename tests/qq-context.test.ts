@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { recentDialogue,TurnContext,contextMetrics } from '../src/agent/context.js';
 import { MemoryJournal,dayStart } from '../src/memory/journal.js';
-import { BudgetedModel } from '../src/agent/model.js';
+import { BudgetedModel,ModelResponseError } from '../src/agent/model.js';
 import { Bot } from '../src/agent/bot.js';
 import { Tasks } from '../src/codex/tasks.js';
 import { MockTaskRunner } from '../src/codex/runner.js';
@@ -12,6 +12,7 @@ import { MockImageProvider } from '../src/image/provider.js';
 import { fixture,message } from './helpers.js';
 import type { ChatMessage,Model } from '../src/types.js';
 import { knowledgeTokens } from '../src/memory/knowledge.js';
+import fs from 'node:fs';
 
 test('default dialogue is six recent messages including the current question; long past text cannot fill the prompt',()=>{
   const history=Array.from({length:20},(_,i)=>message('message '+i,{id:String(i),at:i}));
@@ -192,4 +193,18 @@ test('tool images retain their own call IDs through text compaction and image re
    const data=JSON.parse((m.content[0] as {text:string}).text);assert.ok(round<2?data.text:data.resultId===id);
   }
  }
+});
+
+test('QQ retains cache usage after a protocol repair fails without charging earlier calls twice',async()=>{
+ const f=fixture({bufferMs:10000}),transport=new MockTransport();let calls=0;
+ const provider:Model={kind:'fixture',async complete(){
+  if(++calls===1)return {text:'<｜｜DSML｜｜ invoke name="reply">',usage:{input:30,output:5,cachedInput:10,uncachedInput:20}};
+  throw new ModelResponseError('DEEPSEEK_INVALID_TOOL_CALL',{input:40,output:10,cachedInput:20,uncachedInput:20},{issues:['bad JSON']});
+ }};
+ const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport);
+ try{
+  await bot.receive(message('你好'));await bot.flush();assert.equal(calls,2);assert.equal(f.ledger.value('tokens'),85);
+  const filename=fs.readdirSync(f.root+'/runtime/logs/qq')[0],log=JSON.parse(fs.readFileSync(f.root+'/runtime/logs/qq/'+filename,'utf8'));
+  assert.equal(log.state,'failed');const usage=log.trace.filter((e:any)=>e.usage).map((e:any)=>e.usage);assert.equal(usage.length,2);assert.equal(usage[1].cachedInput,20);
+ }finally{await bot.stop();f.cleanup();}
 });

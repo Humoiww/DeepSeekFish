@@ -1,13 +1,14 @@
 import type { Config } from '../config.js';
-import { FishError } from '../types.js';
+import { FishError,codeOf,type Usage } from '../types.js';
 import { recordPrompt } from '../prompt-record.js';
 import { Ledger } from '../budget/ledger.js';
-import { boundedJson,inputBound } from '../agent/model.js';
+import { boundedJson,inputBound,ModelResponseError } from '../agent/model.js';
+import { deepSeekUsage } from '../usage.js';
 
 export interface ToolCall {id:string;type:'function';function:{name:string;arguments:string}}
 export interface WireMessage {role:'system'|'user'|'assistant'|'tool';content:string;tool_calls?:ToolCall[];tool_call_id?:string}
 export interface WebTool {type:'function';function:{name:string;description:string;parameters:Record<string,unknown>}}
-export interface WebCompletion {content:string;tool_calls?:ToolCall[];usage?:{input:number;output:number}}
+export interface WebCompletion {content:string;tool_calls?:ToolCall[];usage?:Usage}
 export class WebModel {
   constructor(private key:()=>string,private cfg:()=>Config,private ledger:Ledger,readonly mock:boolean,private http:typeof fetch=fetch){}
   async complete(group:string,messages:WireMessage[],tools:WebTool[],signal:AbortSignal,final=false):Promise<WebCompletion>{
@@ -17,6 +18,7 @@ export class WebModel {
       ...(tools.length?{tools,tool_choice:final?'none':'auto'}:{})};
     const bound=inputBound(messages,tools);
     const reservation=this.ledger.reserve('model',group,'webui-local',bound,cfg.maxOutputTokens);
+    let reportedUsage:Usage|undefined;
     try{
       recordPrompt(this.ledger.store,tools.some(t=>t.function.name==='generate_image')?'image':'web',payload);
       if(this.mock){
@@ -42,14 +44,14 @@ export class WebModel {
         headers:{authorization:'Bearer '+this.key(),'content-type':'application/json'},body:JSON.stringify(payload),
         signal:AbortSignal.any([signal,AbortSignal.timeout(30000)])});
       if(!res.ok){await res.body?.cancel();throw new FishError('DEEPSEEK_HTTP_'+res.status);}
-      const data=await boundedJson(res),m=data.choices?.[0]?.message,u=data.usage;
-      if(!u||![u.prompt_tokens,u.completion_tokens].every(n=>Number.isSafeInteger(n)&&n>=0)||!m||m.content!=null&&typeof m.content!=='string')throw new FishError('DEEPSEEK_INVALID_RESPONSE');
-      this.ledger.settle(reservation,{input:u.prompt_tokens,output:u.completion_tokens});
+      const data=await boundedJson(res),m=data.choices?.[0]?.message,usage=deepSeekUsage(data.usage);
+      if(!usage||!m||m.content!=null&&typeof m.content!=='string')throw new FishError('DEEPSEEK_INVALID_RESPONSE');
+      reportedUsage=usage;this.ledger.settle(reservation,usage);
       if(this.ledger.store.getMeta('budgetFault'))throw new FishError('BUDGET_USAGE_FAULT');
       const calls=m.tool_calls;
       if(calls!==undefined&&(!Array.isArray(calls)||calls.length>6||calls.some((c:any)=>c.type!=='function'||typeof c.id!=='string'||c.id.length>120||typeof c.function?.name!=='string'||typeof c.function?.arguments!=='string'||c.function.arguments.length>16000)))throw new FishError('INVALID_TOOL_CALL');
       if(!m.content&&!calls?.length)throw new FishError('DEEPSEEK_EMPTY_RESPONSE');
-      return {content:m.content??'',...(calls?.length?{tool_calls:calls}: {}),usage:{input:u.prompt_tokens,output:u.completion_tokens}};
-    }catch(e){this.ledger.settle(reservation);this.ledger.error();throw e;}
+      return {content:m.content??'',...(calls?.length?{tool_calls:calls}: {}),usage};
+    }catch(e){this.ledger.settle(reservation);this.ledger.error();if(reportedUsage)throw new ModelResponseError(codeOf(e),reportedUsage,{});throw e;}
   }
 }

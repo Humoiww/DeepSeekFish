@@ -5,6 +5,16 @@
   const toolNames={reply:'回复消息',search_web:'联网搜索',fetch_page:'查询网页',browse_page:'浏览网页',download_image:'下载图片',generate_image:'请求生图',send_image:'发送成图',send_meme:'发送表情',list_images:'浏览图库',view_images:'查看原图',collect_meme:'收藏表情',remember_images:'记录图片',get_knowledge:'读取知识库',update_knowledge:'更新知识库',recall_chat:'翻阅聊天历史',read_forward:'读取转发记录',get_qzone:'读取空间动态',get_person:'查看 QQ 资料',get_quota:'查看额度',read_tool_result:'继续读取工具结果',draft_news:'准备新闻',finish_memory:'完成记忆回顾',image_plan:'设计画面',codex_record:'Codex 返回结果'};
   let offset=0,next=null,selected=null,sequence=0,detailSequence=0,searchTimer,items=[];
   const number=n=>Number(n||0).toLocaleString('zh-CN');
+  const splitKnown=u=>Number.isSafeInteger(u?.cachedInput)&&Number.isSafeInteger(u?.uncachedInput);
+  const usageText=u=>u?'输入 '+number(u.input)+' / 输出 '+number(u.output)+' token\n'+(splitKnown(u)?'缓存输入 '+number(u.cachedInput)+' / 未缓存输入 '+number(u.uncachedInput):'缓存拆分：未记录'):'输入 / 输出 token 未记录';
+  const cacheText=u=>u.cacheKnownCalls?'缓存输入 '+number(u.cachedInput)+' / 未缓存输入 '+number(u.uncachedInput)+(u.cacheUnknownInput?'；另有 '+number(u.cacheUnknownInput)+' 输入未拆分':''):'缓存拆分：未记录';
+  function usagePanel(u){
+    const panel=node('div','activity-usage-panel');
+    for(const [label,value] of [['输入 token',number(u.input)],['缓存输入',u.cacheKnownCalls?number(u.cachedInput):'未记录'],['未缓存输入',u.cacheKnownCalls?number(u.uncachedInput):'未记录'],['输出 token',number(u.output)]]){const cell=node('div');cell.append(node('small','',label),node('strong','',value));panel.append(cell);}
+    if(u.cacheUnknownInput)panel.append(node('p','activity-usage-note','另有 '+number(u.cacheUnknownInput)+' 输入 token 未记录缓存拆分。'));
+    if(u.unreportedCalls)panel.append(node('p','activity-usage-note',number(u.unreportedCalls)+' 次模型调用未提供用量，未计入这些数字。'));
+    return panel;
+  }
   const date=n=>n?new Date(n).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong',hour12:false,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}):'时间未记录';
   const conversation=v=>v.startsWith('private:')?'私聊 · '+v.slice(8):v.startsWith('web:')?'网页 · '+v.slice(4,12):v.startsWith('QQ ')?v:v?'群聊 · '+v:'未记录会话';
   function block(title,value,expanded=false){
@@ -14,7 +24,7 @@
   function tag(state){return node('span','activity-state state-'+state,stateNames[state]||state);}
   function stats(t){
     const box=$('activity-stats');box.replaceChildren();
-    for(const [label,value,note] of [['活动记录',t.records,'含异常 '+number(t.errors)+' 次'],['DeepSeek token',t.tokens,'输入 '+number(t.input)+' / 输出 '+number(t.output)],['模型调用',t.modelCalls,'未提供用量 '+number(t.unknownUsage)+' 条'],['搜索 / 查询',t.search+t.fetch,'搜索 '+number(t.search)+' / 查询 '+number(t.fetch)],['浏览 / 下载',t.browse+t.downloads,'浏览 '+number(t.browse)+' / 下载 '+number(t.downloads)],['生图 / 发图',t.images+t.sends,'生图调用 '+number(t.images)+' / 发送调用 '+number(t.sends)]]){
+    for(const [label,value,note] of [['活动记录',t.records,'含异常 '+number(t.errors)+' 次'],['DeepSeek token',t.tokens,'输入 '+number(t.input)+' / 输出 '+number(t.output)+'\n'+cacheText(t)],['模型调用',t.modelCalls,'未提供用量 '+number(t.unknownUsage)+' 条'],['搜索 / 查询',t.search+t.fetch,'搜索 '+number(t.search)+' / 查询 '+number(t.fetch)],['浏览 / 下载',t.browse+t.downloads,'浏览 '+number(t.browse)+' / 下载 '+number(t.downloads)],['生图 / 发图',t.images+t.sends,'生图调用 '+number(t.images)+' / 发送调用 '+number(t.sends)]]){
       const card=node('div','activity-stat');card.append(node('span','',label),node('strong','',number(value)),node('small','',note));box.append(card);
     }
   }
@@ -40,14 +50,22 @@
       box.append(block(r.kind==='image'?'生图提示词':'问题 / 任务',r.title,true));
       if(r.reply)box.append(block('回复 / 结果',r.reply,true));
       box.append(node('p','activity-detail-meta',r.usage.known?'已记录输入 '+number(r.usage.input)+' + 输出 '+number(r.usage.output)+' = '+number(r.usage.total)+' token':'这条记录没有保存 DeepSeek token 用量。'));
+      if(r.usage.known)box.append(usagePanel(r.usage));
       if(r.related.length){const related=node('div','activity-related');related.append(node('span','','关联生图记录：'));for(const id of r.related){const b=node('button','quiet-button',id.slice(6,14)+' ↗');b.type='button';b.onclick=()=>openDetail(id);related.append(b);}box.append(related);}
       if(r.kind==='image')void previewImage(r.id,box,version);
       box.append(node('h3','',r.events.length?'调用与动作':'没有保存调用明细'));
+      if(r.events.some(e=>e.type==='model'))box.append(node('p','activity-detail-meta','每个动作列出关联模型调用的用量。同次调用的多个动作共享这笔用量，总计只加一次；工具返回内容计入后续模型输入。'));
       for(const [i,e] of r.events.entries()){
         const step=node('details','activity-step'),summary=node('summary'),name=toolNames[e.name]||e.name;
-        summary.append(node('span','activity-step-number',String(i+1)),node('span','activity-step-title',name+(e.type==='tool'?' · '+e.name:'')));
+        const title=node('span','activity-step-title',name+(e.type==='tool'?' · '+e.name:e.modelCall?' · 调用 #'+e.modelCall:''));
+        if(e.type==='model'||e.type==='tool'){
+          const prefix=e.type==='tool'?(e.decision?'决策调用 #'+e.decision.call+(e.decision.actions.length>1?' · '+e.decision.actions.length+' 个动作共享':'')+'\n':'关联模型用量：未记录\n'):'';
+          title.append(node('small','activity-step-usage',prefix+usageText(e.usage||e.decision?.usage)));
+        }
+        summary.append(node('span','activity-step-number',String(i+1)),title);
         if(e.state)summary.append(tag(e.state));step.append(summary);if(e.state==='failed')step.open=true;
-        if(e.usage)step.append(node('p','activity-step-meta','输入 '+number(e.usage.input)+' / 输出 '+number(e.usage.output)+' token'));
+        if(e.decision?.actions.length>1)step.append(node('p','activity-step-meta','共享动作：'+e.decision.actions.map(n=>toolNames[n]||n).join('、')+'。接口未提供各动作单独占用的 token。'));
+        if(e.type==='tool')step.append(node('p','activity-step-meta','以上为 DeepSeek 决策调用用量；搜索、GPT 生图等工具的独立服务费用不算作这里的对话 token。'));
         if(e.round!==undefined||e.at)step.append(node('p','activity-step-meta',(e.round!==undefined?'第 '+(e.round+1)+' 轮':'')+(e.at?' · '+date(e.at):'')));
         if(e.args!==undefined)step.append(block('调用参数',e.args,true));if(e.result!==undefined)step.append(block('返回结果',e.result,true));
         if(e.phases?.length)step.append(block('执行阶段',e.phases));if(e.callId)step.append(node('small','activity-call-id',e.callId));box.append(step);

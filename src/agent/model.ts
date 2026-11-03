@@ -5,6 +5,7 @@ import type { Config } from '../config.js';
 import { redact } from '../storage/db.js';
 import { recordPrompt } from '../prompt-record.js';
 import { knowledgeTokens } from '../memory/knowledge.js';
+import { deepSeekUsage } from '../usage.js';
 export const modelPayload=(cfg:Config,messages:ChatMessage[],maxTokens:number,options:CompletionOptions={})=>({model:cfg.model,messages,max_tokens:maxTokens,stream:false,thinking:{type:'disabled'},
   ...(options.tools?.length?{tools:options.tools,tool_choice:options.final?'none':options.toolChoice?{type:'function',function:{name:options.toolChoice}}:options.requireTool?'required':'auto'}:{})});
 
@@ -52,8 +53,8 @@ export class DeepSeekModel implements Model {
     if(!res.ok) { await res.body?.cancel(); throw new FishError('DEEPSEEK_HTTP_'+res.status); }
     const data=await boundedJson(res);
     const message=data.choices?.[0]?.message,text=message?.content??'',calls=message?.tool_calls;
-    const input=data.usage?.prompt_tokens,output=data.usage?.completion_tokens;
-    if(typeof text!=='string' || !Number.isSafeInteger(input) || input<0 || !Number.isSafeInteger(output) || output<0) throw new FishError('DEEPSEEK_INVALID_RESPONSE');
+    const usage=deepSeekUsage(data.usage);
+    if(typeof text!=='string'||!usage) throw new FishError('DEEPSEEK_INVALID_RESPONSE');
     if(calls!==undefined){
       const issues:string[]=[];
       if(!Array.isArray(calls))issues.push('tool_calls is not an array');
@@ -61,10 +62,10 @@ export class DeepSeekModel implements Model {
         if(typeof c?.id!=='string'||!c.id||c.id.length>200||c.type!=='function'||typeof c.function?.name!=='string'||typeof c.function?.arguments!=='string'||c.function.arguments.length>131072)issues.push('call '+i+': invalid fields');
         else {try{JSON.parse(c.function.arguments);}catch{issues.push('call '+i+': incomplete or invalid argument JSON');}}
       }
-      if(issues.length)throw new ModelResponseError(data.choices?.[0]?.finish_reason==='length'?'DEEPSEEK_TOOL_OUTPUT_TRUNCATED':'DEEPSEEK_INVALID_TOOL_CALL',{input,output},
+      if(issues.length)throw new ModelResponseError(data.choices?.[0]?.finish_reason==='length'?'DEEPSEEK_TOOL_OUTPUT_TRUNCATED':'DEEPSEEK_INVALID_TOOL_CALL',usage,
         {responseId:data.id,finishReason:data.choices?.[0]?.finish_reason,toolCount:Array.isArray(calls)?calls.length:null,issues,response:{content:text,tool_calls:calls}});
     }
-    return {text,usage:{input,output},...(calls?.length?{tool_calls:calls}:{}),...(typeof data.choices[0].finish_reason==='string'?{finishReason:data.choices[0].finish_reason}:{})};
+    return {text,usage,...(calls?.length?{tool_calls:calls}:{}),...(typeof data.choices[0].finish_reason==='string'?{finishReason:data.choices[0].finish_reason}:{})};
   }
 }
 export class MockModel implements Model {

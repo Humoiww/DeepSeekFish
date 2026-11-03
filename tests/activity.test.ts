@@ -12,9 +12,9 @@ const imageId='11111111-1111-4111-8111-111111111111',at=Date.parse('2026-11-03T0
 const call=(id:string,name:string,args:any)=>({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
 function log(root:string,folder:string,name:string,value:unknown){const dir=path.join(root,'runtime/logs',folder);fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,name+'.json'),JSON.stringify(value));}
 function sample(){return {request:'下载参考图再画一张',conversation:'private:20002',startedAt:at,finishedAt:at+3000,state:'completed',trace:[
- {round:0,usage:{input:100,output:20},toolCalls:[call('s','search_web',{query:'参考图'}),call('d','download_image',{url:'https://example.com/image.png?token=secret-download'})]},
+ {round:0,usage:{input:100,output:20,cachedInput:60,uncachedInput:40},toolCalls:[call('s','search_web',{query:'参考图'}),call('d','download_image',{url:'https://example.com/image.png?token=secret-download'})]},
  {tool:'search_web',result:{results:[]}}, {tool:'download_image',result:{images:[{error:'WEB_BODY_TOO_LARGE'},{saved:true}]}},
- {round:1,usage:{input:80,output:10},toolCalls:[call('g','generate_image',{subject:'测试'})]},
+ {round:1,usage:{input:80,output:10,cachedInput:80,uncachedInput:0},toolCalls:[call('g','generate_image',{subject:'测试'})]},
  {tool:'generate_image',phase:'submitted'},{tool:'generate_image',phase:'generated',imageId}, {tool:'generate_image',result:{created:true,imageId}},
  {round:2,usage:{input:10,output:5},toolCalls:[call('send','send_image',{imageId:'generated-'+imageId}),call('r','reply',{text:'画好了。'})]},
  {tool:'send_image',result:{delivered:true}},{tool:'reply',result:{sent:true}}
@@ -29,11 +29,29 @@ test('activity preserves native call/result pairs, counts real usage once, and k
   const filtered=await app.activity(new URLSearchParams({kind:'qq',from:'2026-11-03',to:'2026-11-03',conversation:'private:20002',q:'WEB_BODY_TOO_LARGE',state:'failed'}));assert.equal(filtered.items.length,1);
   const detail=await app.activityDetail('qq:sample');assert.equal(detail.usage.total,225);assert.equal(detail.durationMs,3000);assert.equal(detail.state,'completed');assert.equal(detail.reply,'画好了。');assert.equal(detail.counts.tools,5);assert.equal(detail.counts.search,1);assert.equal(detail.counts.downloads,1);assert.equal(detail.counts.images,1);assert.equal(detail.counts.sends,1);
   const image=detail.events.find(e=>e.name==='generate_image')!;assert.equal(image.phases?.length,2);assert.equal(image.callId,'g');assert.equal(image.state,'completed');assert.deepEqual(detail.related,['image:'+imageId]);
+  assert.equal(detail.usage.cachedInput,140);assert.equal(detail.usage.uncachedInput,40);assert.equal(detail.usage.cacheUnknownInput,10);assert.equal(detail.usage.cacheKnownCalls,2);
+  assert.equal(all.totals.cachedInput,140);assert.equal(all.totals.cacheUnknownInput,60);
+  const search=detail.events.find(e=>e.name==='search_web')!,download=detail.events.find(e=>e.name==='download_image')!;
+  assert.deepEqual(search.decision,download.decision);assert.deepEqual(search.decision?.actions,['search_web','download_image']);assert.equal(search.decision?.call,1);assert.equal(search.decision?.usage?.cachedInput,60);assert.equal(image.decision?.call,2);
   assert.ok(!JSON.stringify(detail).includes('secret-download'));assert.equal((await app.activityDetail('qq:old-failure')).usage.known,false);
   const news=await app.activityDetail('news:research-today');assert.equal(news.events.find(e=>e.name==='draft_news')!.state,'completed');
   await assert.rejects(app.activity(new URLSearchParams({from:'2026-02-31'})),/QUERY_INVALID/);await assert.rejects(app.activityDetail('qq:../../config/local.json'),/NOT_FOUND/);
   const s=app.createSession();await app.chat(s.id,'你好','chat',new AbortController().signal,()=>{});
   const web=await app.activity(new URLSearchParams({kind:'web'}));assert.equal(web.items.length,1);assert.equal(web.items[0].usage.known,true);assert.equal(web.items[0].usage.total,200);assert.equal(web.items[0].usage.calls,1);
+ }finally{await app.close();f.cleanup();}
+});
+
+test('activity associates repairs by model call rather than round and leaves missing usage unknown',async()=>{
+ const f=fixture(),app=createWebApp(f.root,true);try{
+  log(f.root,'qq','repair',{request:'重试',trace:[
+   {round:0,error:'DEEPSEEK_INVALID_TOOL_CALL',usage:{input:100,output:10,cachedInput:90,uncachedInput:10}},
+   {round:0,repair:true,usage:{input:110,output:20,cachedInput:100,uncachedInput:10},toolCalls:[call('s','search_web',{}),call('b','browse_page',{})]},
+   {tool:'search_web',result:{ok:true}},{tool:'browse_page',result:{ok:true}},
+   {round:1,toolCalls:[call('r','reply',{text:'好了'})]},{tool:'reply',result:{sent:true}}
+  ]});
+  const d=await app.activityDetail('qq:repair');assert.equal(d.usage.total,240);assert.equal(d.usage.cachedInput,190);assert.equal(d.usage.calls,3);assert.equal(d.usage.unreportedCalls,1);
+  assert.equal(d.events.find(e=>e.name==='search_web')?.decision?.call,2);assert.equal(d.events.find(e=>e.name==='search_web')?.decision?.usage?.input,110);
+  assert.equal(d.events.find(e=>e.name==='reply')?.decision?.call,3);assert.equal(d.events.find(e=>e.name==='reply')?.decision?.usage,undefined);
  }finally{await app.close();f.cleanup();}
 });
 

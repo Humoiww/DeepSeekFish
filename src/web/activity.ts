@@ -1,13 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Store,redact } from '../storage/db.js';
-import { FishError } from '../types.js';
+import { FishError,type Usage } from '../types.js';
+import { inputCache } from '../usage.js';
 import { MAX_IMAGE_BYTES } from '../image/limits.js';
 import { safePath } from '../paths.js';
 
 export type ActivityKind='qq'|'web'|'news'|'memory'|'diary'|'image'|'audit';
-type Step={type:string;name:string;state?:string;at?:number;args?:unknown;result?:any;usage?:any;callId?:string;round?:number;phases?:unknown[]};
-type RecordItem={id:string;kind:ActivityKind;title:string;conversation:string;speaker:string;at:number;updated:number;durationMs:number|null;state:string;usage:{input:number;output:number;total:number;calls:number;known:boolean};counts:{tools:number;search:number;fetch:number;browse:number;downloads:number;images:number;sends:number};reply:string;errors:number;events:Step[];related:string[];raw:unknown};
+type Step={type:string;name:string;state?:string;at?:number;args?:unknown;result?:any;usage?:Usage;callId?:string;round?:number;phases?:unknown[];modelCall?:number;decision?:{call:number;usage?:Usage;actions:string[]}};
+type UsageSummary={input:number;output:number;total:number;calls:number;known:boolean;cachedInput:number;uncachedInput:number;cacheKnownCalls:number;cacheUnknownInput:number;unreportedCalls:number};
+type RecordItem={id:string;kind:ActivityKind;title:string;conversation:string;speaker:string;at:number;updated:number;durationMs:number|null;state:string;usage:UsageSummary;counts:{tools:number;search:number;fetch:number;browse:number;downloads:number;images:number;sends:number};reply:string;errors:number;events:Step[];related:string[];raw:unknown};
 const kinds=new Set(['qq','web','news','memory','diary','image','audit']);
 const secret=/^(?:authorization|cookie|set-cookie|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|skey|p_skey|rkey)$/i;
 /** Log data is display-only. Never expose credentials, signed media handles or inline binaries. */
@@ -35,12 +37,15 @@ function resultState(value:any){
 }
 function base(id:string,kind:ActivityKind,d:any,mtime:number):RecordItem{
   const at=time(d.startedAt??d.created??d.inputContext?.context?.currentTurn?.at??d.at??d.updated)||mtime;
-  return {id,kind,title:'',conversation:d.conversation??'',speaker:d.inputContext?.context?.qqIdentity?.speaker??'',at,updated:time(d.finishedAt??d.updated??d.at)||mtime,durationMs:d.finishedAt&&d.startedAt?Math.max(0,d.finishedAt-d.startedAt):null,state:'unknown',usage:{input:0,output:0,total:0,calls:0,known:false},counts:{tools:0,search:0,fetch:0,browse:0,downloads:0,images:0,sends:0},reply:'',errors:0,events:[],related:[],raw:d};
+  return {id,kind,title:'',conversation:d.conversation??'',speaker:d.inputContext?.context?.qqIdentity?.speaker??'',at,updated:time(d.finishedAt??d.updated??d.at)||mtime,durationMs:d.finishedAt&&d.startedAt?Math.max(0,d.finishedAt-d.startedAt):null,state:'unknown',usage:{input:0,output:0,total:0,calls:0,known:false,cachedInput:0,uncachedInput:0,cacheKnownCalls:0,cacheUnknownInput:0,unreportedCalls:0},counts:{tools:0,search:0,fetch:0,browse:0,downloads:0,images:0,sends:0},reply:'',errors:0,events:[],related:[],raw:d};
 }
-function addUsage(r:RecordItem,usage:any){
-  if(usage&&Number.isSafeInteger(usage.input)&&Number.isSafeInteger(usage.output)){
-    r.usage.input+=usage.input;r.usage.output+=usage.output;r.usage.total+=usage.input+usage.output;r.usage.calls++;r.usage.known=true;
-  }
+function addUsage(r:RecordItem,usage:any):Usage|undefined{
+  r.usage.calls++;
+  if(!usage||!Number.isSafeInteger(usage.input)||usage.input<0||!Number.isSafeInteger(usage.output)||usage.output<0){r.usage.unreportedCalls++;return;}
+  const cache=inputCache(usage.input,usage.cachedInput,usage.uncachedInput);
+  r.usage.input+=usage.input;r.usage.output+=usage.output;r.usage.total+=usage.input+usage.output;r.usage.known=true;
+  if(cache.cachedInput!==undefined&&cache.uncachedInput!==undefined){r.usage.cachedInput+=cache.cachedInput;r.usage.uncachedInput+=cache.uncachedInput;r.usage.cacheKnownCalls++;}else r.usage.cacheUnknownInput+=usage.input;
+  return {input:usage.input,output:usage.output,...cache};
 }
 function count(r:RecordItem,name:string){
   r.counts.tools++;
@@ -48,11 +53,16 @@ function count(r:RecordItem,name:string){
   if(key)r.counts[key]++;
 }
 function traceRecord(r:RecordItem,trace:any[]){
+  let currentModel:Step|undefined;
+  const recordModel=(e:any,calls:any[])=>{
+    currentModel={type:'model',name:'DeepSeek',modelCall:r.usage.calls+1,round:e.round,usage:addUsage(r,e.usage),state:e.error?'failed':e.state??'completed',result:{text:e.assistant??e.text??'',finishReason:e.finishReason,error:e.error,toolCalls:calls?.map((c:any)=>c.function?.name??c.name)}};
+    r.events.push(currentModel);
+  };
   for(const e of trace){
     const calls=e.toolCalls??e.tool_calls;
-    if(e.usage&&e.name!=='model_usage'){addUsage(r,e.usage);r.events.push({type:'model',name:'DeepSeek',round:e.round,usage:e.usage,state:e.error?'failed':'completed',result:{text:e.assistant??e.text??'',finishReason:e.finishReason,error:e.error,toolCalls:calls?.map((c:any)=>c.function?.name)}});}
+    if(e.name==='model_usage'||e.usage||Array.isArray(calls))recordModel(e,calls);
     if(e.contextInput)r.events.push({type:'context',name:'本轮输入规模',round:e.round,result:e.contextInput});
-    if(Array.isArray(calls))for(const c of calls){const name=c.function?.name??'unknown';count(r,name);r.events.push({type:'tool',name,callId:c.id,round:e.round,args:obj(c.function?.arguments),state:'pending'});}
+    if(e.name!=='model_usage'&&Array.isArray(calls))for(const c of calls){const name=c.function?.name??'unknown';count(r,name);r.events.push({type:'tool',name,callId:c.id,round:e.round,args:obj(c.function?.arguments),state:'pending',modelCall:currentModel?.modelCall});}
     if(e.tool&&Object.hasOwn(e,'result')){
       let step=r.events.find(s=>s.type==='tool'&&s.name===e.tool&&s.state==='pending');
       if(!step){step={type:'tool',name:e.tool};r.events.push(step);count(r,e.tool);}
@@ -64,10 +74,14 @@ function traceRecord(r:RecordItem,trace:any[]){
     if(e.draft){r.reply=e.draft.text??'';r.state='completed';const step=r.events.find(s=>s.name==='draft_news'&&s.state==='pending');if(step){step.state='completed';step.result=e.draft;}r.events.push({type:'result',name:'草稿',result:e.draft});}
     if(e.error){r.state='failed';r.errors++;r.events.push({type:'error',name:String(e.error),round:e.round,result:e});}
     if(e.assistant&&!calls?.length&&!e.error)r.reply=e.assistant;
-    if(e.name){
-      if(e.name==='model_usage'){addUsage(r,e.usage);r.events.push({type:'model',name:'DeepSeek',round:e.round,usage:e.usage,state:e.state??'completed'});}
-      else {count(r,e.name);const state=e.state??resultState(e.result);r.events.push({type:'tool',name:e.name,state,args:e.args,result:obj(e.result),round:e.round,callId:e.callId});if(state==='failed')r.errors++;}
+    if(e.name&&e.name!=='model_usage'){
+      count(r,e.name);const state=e.state??resultState(e.result);r.events.push({type:'tool',name:e.name,state,args:e.args,result:obj(e.result),round:e.round,callId:e.callId,modelCall:e.round===currentModel?.round?currentModel?.modelCall:undefined});if(state==='failed')r.errors++;
     }
+  }
+  for(const model of r.events.filter(e=>e.type==='model')){
+    const actions=r.events.filter(e=>e.type==='tool'&&e.modelCall===model.modelCall);
+    const decision={call:model.modelCall!,usage:model.usage,actions:actions.map(e=>e.name)};
+    for(const action of actions)action.decision=decision;
   }
   r.related=[...new Set(r.related)];
 }
@@ -137,8 +151,8 @@ export class ActivityHistory {
     await this.scan();let records=kind==='audit'?this.auditRecords():[...this.cache.values()].map(v=>v.record).concat(this.webRecords());
     const conversations=[...new Set(records.map(r=>r.conversation).filter(Boolean))].sort();
     records=records.filter(r=>(!kind||r.kind===kind)&&(!state||(state==='failed'?r.state==='failed'||r.errors>0:r.state===state))&&(!conversation||r.conversation===conversation)&&(from===null||r.at>=from)&&(to===null||r.at<to)&&(!q||JSON.stringify([r.title,r.reply,r.conversation,r.speaker,r.events]).toLowerCase().includes(q))).sort((a,b)=>b.at-a.at||b.id.localeCompare(a.id));
-    const totals={records:records.length,input:0,output:0,tokens:0,modelCalls:0,unknownUsage:0,tools:0,search:0,fetch:0,browse:0,downloads:0,images:0,sends:0,errors:0};
-    for(const r of records){totals.input+=r.usage.input;totals.output+=r.usage.output;totals.tokens+=r.usage.total;totals.modelCalls+=r.usage.calls;if(!r.usage.known)totals.unknownUsage++;totals.errors+=r.errors;for(const k of Object.keys(r.counts) as (keyof RecordItem['counts'])[])totals[k]+=r.counts[k];}
+    const totals={records:records.length,input:0,output:0,tokens:0,modelCalls:0,unknownUsage:0,cachedInput:0,uncachedInput:0,cacheKnownCalls:0,cacheUnknownInput:0,unreportedCalls:0,tools:0,search:0,fetch:0,browse:0,downloads:0,images:0,sends:0,errors:0};
+    for(const r of records){totals.input+=r.usage.input;totals.output+=r.usage.output;totals.tokens+=r.usage.total;totals.modelCalls+=r.usage.calls;for(const k of ['cachedInput','uncachedInput','cacheKnownCalls','cacheUnknownInput','unreportedCalls'] as const)totals[k]+=r.usage[k];if(!r.usage.known)totals.unknownUsage++;totals.errors+=r.errors;for(const k of Object.keys(r.counts) as (keyof RecordItem['counts'])[])totals[k]+=r.counts[k];}
     return {items:records.slice(offset,offset+limit).map(({events,raw,...item})=>({...item,title:item.title.slice(0,180),reply:item.reply.slice(0,240)})),totals,conversations,offset,limit,nextOffset:offset+limit<records.length?offset+limit:null,timezone:'Asia/Hong_Kong',updatedAt:Date.now()};
   }
   async detail(id:unknown){

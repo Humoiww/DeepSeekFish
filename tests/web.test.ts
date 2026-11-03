@@ -148,3 +148,15 @@ test('HTTP WebUI guards bootstrap replay, token, Origin/Host, downloads and loca
     await new Promise(resolve=>setTimeout(resolve,150));assert.equal(stopped,true);
   }finally{await w.app.close();server.close();await once(server,'close');w.f.cleanup();}
 });
+
+test('WebUI retains cache breakdown on successful and rejected responses without duplicate settlement',async()=>{
+  let calls=0;
+  const http=(async()=>new Response(JSON.stringify({choices:[{message:++calls===1?{content:'',tool_calls:[call('file','list_files',{})]}:{content:'',tool_calls:[{id:'bad',type:'invalid'}]}}],usage:{prompt_tokens:20,completion_tokens:10,prompt_cache_hit_tokens:calls===1?12:0,prompt_cache_miss_tokens:calls===1?8:20}}))) as typeof fetch;
+  const w=web(false,http);try{
+    w.app.configure({apiKey:'fixture-key'});const session=w.app.createSession();await w.app.chat(session.id,'查看工作区','agent',new AbortController().signal,()=>{});
+    const turn=w.app.detail(session.id).turns[0];assert.equal(turn.state,'failed');assert.equal(turn.answer,'INVALID_TOOL_CALL');
+    const detail=await w.app.activityDetail('web:'+turn.id);assert.equal(detail.usage.total,60);assert.equal(detail.usage.cachedInput,12);assert.equal(detail.usage.uncachedInput,28);assert.equal(detail.usage.calls,2);assert.equal(detail.usage.cacheKnownCalls,2);
+    assert.equal(detail.events.find(e=>e.name==='list_files')?.decision?.usage?.cachedInput,12);assert.equal(detail.events.filter(e=>e.type==='model').at(-1)?.state,'failed');
+    assert.equal((w.app.status().budgets.usage as any[]).find(x=>x.metric==='tokens'&&x.scope==='*')?.value,60);
+  }finally{await w.close();}
+});
