@@ -24,7 +24,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         res.statusCode=403;throw new FishError('LOCAL_ONLY');
       }
       const url=new URL(req.url??'/',origin);
-      const assets:Record<string,[string,string]>={'/':['index.html','text/html'],'/web.css':['web.css','text/css'],'/web.js':['web.js','text/javascript'],'/fish.svg':['fish.svg','image/svg+xml']};
+      const assets:Record<string,[string,string]>={'/':['index.html','text/html'],'/web.css':['web.css','text/css'],'/web.js':['web.js','text/javascript'],'/activity.js':['activity.js','text/javascript'],'/fish.svg':['fish.svg','image/svg+xml']};
       if(req.method==='GET'&&assets[url.pathname]){
         const [name,type]=assets[url.pathname];res.setHeader('Content-Type',type+'; charset=utf-8');
         res.end(fs.readFileSync(safePath(app.root,'src/web/public/'+name)));return;
@@ -38,6 +38,12 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       if(!equal(req.headers.authorization??'','Bearer '+app.token)){res.statusCode=401;throw new FishError('LOCAL_AUTH_REQUIRED');}
       let value:unknown;
       if(req.method==='GET'&&url.pathname==='/api/status')value=app.status();
+      else if(req.method==='GET'&&url.pathname==='/api/activity')value=await app.activity(url.searchParams);
+      else if(req.method==='GET'&&url.pathname==='/api/activity/detail')value=await app.activityDetail(url.searchParams.get('id'));
+      else if(req.method==='GET'&&url.pathname==='/api/activity/image'){
+        const bytes=await app.activityImage(url.searchParams.get('id'));
+        res.setHeader('Content-Type','image/png');res.setHeader('Content-Security-Policy',"default-src 'none'; sandbox");res.end(bytes);return;
+      }
       else if(req.method==='GET'&&url.pathname==='/api/persona')value=app.persona();
       else if(req.method==='GET'&&url.pathname==='/api/prompts')value=app.prompts();
       else if(req.method==='GET'&&url.pathname==='/api/qq')value=await app.qqStatus();

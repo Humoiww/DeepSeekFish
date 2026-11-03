@@ -22,6 +22,7 @@ import type { ImageRunner } from '../image/codex-smoke.js';
 import { AppServerQuotaReader,CodexQuotaMonitor,type QuotaReader } from '../codex/quota.js';
 import { MemoryJournal,dayStart } from '../memory/journal.js';
 import { startQQImageBroker } from '../qq/image-broker.js';
+import { ActivityHistory } from './activity.js';
 import { PROJECT_TIMEZONE } from '../time.js';
 import { dailyStatus } from '../qq/daily-qzone.js';
 import { newsStatus } from '../qq/daily-news.js';
@@ -41,6 +42,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   prepare(root);loadSecrets(root);
   const store=new Store(root,mock?'webui-mock.sqlite':'webui.sqlite');
   const budgetStore=new Store(root,mock?'webui-mock-budget.sqlite':'fish.sqlite');
+  const activity=new ActivityHistory(root,store,budgetStore);
   store.db.exec(`CREATE TABLE IF NOT EXISTS web_sessions(id TEXT PRIMARY KEY,title TEXT,created INTEGER,updated INTEGER);
     CREATE TABLE IF NOT EXISTS web_turns(id TEXT PRIMARY KEY,sid TEXT,user TEXT,answer TEXT,trace TEXT,context TEXT,state TEXT,created INTEGER);`);
   const memory=new MemoryJournal(root,store);
@@ -153,13 +155,14 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     store.db.prepare('INSERT INTO web_turns VALUES (?,?,?,?,?,?,?,?)').run(turnId,s.id,current[0].content,'','[]','[]','running',Date.now());
     store.db.prepare('UPDATE web_sessions SET title=?,updated=? WHERE id=?').run(s.title==='新的对话'?redact(text.trim()).slice(0,26):s.title,Date.now(),s.id);
     let answer='',calls=0;
-    const record=(event:any)=>{trace.push(event);store.db.prepare('UPDATE web_turns SET trace=? WHERE id=?').run(JSON.stringify(trace),turnId);emit({type:'tool',event});};
+    const record=(event:any,publish=true)=>{trace.push(event);store.db.prepare('UPDATE web_turns SET trace=? WHERE id=?').run(JSON.stringify(trace),turnId);if(publish)emit({type:'tool',event});};
     try{
       memory.record({id:turnId+':user',conversation:'web:'+s.id,actor:'webui-local',role:'user',text:current[0].content,at:Date.now(),source:'web'});
       emit({type:'start',turnId});
       if(imageRequest){
         const image=await images.generate(s.id,turnId,current[0].content,[...memoryContext,...history],model,joined,e=>{
-          if(e.type==='image_plan')record({name:'image_plan',state:'completed',plan:e.plan,character:e.character,mock:e.mock,result:JSON.stringify(e.plan)});
+          if(e.type==='model_usage')record({name:'model_usage',state:'completed',usage:e.usage},false);
+          else if(e.type==='image_plan')record({name:'image_plan',state:'completed',plan:e.plan,character:e.character,mock:e.mock,result:JSON.stringify(e.plan)});
           else if(e.type==='codex_record')record({name:'codex_record',state:e.error?'failed':'completed',result:JSON.stringify(e.record,null,2)});
           else emit(e);
         },imageConfirmed===true);
@@ -173,6 +176,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       for(let round=0;round<4;round++){
         joined.throwIfAborted();emit({type:'thinking',round:round+1});
         const m=await model.complete('web:'+s.id,[...sent,...current],offered,joined,round===3||calls>=6);
+        record({name:'model_usage',state:'completed',round,usage:m.usage},false);
         joined.throwIfAborted();
         if(!m.tool_calls?.length){answer=redact(m.content).slice(0,16000);current.push({role:'assistant',content:answer});break;}
         if(!offered.length||round===3||calls+m.tool_calls.length>6)throw new FishError('TOOL_LIMIT_OR_DISABLED');
@@ -185,8 +189,8 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
             if(!offered.some(t=>t.function.name===c.function.name))throw new FishError('TOOL_NOT_ALLOWED');
             result=await execute(s,c.function.name,JSON.parse(c.function.arguments));
             if(c.function.name==='update_knowledge')sent[0]={role:'system',content:webPrompt(root)};
-            record({name:c.function.name,state:'completed',result:redact(JSON.stringify(result)).slice(0,2000)});
-          }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};record({name:c.function.name,state:'failed',result:JSON.stringify(result)});}
+            record({name:c.function.name,state:'completed',round,callId:c.id,args:JSON.parse(c.function.arguments),result:redact(JSON.stringify(result))});
+          }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};record({name:c.function.name,state:'failed',round,callId:c.id,args:c.function.arguments,result:JSON.stringify(result)});}
           current.push({role:'tool',tool_call_id:c.id,content:['get_knowledge','update_knowledge'].includes(c.function.name)?JSON.stringify(result):redact(JSON.stringify(result)).slice(0,18000)});
         }
       }
@@ -207,6 +211,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   async function close(){accepting=false;await qqBroker?.close();for(const c of active.values())c.abort();await tasks.stop();
     while(active.size)await new Promise(resolve=>setTimeout(resolve,10));await quota.close();store.close();budgetStore.close();}
   return {root,mock,token,
+    activity:(params:URLSearchParams)=>activity.list(params),activityDetail:(id:unknown)=>activity.detail(id),activityImage:(id:unknown)=>activity.image(id),
     persona:()=>personaSettings(root),savePersona:(input:unknown)=>savePersona(root,input),
     prompts:()=>({systems:promptSystems(root),knowledge:knowledgeSnapshot(root),latest:promptSnapshots(budgetStore)}),
     sessions,session,createSession,detail,configure,status,chat,tasks,recover,close,

@@ -124,7 +124,8 @@ export class Bot {
       const visibleImages=new Set(mediaIds);
       const maxRounds=16,maxCalls=64;let repaired=false,protocolRepairs=0;
       const tracePath='runtime/logs/qq/'+randomUUID()+'.json';makeDir(this.root,'runtime/logs/qq');
-      const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,inputContext:{context,dialogue},toolPolicy:'model-choice',imageRequested,received:incoming,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
+      const startedAt=Date.now();let finishedAt:number|undefined,traceState='running';
+      const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),startedAt,finishedAt,state:traceState,system:SYSTEM,inputContext:{context,dialogue},toolPolicy:'model-choice',imageRequested,received:incoming,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
       saveTrace();
       try{
         for(let round=0;round<maxRounds;round++){
@@ -352,7 +353,7 @@ export class Bot {
           }
           for(const id of viewedIds)visibleImages.add(id);
         }
-      }catch(e){trace.push({error:codeOf(e)});throw e;}finally{saveTrace();}
+      }catch(e){traceState='failed';trace.push({error:codeOf(e)});throw e;}finally{finishedAt=Date.now();if(traceState==='running')traceState='completed';saveTrace();}
       this.gate.record(last.group);this.store.audit('speech',last.group,reason);
     }catch(e){this.store.audit('error',last.group,codeOf(e));if(!spontaneous&&this.accepting)await this.send(last,e instanceof TokenBudgetError?e.notice:'当前无法回答：'+codeOf(e));}
     finally{if(lease)this.ledger.settle(lease);}

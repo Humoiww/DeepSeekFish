@@ -7,7 +7,7 @@ import { boundedJson,inputBound } from '../agent/model.js';
 export interface ToolCall {id:string;type:'function';function:{name:string;arguments:string}}
 export interface WireMessage {role:'system'|'user'|'assistant'|'tool';content:string;tool_calls?:ToolCall[];tool_call_id?:string}
 export interface WebTool {type:'function';function:{name:string;description:string;parameters:Record<string,unknown>}}
-export interface WebCompletion {content:string;tool_calls?:ToolCall[]}
+export interface WebCompletion {content:string;tool_calls?:ToolCall[];usage?:{input:number;output:number}}
 export class WebModel {
   constructor(private key:()=>string,private cfg:()=>Config,private ledger:Ledger,readonly mock:boolean,private http:typeof fetch=fetch){}
   async complete(group:string,messages:WireMessage[],tools:WebTool[],signal:AbortSignal,final=false):Promise<WebCompletion>{
@@ -36,7 +36,7 @@ export class WebModel {
         else if(tools.length&&!final&&/创建|写入/.test(last.content))result=call('write_file',{path:last.content.match(/[a-zA-Z0-9_-]+\.(?:md|txt|json)/)?.[0]??'notes.md',content:'# 三步学习计划\n\n1. 明确目标：选择今天要解决的一个小问题。\n2. 动手练习：留出 25 分钟，完成一个最小示例。\n3. 回顾记录：写下收获、疑问和明天的下一步。\n\n---\n本文件由离线演示工具创建，未调用真实模型。\n'});
         else if(tools.length&&!final&&/文件|工作区/.test(last.content))result=call('list_files',{});
         else result={content:'【离线演示】收到：'+last.content+'\n\n这里是独立对话窗口。切换到「受限助手」，可以尝试让我创建 notes.md 或查看工作区文件。真实对话请在设置中保存 DeepSeek API Key，并使用正式模式启动。'};
-        this.ledger.settle(reservation,{input:Math.min(bound,120),output:Math.min(cfg.maxOutputTokens,80)});return result;
+        const usage={input:Math.min(bound,120),output:Math.min(cfg.maxOutputTokens,80)};this.ledger.settle(reservation,usage);return {...result,usage};
       }
       const res=await this.http('https://api.deepseek.com/chat/completions',{method:'POST',redirect:'error',
         headers:{authorization:'Bearer '+this.key(),'content-type':'application/json'},body:JSON.stringify(payload),
@@ -49,7 +49,7 @@ export class WebModel {
       const calls=m.tool_calls;
       if(calls!==undefined&&(!Array.isArray(calls)||calls.length>6||calls.some((c:any)=>c.type!=='function'||typeof c.id!=='string'||c.id.length>120||typeof c.function?.name!=='string'||typeof c.function?.arguments!=='string'||c.function.arguments.length>16000)))throw new FishError('INVALID_TOOL_CALL');
       if(!m.content&&!calls?.length)throw new FishError('DEEPSEEK_EMPTY_RESPONSE');
-      return {content:m.content??'',...(calls?.length?{tool_calls:calls}: {})};
+      return {content:m.content??'',...(calls?.length?{tool_calls:calls}: {}),usage:{input:u.prompt_tokens,output:u.completion_tokens}};
     }catch(e){this.ledger.settle(reservation);this.ledger.error();throw e;}
   }
 }

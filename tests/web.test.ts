@@ -85,7 +85,7 @@ test('plain chat never executes tool calls; agent tool allowlist denies shell, p
     await w.app.chat(a.id,'try tools','chat',new AbortController().signal,()=>{});
     assert.equal(requests[0].tools,undefined);assert.equal(w.app.detail(a.id).turns[0].answer,'TOOL_LIMIT_OR_DISABLED');
     const b=w.app.createSession();await w.app.chat(b.id,'try tools','agent',new AbortController().signal,()=>{});
-    const t=w.app.detail(b.id).turns[0];assert.equal(t.state,'completed');assert.equal(t.trace.length,3);assert.ok(t.trace.every((e:any)=>e.state==='failed'));
+    const t=w.app.detail(b.id).turns[0],actions=t.trace.filter((e:any)=>e.name!=='model_usage');assert.equal(t.state,'completed');assert.equal(actions.length,3);assert.ok(actions.every((e:any)=>e.state==='failed'));assert.equal(t.trace.filter((e:any)=>e.name==='model_usage').length,2);
     assert.deepEqual(w.app.workspace(b.id).list(),[]);assert.ok(!fs.existsSync(path.join(w.f.root,'runtime/workspace/secret.txt')));
   }finally{await w.close();}
 });

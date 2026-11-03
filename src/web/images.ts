@@ -63,6 +63,7 @@ export class WebImages{
     emit({type:'thinking',stage:'planning',round:1});
     const system=imagePrompt(this.root,character);
     const completion=await model.complete('web:'+sid,[{role:'system',content:system},...history,{role:'user',content:request}],[imageTool],signal);
+    emit({type:'model_usage',usage:completion.usage});
     signal.throwIfAborted();
     if(completion.tool_calls?.length!==1||completion.tool_calls[0].function.name!=='generate_image')throw new FishError('IMAGE_PLAN_REQUIRED');
     let args:unknown;try{args=JSON.parse(completion.tool_calls[0].function.arguments);}catch{throw new FishError('INVALID_IMAGE_PLAN');}

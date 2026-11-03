@@ -1,6 +1,6 @@
 import { createServer, request, type IncomingMessage } from 'node:http';
 
-const reads=new Set(['/','/web.css','/web.js','/fish.svg','/api/status','/api/sessions','/api/session','/api/file','/api/image','/api/qq','/api/persona','/api/prompts']);
+const reads=new Set(['/','/web.css','/web.js','/activity.js','/fish.svg','/api/status','/api/sessions','/api/session','/api/file','/api/image','/api/qq','/api/persona','/api/prompts','/api/activity','/api/activity/detail','/api/activity/image']);
 const writes=new Set(['/api/bootstrap','/api/sessions','/api/chat','/api/settings','/api/codex-quota/refresh','/api/images/reset','/api/tokens/reset','/api/cancel','/api/qq','/api/persona']);
 
 export type TailnetAccess={owner:(address:string,port:number)=>Promise<boolean>;token:string};
