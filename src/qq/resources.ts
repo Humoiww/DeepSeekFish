@@ -18,10 +18,11 @@ export function qqResources(cfg:Config,ledger:Ledger,conversation:string,user:st
 }
 
 /** Actual broker state, separate from promises in the dialogue. */
-export function qqImageActivity(ledger:Ledger,conversation:string,messageId:string){
+export function qqImageActivity(ledger:Ledger,conversation:string,messageId:string,contextIds?:string[]){
   if(!ledger.store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='qq_image_requests'").get())return {messageId,currentImage:null,recentImages:[]};
   const current=ledger.store.db.prepare('SELECT state,image_id AS imageId,error FROM qq_image_requests WHERE conversation=? AND message_id=?').get(conversation,messageId)??null;
-  const recent=ledger.store.db.prepare('SELECT message_id AS messageId,state,image_id AS imageId,error FROM qq_image_requests WHERE conversation=? ORDER BY rowid DESC LIMIT 2').all(conversation);
+  const scoped=contextIds?.length?' AND message_id IN ('+contextIds.map(()=>'?').join(',')+')':'';
+  const recent=contextIds&&!contextIds.length?[]:ledger.store.db.prepare('SELECT message_id AS messageId,state,image_id AS imageId,error FROM qq_image_requests WHERE conversation=?'+scoped+' ORDER BY rowid DESC LIMIT 2').all(conversation,...(contextIds??[]));
   const receipt=(row:any)=>row?{...row,...JSON.parse(ledger.store.getMeta('qq-image-result:'+row.imageId)??'{}')}:null;
   return {messageId,currentImage:receipt(current),recentImages:recent.map((row:any)=>{
     const r=receipt(row);return {imageId:r.imageId,catalogId:'generated-'+r.imageId,state:r.state,created:r.created,delivered:r.delivered,deliveryStatus:r.deliveryStatus,retryScheduled:r.retryScheduled,error:r.error};

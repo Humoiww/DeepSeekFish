@@ -83,7 +83,7 @@ test('background review can autonomously recall, update and finish without a QQ 
     f.journal.record({id:'other-rule',conversation:'private:30003',actor:'other',role:'user',text:'其他人的秘密',at:morning-60000});
     const model:Pick<BudgetedModel,'complete'>={async complete(_group,_user,m,options){
       assert.ok(options?.tools?.some(t=>t.function.name==='recall_chat'));
-      const input=JSON.parse(String(m[1].content));assert.ok(input.qqWebTools.some((t:any)=>t.name==='download_image'));
+      const input=JSON.parse(String(m[1].content));assert.ok(input.qqWebTools.some((t:any)=>t.name==='download_image'));assert.ok(input.qqTools.includes('read_forward'));assert.ok(input.qqTools.includes('send_image'));
       assert.ok(!JSON.stringify(m).includes('其他人的秘密'));
       const [name,args]=++round===1?['recall_chat',{}]:round===2?['update_knowledge',{version:0,changes:[{action:'add',text:'主人喜欢鲸鱼'}]}]:['finish_memory',{}];
       return {text:'',tool_calls:[{id:'recall-'+round,type:'function',function:{name:String(name),arguments:JSON.stringify(args)}}],usage:{input:100,output:50}};

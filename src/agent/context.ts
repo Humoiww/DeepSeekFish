@@ -2,21 +2,33 @@ import { knowledgeTokens } from '../memory/knowledge.js';
 import { FishError,type ChatMessage,type Message,type ModelTool } from '../types.js';
 
 export const RECENT_MESSAGES=6;
+export const DIALOGUE_IDLE_MS=2*3600000;
 /** Keep this question intact; spend at most 1500 tokens on preceding dialogue. */
 export function recentDialogue(history:Message[],batch:Message[]):Message[]{
   const ids=new Set(batch.map(m=>m.id)),last=batch.at(-1)!;
   const previous=history.filter(m=>!ids.has(m.id)&&m.at<=last.at),selected:Message[]=[];
-  let tokens=0;
+  let tokens=0,newerAt=batch[0].at;
   for(const m of previous.reverse()){
+    // An idle gap starts a new live exchange. Older records remain recallable.
+    if(newerAt-m.at>DIALOGUE_IDLE_MS)break;
     const cost=knowledgeTokens(m.text)+16;
     if(selected.length+batch.length>=RECENT_MESSAGES||tokens+cost>1500)break;
-    selected.unshift(m);tokens+=cost;
+    selected.unshift(m);tokens+=cost;newerAt=m.at;
   }
   return [...selected,...batch];
 }
 
+export const dialogueTime=(at:number)=>new Date(at+8*3600000).toISOString().slice(0,19)+'+08:00';
+/** Preserve chronology/provenance instead of presenting yesterday as an undated pending request. */
+export function dialogueMessages(dialogue:Message[],batch:Message[]):ChatMessage[]{
+  const current=new Set(batch.map(m=>m.id));
+  return dialogue.map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:
+    '['+dialogueTime(m.at)+(current.has(m.id)?' · 本轮消息':m.id.startsWith('daily-news:')?' · 早间新闻':'')+'] '+
+    (m.user==='DeepSeekFish'||m.group.startsWith('private:')?'':'['+m.user+'] ')+m.text}));
+}
+
 export const contextTools:ModelTool[]=[{type:'function',function:{name:'read_tool_result',description:'取回本轮工具资料；网页默认只读正文。section可选text/images/links/posts/raw，offset按回执续读；数组按条、文字按字符。不重新联网。',parameters:{type:'object',properties:{resultId:{type:'string'},section:{type:'string',enum:['text','images','links','posts','raw']},offset:{type:'integer',minimum:0}},required:['resultId'],additionalProperties:false}}}];
-const RECEIPTS=new Set(['generate_image','send_meme','collect_meme','remember_images','reply']);
+const RECEIPTS=new Set(['generate_image','send_image','send_meme','collect_meme','remember_images','reply']);
 const WEB_TEXT_TOKENS=4000;
 type Result={message:ChatMessage;name:string;raw:string;data:any;round:number;body?:string};
 // These pages put the actual body in text/content. Bilibili and similar

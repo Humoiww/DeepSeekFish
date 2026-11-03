@@ -17,7 +17,7 @@ import { verifyPng, type ImageProvider } from '../image/provider.js';
 import { echoKey } from '../qq/adapter.js';
 import { characterPrompt,personalityPrompt,appearancePrompt } from '../character.js';
 import { MemoryJournal,dayStart,recallTools } from '../memory/journal.js';
-import { recentDialogue,TurnContext,contextTools,contextMetrics } from './context.js';
+import { recentDialogue,dialogueMessages,dialogueTime,TurnContext,contextTools,contextMetrics } from './context.js';
 import { PersonMemory } from '../memory/people.js';
 import { qqResources,qqImageActivity } from '../qq/resources.js';
 import { qqChatTools,imageLibraryTools } from '../qq/chat-tools.js';
@@ -59,8 +59,9 @@ export class Bot {
     // OneBot timestamps have second precision; replies use local
     // milliseconds. Order OneBot context by reception so rapid follow-ups
     // cannot sort before the assistant's preceding reply.
+    m={...m,at:c.qqTransport==='onebot'?Date.now():m.at};
     const archiveText=redact(this.forwards?this.forwards.observe(m):m.text).slice(0,16000);
-    m={...m,at:c.qqTransport==='onebot'?Date.now():m.at,text:archiveText.slice(0,2000)};
+    m={...m,text:archiveText.slice(0,2000)};
     if(this.store.db.prepare('SELECT key FROM cache WHERE key=? AND expires>?').get(echoKey(m.group,m.text),Date.now()))return;
     if(!this.store.observe(m,c.historyHours,c.windowSize))return;
     this.memory.record({id:m.id,conversation:m.group,actor:m.user,role:'user',text:archiveText,at:Date.now()});
@@ -105,8 +106,12 @@ export class Bot {
       const mediaIds=[...new Set(incoming.flatMap(m=>m.id?[m.id]:[]))];
       const PERSONA=personalityPrompt(this.root),SYSTEM=qqPrompt(this.root);
       const identity={self:(await this.transport.identity?.())?.userId,speaker:last.user};
-      const context={qqIdentity:identity,...(this.forwards?{forwardedChats:this.forwards.recent(last.group,0,3,dayStart()-86400000)}:{}),character:{appearance:appearancePrompt(this.root),referenceId:'character'},actions:qqImageActivity(this.ledger,last.group,last.id),...this.media?.context(last.group),...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
-      const dialogue:ChatMessage[]=recentDialogue(history,batch).map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:m.user==='DeepSeekFish'||last.group.startsWith('private:')?m.text:'['+m.user+'] '+m.text}));
+      const recent=recentDialogue(history,batch),contextSince=recent[0]?.at??last.at,contextUntil=last.at,contextIds=recent.map(m=>m.id);
+      const context={currentTurn:{messageId:last.id,at:dialogueTime(last.at),historySince:dialogueTime(contextSince)},qqIdentity:identity,
+        ...(this.forwards?{forwardedChats:this.forwards.recent(last.group,0,3,contextSince,contextUntil)}:{}),
+        character:{appearance:appearancePrompt(this.root),referenceId:'character'},actions:qqImageActivity(this.ledger,last.group,last.id,contextIds),
+        ...this.media?.context(last.group,contextSince,contextUntil,contextIds),...qqResources(c,this.ledger,last.group,last.user)},payload=JSON.stringify(context);
+      const dialogue=dialogueMessages(recent,batch);
       const messages:ChatMessage[]=[{role:'system',content:SYSTEM},{role:'user',content:payload},...dialogue];
       const turnContext=new TurnContext();
       if(incoming.length)messages.push(turnContext.images({role:'user',content:this.media!.parts(last.group,incoming)},-1));
@@ -116,7 +121,7 @@ export class Bot {
       const visibleImages=new Set(mediaIds);
       const maxRounds=16,maxCalls=64;let repaired=false,protocolRepairs=0;
       const tracePath='runtime/logs/qq/'+randomUUID()+'.json';makeDir(this.root,'runtime/logs/qq');
-      const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,toolPolicy:'model-choice',imageRequested,received:incoming,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
+      const saveTrace=()=>writePrivate(this.root,tracePath,redact(JSON.stringify({conversation:last.group,messageId:last.id,request:last.text,at:Date.now(),system:SYSTEM,inputContext:{context,dialogue},toolPolicy:'model-choice',imageRequested,received:incoming,contextSize:{systemCharacters:SYSTEM.length,personaCharacters:PERSONA.length,toolSchemaBytes:Buffer.byteLength(JSON.stringify(tools)),contextBytes:Buffer.byteLength(payload),historyMessages:dialogue.length},trace},null,2)));
       saveTrace();
       try{
         for(let round=0;round<maxRounds;round++){
@@ -268,7 +273,7 @@ export class Bot {
                 const outcome=result as Record<string,unknown>;
                 if(imageOutcome?.catalogId===args.imageId)imageOutcome={...imageOutcome,...outcome,next:undefined};
                 const background=JSON.parse(String(messages[1].content));
-                messages[1]={role:'user',content:JSON.stringify({...background,actions:{...qqImageActivity(this.ledger,last.group,last.id),lastImage:{created:outcome.created,delivery:outcome.delivered?'sent':outcome.deliveryStatus,catalogId:args.imageId,referenceIds:((outcome.references??[]) as {id:string}[]).map(r=>r.id),retryScheduled:false}}})};
+                messages[1]={role:'user',content:JSON.stringify({...background,actions:{...qqImageActivity(this.ledger,last.group,last.id,contextIds),lastImage:{created:outcome.created,delivery:outcome.delivered?'sent':outcome.deliveryStatus,catalogId:args.imageId,referenceIds:((outcome.references??[]) as {id:string}[]).map(r=>r.id),retryScheduled:false}}})};
               }else if(call.function.name==='list_images'){
                 if(!this.imageClient||Object.keys(args).some(k=>!['source','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
                 result=await this.imageClient.list(last,args.source??'all',args.offset??0,this.controller.signal);
@@ -328,7 +333,7 @@ export class Bot {
               // Preserve the native call/result chain so completion cannot be
               // mistaken for a new request. Keep current facts in the background.
               const {character:_appearance,...chatContext}=context;
-              messages[1]={role:'user',content:JSON.stringify({...chatContext,actions:{...qqImageActivity(this.ledger,last.group,last.id),lastImage:image},...qqResources(this.cfg(),this.ledger,last.group,last.user)})};
+              messages[1]={role:'user',content:JSON.stringify({...chatContext,actions:{...qqImageActivity(this.ledger,last.group,last.id,contextIds),lastImage:image},...qqResources(this.cfg(),this.ledger,last.group,last.user)})};
               trace.push({replyContext:{image,previewImages:0}});
             }
             if(call.function.name==='generate_image'&&result&&typeof result==='object'){const {manifest:_manifest,conversation:_conversation,resources:_resources,...visible}=result as Record<string,unknown>;result=visible;}
@@ -340,7 +345,7 @@ export class Bot {
           if(classified){
             // Refresh memory without forgetting the operation just completed.
             const background=JSON.parse(String(messages[1].content));
-            messages[1]={role:'user',content:JSON.stringify({...background,...this.media!.context(last.group)})};
+            messages[1]={role:'user',content:JSON.stringify({...background,...this.media!.context(last.group,contextSince,Date.now(),contextIds)})};
             trace.push({classificationStored:true,nativeResultsRetained:true});saveTrace();
           }
           if(roundMedia.length)messages.push(turnContext.images({role:'user',content:[{type:'text',text:'工具返回的原图，图片ID、来源或说说ID标在各图前'},...roundMedia]},round));

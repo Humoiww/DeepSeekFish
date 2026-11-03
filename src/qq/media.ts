@@ -129,8 +129,9 @@ export class QQMedia {
       return this.describe(conversation,r.id);
     }));
   }
-  context(conversation:string){
-    const rows=this.store.db.prepare('SELECT id,description FROM qq_media WHERE conversation=? AND observed>=? ORDER BY observed DESC LIMIT 3').all(conversation,dayStart()-86400000) as {id:string;description:string}[];
+  context(conversation:string,since=dayStart()-86400000,until=Date.now(),messageIds?:string[]){
+    const scoped=messageIds?.length?' AND EXISTS(SELECT 1 FROM qq_media_messages m WHERE m.conversation=qq_media.conversation AND m.media_id=qq_media.id AND m.message_id IN ('+messageIds.map(()=>'?').join(',')+'))':'';
+    const rows=messageIds&&!messageIds.length?[]:this.store.db.prepare('SELECT id,description FROM qq_media WHERE conversation=? AND observed>=? AND observed<=?'+scoped+' ORDER BY observed DESC LIMIT 3').all(conversation,since,until,...(messageIds??[])) as {id:string;description:string}[];
     const count=this.store.db.prepare('SELECT count(*) AS n FROM qq_media WHERE conversation=? AND meme=1').get(conversation) as {n:number};
     return {recentImages:rows.map(r=>({id:r.id,description:r.description.slice(0,160)})),memes:{count:count.n,lookup:'find_memes'}};
   }

@@ -62,9 +62,9 @@ export class ForwardRecords {
     }
     return text;
   }
-  recent(conversation:string,offset=0,count=3,since=0){
+  recent(conversation:string,offset=0,count=3,since=0,until=Number.MAX_SAFE_INTEGER){
     if(!this.allowed(conversation))throw new FishError('QQ_FORWARD_SCOPE_DENIED');
-    return this.store.db.prepare("SELECT id,message_id AS messageId,sender AS forwardedBy,observed AS receivedAt,title FROM qq_forwards WHERE conversation=? AND route='[]' AND observed>=? ORDER BY observed DESC,id LIMIT ? OFFSET ?").all(conversation,since,count,offset);
+    return this.store.db.prepare("SELECT id,message_id AS messageId,sender AS forwardedBy,observed AS receivedAt,title FROM qq_forwards WHERE conversation=? AND route='[]' AND observed>=? AND observed<=? ORDER BY observed DESC,id LIMIT ? OFFSET ?").all(conversation,since,until,count,offset);
   }
   private async nodes(ref:Ref){
     const rootId=this.key(ref.conversation,ref.root,[]);let nodes=this.cache.get(rootId);

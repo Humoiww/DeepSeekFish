@@ -123,3 +123,51 @@ test('QQ ends a long tool turn through native reply even if the closing response
  try{await bot.receive(message('从头讲一部分'));await bot.flush();assert.equal(rounds,17);assert.equal(closingCalls,2);assert.deepEqual(transport.sent.map(x=>x.text),['先聊聊已经读到的这段。']);}
  finally{await bot.stop();f.cleanup();}
 });
+
+test('an idle gap keeps the morning news and greeting together, without filling slots with yesterday',()=>{
+ const now=Date.parse('2026-11-03T08:01:00+08:00');
+ const yesterday=message('昨天的小说问题',{id:'old',at:now-10*3600000});
+ const news=message('今天的新闻',{id:'daily-news:2026-11-03',user:'DeepSeekFish',at:now-60000});
+ const greeting=message('早，辛苦了',{id:'current',at:now});
+ assert.deepEqual(recentDialogue([yesterday,news,greeting],[greeting]).map(m=>m.id),[news.id,greeting.id]);
+ const reply=message('早呀',{id:'answer',user:'DeepSeekFish',at:now+1000}),question=message('？',{id:'question',at:now+2000});
+ assert.deepEqual(recentDialogue([yesterday,news,greeting,reply,question],[question]).map(m=>m.id),[news.id,greeting.id,reply.id,question.id]);
+ // Midnight itself does not break an active exchange.
+ const midnight=message('接着聊',{id:'midnight',at:now-8*3600000});
+ const before=message('刚才的话',{id:'before',at:midnight.at-60000});
+ assert.deepEqual(recentDialogue([before,midnight],[midnight]).map(m=>m.id),['before','midnight']);
+});
+
+test('fresh QQ turns exclude stale attachment prompts while old forwards and dialogue stay explicitly retrievable',async()=>{
+ const {ForwardRecords}=await import('../src/qq/forward.js'),{QQMedia}=await import('../src/qq/media.js');
+ const {dialogueMessages}=await import('../src/agent/context.js');
+ const fs=await import('node:fs');
+ const f=fixture({qqTransport:'onebot',privateUsers:['20002'],bufferMs:10000}),transport=new MockTransport();let reads=0,rounds=0;
+ const forwards=new ForwardRecords(f.store,{async readForward(){reads++;return []; }},()=>true),media=new QQMedia(f.root,f.store);
+ const group='private:20002',now=Date.now(),old=now-10*3600000;
+ const past=message('昨天的小说问题',{id:'old-question',group,user:'20002',at:old});
+ forwards.observe({...past,forwards:[{id:'yesterday-forward'}]});
+ const provider:Model={kind:'fixture',async complete(messages,_max,options){
+  rounds++;assert.ok(options?.tools?.some(t=>t.function.name==='read_forward'));assert.ok(options?.tools?.some(t=>t.function.name==='recall_chat'));
+  const context=JSON.parse(String(messages[1].content));assert.deepEqual(context.forwardedChats,[]);assert.deepEqual(context.recentImages,[]);
+  assert.equal(context.currentTurn.messageId,rounds===1?'greeting':'question');
+  assert.ok(!JSON.stringify(messages).includes('昨天的小说问题'));assert.match(String(messages[2].content),/早间新闻/);
+  assert.match(String(messages.at(-1)!.content),rounds===1?/本轮消息.*早，辛苦了/:/本轮消息.*？/);
+  return {text:rounds===1?'早呀。':'怎么啦？',usage:{input:100,output:20}};
+ }};
+ const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport,undefined,undefined,undefined,media,forwards);
+ try{
+  await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');const saved=await media.fromWeb(group,fs.readFileSync(f.root+'/runtime/outputs/mock.png'),'https://example.com/old.png');
+  f.store.db.prepare('UPDATE qq_media SET observed=?,description=? WHERE id=?').run(now-30000,'刚从昨天的转发中读取的旧图片',saved.id);
+  f.store.observe(past,24,20);bot.memory.record({id:past.id,conversation:group,actor:past.user,role:'user',text:past.text,at:old});
+  f.store.observe(message('今日新闻',{id:'daily-news:today',group,user:'DeepSeekFish',at:now-60000}),24,20);
+  await bot.receive(message('早，辛苦了',{id:'greeting',group,user:'20002'}));await bot.flush();
+  await bot.receive(message('？',{id:'question',group,user:'20002'}));await bot.flush();
+  assert.equal(reads,0);assert.equal(rounds,2);
+  assert.equal(forwards.recent(group).length,1);assert.equal(media.context(group).recentImages.length,1);
+  assert.equal(bot.memory.read(group,{messageId:past.id}).events[0].text,past.text);
+  const log=JSON.parse(fs.readFileSync(f.root+'/runtime/logs/qq/'+fs.readdirSync(f.root+'/runtime/logs/qq')[0],'utf8'));
+  assert.ok(log.inputContext.context.currentTurn.messageId);assert.ok(log.inputContext.dialogue.length>=2);
+  assert.match(String(dialogueMessages([past],[past])[0].content),/2026|202[0-9]/);
+ }finally{await bot.stop();f.cleanup();}
+});
