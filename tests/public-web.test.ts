@@ -8,6 +8,9 @@ import {fixture} from './helpers.js';
 import {readPublic,publicAddress,pageAssets,browsePage,downloadWebImage} from '../src/search/public-web.js';
 import {QQMedia} from '../src/qq/media.js';
 import {QQImageLibrary} from '../src/qq/image-library.js';
+import fs from 'node:fs';
+import {makeDir} from '../src/paths.js';
+import {stageReferences} from '../src/image/references.js';
 
 test('public egress checks actual DNS and redirects, pins the connection, never sends credentials',async t=>{
   const lookups:string[]=[];let requests=0;
@@ -46,4 +49,22 @@ test('reference catalogs prefer original paths over previews and can filter by c
  const bytes=Buffer.from(JSON.stringify({assets:[{path:'characters/gpt/reference.jpg',preview:'previews/gpt.jpg',description:'GPT原图'},{path:'characters/deepseek/reference.png',preview:'previews/deepseek.png'}]}));
  const result=await browsePage(url,0,undefined,async()=>({url,type:'text/plain',bytes}),'gpt');
  assert.equal(result.images.length,1);assert.equal(result.images[0].url,'https://raw.githubusercontent.com/example/refs/main/characters/gpt/reference.jpg');
+});
+
+test('large web originals survive download, catalog viewing and GPT reference staging',async()=>{
+ const f=fixture(),media=new QQMedia(f.root,f.store);
+ f.store.db.exec('CREATE TABLE qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT)');
+ // Exercise the encoded-file limit without allocating a huge decoded raster.
+ const jpeg=await sharp({create:{width:32,height:32,channels:3,background:'blue'}}).jpeg().toBuffer();
+ const bytes=Buffer.concat([jpeg,Buffer.alloc(11*1024*1024)]);
+ try{
+  const downloaded=await downloadWebImage('https://example.com/large.jpg',undefined,async(url,limit)=>{assert.ok(limit>=bytes.length);return {url,type:'image/jpeg',bytes};});
+  const saved=await media.fromWeb('g',downloaded.bytes,downloaded.url),library=new QQImageLibrary(f.root,f.store);
+  assert.equal(library.list('g','u','web').images[0].id,saved.id);
+  const viewed=library.view('g','u',[saved.id]).images[0];assert.equal(viewed.preview,true);assert.equal(viewed.originalBytes,bytes.length);assert.equal(viewed.originalRetained,true);
+  assert.ok(Buffer.from(viewed.data,'base64').length<1024*1024);
+  const selected=library.select('g','u',[saved.id]),cwd=makeDir(f.root,'runtime/workspace/large-reference');
+  const staged=stageReferences(f.root,cwd,[...selected,{...selected[0],id:'another-reference'}]);
+  assert.equal(staged.length,2);for(const ref of staged)assert.deepEqual(fs.readFileSync(ref.path),bytes);
+ }finally{f.cleanup();}
 });

@@ -6,9 +6,10 @@ import { FishError } from '../types.js';
 import { imageMime } from '../memory/people.js';
 import { verifyPng } from './provider.js';
 import type { CharacterReference } from './character-reference.js';
+import { MAX_IMAGE_BYTES,MAX_REFERENCE_BYTES } from './limits.js';
 
 export interface SelectedReference {id:string;label:string;path:string}
-export function readReference(root:string,relative:string,maxBytes=10485760){
+export function readReference(root:string,relative:string,maxBytes=MAX_IMAGE_BYTES){
   const file=safePath(root,relative),st=fs.lstatSync(file);
   if(!st.isFile()||st.nlink!==1||st.size<12||st.size>maxBytes)throw new FishError('IMAGE_REFERENCE_INVALID');
   const bytes=fs.readFileSync(file),mime=imageMime(bytes);
@@ -17,7 +18,7 @@ export function readReference(root:string,relative:string,maxBytes=10485760){
 }
 export function stageReferences(root:string,cwd:string,selected:SelectedReference[]):CharacterReference[]{
   if(selected.length>3)throw new FishError('IMAGE_REFERENCE_LIMIT');
-  let budget=20971520;const staged:CharacterReference[]=[];
+  let budget=MAX_REFERENCE_BYTES;const staged:CharacterReference[]=[];
   try{for(const [i,item] of selected.entries()){
     const relative=path.relative(root,item.path).split(path.sep).join('/'),image=readReference(root,relative);
     budget-=image.bytes.length;if(budget<0)throw new FishError('IMAGE_REFERENCE_LIMIT');

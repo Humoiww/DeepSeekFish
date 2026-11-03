@@ -11,7 +11,6 @@ import { qqResources } from './resources.js';
 import { qqBrokerSocket } from './image-client.js';
 import { validateImagePlan,imageFields } from '../web/images.js';
 import { runCodexImage,type ImageRunner } from '../image/codex-smoke.js';
-import { isCharacterPortrait } from '../image/character-reference.js';
 import { CodexQuotaMonitor } from '../codex/quota.js';
 import { CodexRateLimitError } from '../codex/rate-limit.js';
 import { QQImageLibrary } from './image-library.js';
@@ -57,8 +56,10 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
         try{
           const before=await quota.beforeImage();
           const prompt='用户这次想画：'+body.request+'\n'+Object.entries(imageFields).map(([k,label])=>label+'：'+plan[k as keyof typeof plan]).join('\n');
-          const character=isCharacterPortrait(body.request)||selected.some(i=>i.id==='character');
-          const result=await runCodexImage(root,prompt,{cfg:c,ledger,group:body.conversation,signal:controller.signal,mock,character,references:selected.filter(i=>i.id!=='character'),runner});
+          const character=selected.some(i=>i.id==='character');
+          // QQ's model already chose the scene and references. Selecting its
+          // own reference must not replace another subject with Whale-chan.
+          const result=await runCodexImage(root,prompt,{cfg:c,ledger,group:body.conversation,signal:controller.signal,mock,character:false,references:selected,runner});
           if(result.error==='CODEX_RATE_LIMITED')quota.limited(new CodexRateLimitError(result.retryAt));
           await quota.afterImage(result.id,before);
           if(!result.ok||result.manifest?.length!==1)throw new FishError(result.error??'CODEX_IMAGE_GENERATION_FAILED');

@@ -7,6 +7,7 @@ import { FishError } from '../types.js';
 import { dayStart } from '../memory/journal.js';
 import { resolveCharacterReference } from '../image/character-reference.js';
 import { readReference,type SelectedReference } from '../image/references.js';
+import { MAX_IMAGE_BYTES,MAX_VISION_ORIGINAL_BYTES } from '../image/limits.js';
 
 export type ImageSource='all'|'character'|'avatar'|'qzone'|'generated'|'received'|'collected'|'web';
 export interface LibraryImage {id:string;source:Exclude<ImageSource,'all'>;label:string;owner?:string;postId?:string;position?:number;observedAt?:number;messageId?:string;sourceImageId?:string;sourceUrl?:string;path:string}
@@ -60,7 +61,7 @@ export class QQImageLibrary{
       let observedAt:number|undefined;try{observedAt=fs.statSync(file).mtimeMs;}catch{}
       images.push({id:'generated-'+row.image_id,source:'generated',label:i===0?'当前聊天最新生成的图片':'当前聊天倒数第'+(i+1)+'张生成图',position:i+1,observedAt,messageId:row.message_id,path:file});
     }
-    return images.filter(image=>{try{const st=fs.lstatSync(image.path);return st.isFile()&&st.nlink===1&&st.size>=12&&st.size<=10485760;}catch{return false;}});
+    return images.filter(image=>{try{const st=fs.lstatSync(image.path);return st.isFile()&&st.nlink===1&&st.size>=12&&st.size<=MAX_IMAGE_BYTES;}catch{return false;}});
   }
   list(conversation:string,user:string,source:ImageSource='all',offset=0){
     if(!['all','character','avatar','qzone','generated','received','collected','web'].includes(source)||!Number.isInteger(offset)||offset<0||offset>1000)throw new FishError('IMAGE_CATALOG_QUERY_INVALID');
@@ -76,9 +77,13 @@ export class QQImageLibrary{
   view(conversation:string,user:string,ids:unknown){
     const selected=this.select(conversation,user,ids);let budget=12582912;
     return {images:selected.map(item=>{
-      const {bytes,mime}=readReference(this.root,item.path.slice(this.root.length+1));budget-=bytes.length;
+      const relative=item.path.slice(this.root.length+1),originalBytes=fs.lstatSync(item.path).size;
+      // Media ingestion already creates bounded frame previews. Keep the full
+      // original available to GPT while avoiding a huge base64 vision response.
+      const preview=originalBytes>MAX_VISION_ORIGINAL_BYTES&&/^media-[a-f0-9]{32}$/.test(item.id)&&relative.startsWith('runtime/memory/media/'+item.id+'/original.');
+      const {bytes,mime}=readReference(this.root,preview?'runtime/memory/media/'+item.id+'/frame-0.png':relative);budget-=bytes.length;
       if(budget<0)throw new FishError('IMAGE_REFERENCE_LIMIT');
-      return {id:item.id,label:item.label,mime,data:bytes.toString('base64')};
+      return {id:item.id,label:item.label,mime,data:bytes.toString('base64'),...(preview?{preview:true,originalBytes,originalRetained:true}: {})};
     })};
   }
 }

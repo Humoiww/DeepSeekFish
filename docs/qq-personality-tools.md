@@ -87,7 +87,9 @@ read_forward：读取合并转发的聊天记录，包括说话人、时间、�
 
 发送前持久记录状态。同一成图重复调用先返回原回执；不确定的发送只查询本会话 QQ 历史中本人、时间、原生序号和图片指纹一致的回执，不重复上传。传输大静图使用最大边 1536、JPEG 质量 88 的较小副本；图库和生图参考仍保留原始 PNG，表情动画不转换。回执超时会读一次历史核对实际发送结果，真实拒绝继续报告失败。排队等待生图的 @/关键词请求保留到入队时间，不因等待超过两分钟而被静默丢弃。
 
-AI 角色参考知识：`https://github.com/shuaizenge/ai-girls`；公开原图索引为 `https://raw.githubusercontent.com/shuaizenge/ai-girls/main/catalog.json`。肥鱼可用 `browse_page` 的 `query` 按角色查找，再 `download_image` 下载原图；`generate_image.referenceIds` 同时选 `character` 和下载结果 ID，说明双方角色和画面。此约定保存在独立知识库中，随私有状态迁移导出；不把参考图内容硬编码为人格台词。
+AI 角色参考知识：`https://github.com/shuaizenge/ai-girls`；公开原图索引为 `https://raw.githubusercontent.com/shuaizenge/ai-girls/main/catalog.json`。肥鱼可用 `browse_page` 的 `query` 按角色查找，再 `download_image` 下载原图；`generate_image.referenceIds` 由肥鱼按画面选择，`character` 是肥鱼本人的设定图，方案说明每张参考对应的角色或用途。QQ Broker 将选中的图统一作为参考传入，不因选中 `character` 就加上“生成同一位鲸酱”的全局身份提示，也不根据请求中的“你自己”自动附图。此知识保存在独立知识库中，随私有状态迁移导出。
+
+网页原图、QQ 媒体入库、图库与 GPT 参考读取统一支持单文件 32 MiB，最多三张选定参考；原文件完整保存。超过 4 MiB 的已入库媒体在 `view_images` 中使用已有帧预览并标明 `preview`、`originalBytes`、`originalRetained`，避免大块 base64 占用聊天请求；交给 GPT 的仍是图库选定的原文件。像素、解码、会话范围和公网地址校验继续使用既有流程。
 
 ### 当前聊天与旧记录
 

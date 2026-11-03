@@ -8,6 +8,7 @@ import { publicUrl } from './provider.js';
 import { pageEvidence } from './evidence.js';
 import { bilibiliSpace } from './bilibili.js';
 import { tiebaPage } from './tieba.js';
+import { MAX_IMAGE_BYTES } from '../image/limits.js';
 
 export function publicAddress(address:string):boolean{
   if(isIP(address)===4){
@@ -148,7 +149,7 @@ export async function browsePage(url:string,offset=0,signal?:AbortSignal,reader:
 }
 export async function downloadWebImage(url:string,signal?:AbortSignal,reader:PublicReader=readPublic){
   if(typeof url!=='string'||!publicUrl(url))throw new FishError('WEB_PUBLIC_URL_REQUIRED');
-  const r=await reader(imageAddress(url),10485760,signal);
+  const r=await reader(imageAddress(url),MAX_IMAGE_BYTES,signal);
   if(/^(text\/|application\/(json|xhtml\+xml))/i.test(r.type))throw new FishError('WEB_IMAGE_EXPECTED');
   return r;
 }

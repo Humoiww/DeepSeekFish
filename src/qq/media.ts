@@ -5,12 +5,13 @@ import { makeDir,safePath } from '../paths.js';
 import { FishError,codeOf,type Message,type ChatPart,type ModelTool } from '../types.js';
 import { imageMime } from '../memory/people.js';
 import { dayStart } from '../memory/journal.js';
+import { MAX_IMAGE_BYTES } from '../image/limits.js';
 
 // Load the native decoder only in the QQ media path; WebUI/Codex do not need
 // additional native executable mappings just because they import the CLI.
 let decoder:Promise<(typeof import('sharp'))['default']>|undefined;
 function imageDecoder(){return decoder??=import('sharp').then(({default:sharp})=>{sharp.concurrency(1);sharp.cache({memory:16,files:0,items:20});return sharp;});}
-const MAX_BYTES=10485760,MAX_PIXELS=24000000;
+const MAX_BYTES=MAX_IMAGE_BYTES,MAX_PIXELS=24000000;
 const options={limitInputPixels:MAX_PIXELS,failOn:'warning' as const};
 const CDN=new Set(['multimedia.nt.qq.com.cn','multimedia.nt.qq.com','gchat.qpic.cn','c2cpicdw.qpic.cn','gchat.qlogo.cn']);
 export function qqImageUrl(value:string):URL{
