@@ -63,6 +63,7 @@ function traceRecord(r:RecordItem,trace:any[]){
     const calls=e.toolCalls??e.tool_calls;
     if(e.name==='model_usage'||e.usage||Array.isArray(calls))recordModel(e,calls);
     if(e.contextInput)r.events.push({type:'context',name:'本轮输入规模',round:e.round,result:e.contextInput});
+    if(e.continuation)r.events.push({type:'context',name:'探索继续提示',round:e.round,result:e.continuation});
     if(e.name!=='model_usage'&&Array.isArray(calls))for(const c of calls){const name=c.function?.name??'unknown';count(r,name);r.events.push({type:'tool',name,callId:c.id,round:e.round,args:obj(c.function?.arguments),state:'pending',modelCall:currentModel?.modelCall});}
     if(e.tool&&Object.hasOwn(e,'result')){
       let step=r.events.find(s=>s.type==='tool'&&s.name===e.tool&&s.state==='pending');

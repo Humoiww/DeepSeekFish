@@ -1,7 +1,8 @@
 'use strict';
 (()=>{
  const dialog=$('exploration-dialog'),numbers=['minMinutes','maxMinutes','probability','maxRunMinutes','runTokens'],checks=['enabled','allowImages','allowPublicPosts'];
- const states={queued:'等待后台接手',running:'正在闲逛',completed:'已结束',paused:'资源暂停',failed:'异常结束',cancelled:'已停止',interrupted:'进程中断'};
+ const states={queued:'等待后台接手',running:'正在闲逛',completed:'已结束',paused:'已暂停',failed:'异常结束',cancelled:'已停止',interrupted:'进程中断'};
+ const errorText=e=>e==='EXPLORATION_DECISION_STALLED'?'连续只有文字，未选择行动或结束，已暂停避免空转':e;
  let poll,dirty=false,loading=false,offset=0,next=null;
  const date=n=>n?new Date(n).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong',hour12:false}):'—';
  const fail=e=>$('exploration-error').textContent=e.message;
@@ -13,7 +14,7 @@
    const s=await api('exploration');$('exploration-error').textContent='';
    if(fill&&!dirty){for(const k of numbers)$('explore-'+k).value=k==='probability'?+(s.settings[k]*100).toFixed(6):s.settings[k];for(const k of checks)$('explore-'+k).checked=s.settings[k];const select=$('explore-owner');select.replaceChildren(...s.owners.map(id=>{const o=node('option','',id);o.value=id;return o;}));if(!s.owners.length){const o=node('option','','请先在 QQ 设置添加私聊账号');o.value='';select.append(o);}select.value=s.settings.owner;estimate();$('exploration-fields').disabled=false;}
    const online=s.worker&&Date.now()-s.worker.at<15000,box=$('exploration-status');box.replaceChildren();
-   for(const [k,v] of [['后台',online?(s.active?states[s.active.state]:s.settings.enabled?'等待随机刻':'空闲（可手动唤醒）'):'尚未连接 · 设置已保存在数据库'],['随机刻',s.settings.enabled?'开启':'关闭'],['下次检查（香港）',date(s.schedule.next_check)],['最近探索',s.last?date(s.last.started||s.last.created)+' · '+states[s.last.state]:'还没有'],['最近错误',s.lastError?s.lastError.error+' · '+date(s.lastError.finished):s.worker?.error||'无']]){const row=node('p');row.append(node('strong','',k+'：'),node('span','',v));box.append(row);}
+   for(const [k,v] of [['后台',online?(s.active?states[s.active.state]:s.settings.enabled?'等待随机刻':'空闲（可手动唤醒）'):'尚未连接 · 设置已保存在数据库'],['随机刻',s.settings.enabled?'开启':'关闭'],['下次检查（香港）',date(s.schedule.next_check)],['最近探索',s.last?date(s.last.started||s.last.created)+' · '+states[s.last.state]:'还没有'],['最近错误',s.lastError?errorText(s.lastError.error)+' · '+date(s.lastError.finished):s.worker?.error||'无']]){const row=node('p');row.append(node('strong','',k+'：'),node('span','',v));box.append(row);}
    $('exploration-run').disabled=!s.settings.owner||!!s.active;$('exploration-cancel').disabled=!s.active;
    $('exploration-recent').replaceChildren(...s.recent.slice(0,8).map(r=>{const b=node('button','exploration-entry',date(r.created)+' · '+states[r.state]+'\n'+r.tokens.toLocaleString()+' 模型 token + '+(r.web_tokens||0).toLocaleString()+' 联网折算'+(r.unknown_tokens?' · 未确认预留 '+r.unknown_tokens.toLocaleString():'')+' · 已分享 '+r.shared+' 次'+(r.note?'\n'+r.note.slice(0,160):''));b.type='button';b.onclick=()=>history(r.id);return b;}));
    if(!s.recent.length)$('exploration-recent').append(node('p','hint','还没有探索记录。'));

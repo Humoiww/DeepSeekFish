@@ -31,7 +31,9 @@
 
 ## 模型与连续兴趣
 
-复用同一个 BudgetedModel、DeepSeek 原生工具调用及共享 Ledger。每轮 `tool_choice=auto`，没有主题分类、关键词意图判定、固定搜索数量或强制末尾发送。没有固定小轮数；完成无工具文本或调用 finish_exploration 都可安静结束。
+复用同一个 BudgetedModel、DeepSeek 原生工具调用及共享 Ledger。每轮 `tool_choice=auto`，没有主题分类、关键词意图判定、固定搜索数量或强制末尾发送。没有固定小轮数；模型随时可以调用 `finish_exploration` 安静结束，包括醒来后立即结束。
+
+API 的 `finish_reason=stop` 只表示这次文本输出结束，不再被当作整场探索完成。无工具文本保留为 assistant 的私下想法，后续附一条 system 运行提示，让模型自行选择继续工具或结束，不伪造用户催促、不匹配话术、不预选工具。连续三次仍只有文字时，以 `EXPLORATION_DECISION_STALLED` 暂停，保留真实消耗与两次继续提示，避免空转；一旦选择工具，此计数归零。这是调用协议故障处理，不是探索行动轮数上限。
 
 初始上下文：当前人格、现有不超过 5000 token 的知识库、主人近期私聊的有界片段、最近五项兴趣的短预览、最近三次同一主人的探索短记。完整资料按模型选择调用 recall_chat/read_curiosity/read_exploration，不永久加载全部历史。群聊只允许读取当前已授权群；后台探索不改变群消息的 @/关键词触发策略。
 

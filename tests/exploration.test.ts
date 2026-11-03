@@ -20,7 +20,7 @@ import {ActivityHistory} from '../src/web/activity.js';
 import {FishError,type Model,type ModelResult,type ChatMessage} from '../src/types.js';
 
 const call=(id:string,name:string,args:any):ModelResult=>({text:'',tool_calls:[{id,type:'function',function:{name,arguments:JSON.stringify(args)}}],usage:{input:100,output:20,cachedInput:60,uncachedInput:40}});
-const quiet=():ModelResult=>({text:'先歇会儿。',usage:{input:100,output:5,cachedInput:80,uncachedInput:20}});
+const quiet=():ModelResult=>({...call('finish','finish_exploration',{note:'先歇会儿。'}),usage:{input:100,output:5,cachedInput:80,uncachedInput:20}});
 function setup(){
  const f=fixture({enabled:true,qqTransport:'onebot',privateUsers:['20002'],admins:['20002'],search:true,dailyTokens:10000000,groupDailyTokens:10000000,userDailyRequests:1000}),state=new ExplorationState(f.store,f.cfg);
  f.store.db.exec('CREATE TABLE IF NOT EXISTS qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT,PRIMARY KEY(conversation,message_id))');
@@ -80,6 +80,50 @@ test('model chooses tools, changes direction, keeps curiosity with sources and q
   assert.equal(inputs[1].at(-1)?.role,'tool');assert.match(JSON.stringify(inputs[2]),/a different topic/);assert.equal(f.store.history('private:20002',6).length,0,'private exploration is not inserted as a human dialogue');
   const detail=explorationRead(f.root,f.state,row.id);assert.ok('trace' in detail);assert.ok(detail.trace.some((x:any)=>x.tool==='search_web'));
   fs.unlinkSync(f.root+'/runtime/logs/exploration/'+row.id+'.json');const indexed=explorationRead(f.root,f.state,row.id);assert.ok('observations' in indexed);assert.equal(indexed.observations.length,5);assert.match(JSON.stringify(indexed.observations),/example.com\/a/);assert.equal(f.state.history('synthesizers').runs[0].id,row.id);
+ }finally{f.cleanup();}
+});
+test('text-only plans continue as assistant thoughts, and the model can actually browse and change direction',async()=>{
+ const f=setup();let n=0;const inputs:ChatMessage[][]=[];
+ const thought='溜达时间到(´▽`)/ 今天贴吧有没有人在说本鱼亖了呀～';
+ try{
+  const row=await run(f,provider(async(messages,_max,options)=>{
+   inputs.push(structuredClone(messages));assert.equal(options?.requireTool,undefined);assert.equal(options?.toolChoice,undefined);
+   assert.ok(options?.tools?.some(t=>t.function.name==='finish_exploration'));
+   n++;if(n===7)return quiet();
+   if(n%2)return {text:n===1?thought:'改主意了，再去别处看看。',finishReason:'stop',usage:{input:100,output:20}};
+   return call('visit-'+n,'browse_page',{url:'https://example.com/model-choice-'+n});
+  }));
+  assert.equal(row.state,'completed');assert.equal(n,7,'three separated text turns do not impose a round cap');
+  assert.deepEqual(f.visited,['https://example.com/model-choice-2','https://example.com/model-choice-4','https://example.com/model-choice-6']);
+  assert.equal(inputs[1].at(-2)?.role,'assistant');assert.equal(inputs[1].at(-2)?.content,thought);assert.equal(inputs[1].at(-1)?.role,'system');
+  assert.equal(inputs.at(-1)?.filter(m=>m.role==='user').length,1,'no fabricated human follow-up');
+  const calls=new Set<string>();for(const message of inputs.at(-1)!){if(message.role==='assistant')for(const c of message.tool_calls??[])calls.add(c.id);if(message.role==='tool')assert.ok(calls.has(message.tool_call_id!));}
+  assert.equal(f.sent(),0);assert.equal(f.state.journal().entries?.length,0,'no forced report or memory write');assert.equal(f.store.history('private:20002',6).length,0);
+  assert.equal(row.tokens,825);assert.equal(f.ledger.value('tokens'),825);
+  const log=JSON.parse(fs.readFileSync(f.root+'/runtime/logs/exploration/'+row.id+'.json','utf8'));
+  assert.equal(log.trace.filter((e:any)=>e.continuation).length,3);assert.equal(log.trace.filter((e:any)=>e.tool==='finish_exploration').length,1);
+ }finally{f.cleanup();}
+});
+test('the model can immediately choose to rest without browsing, sharing, or receiving a continuation',async()=>{
+ const f=setup();let n=0;
+ try{const row=await run(f,provider(async()=>{n++;return quiet();}));assert.equal(n,1);assert.equal(row.state,'completed');assert.equal(row.note,'先歇会儿。');assert.equal(f.visited.length,0);assert.equal(f.queries.length,0);assert.equal(f.sent(),0);assert.equal(row.tokens,105);}
+ finally{f.cleanup();}
+});
+test('repeated text without any action pauses with honest usage instead of claiming success or spinning',async()=>{
+ const f=setup();let n=0;
+ try{
+  const row=await run(f,provider(async()=>{n++;return {text:'先想一想。',finishReason:'stop',usage:{input:100,output:5}};}));
+  assert.equal(n,3);assert.equal(row.state,'paused');assert.equal(row.error,'EXPLORATION_DECISION_STALLED');assert.equal(row.tokens,315);assert.equal(f.ledger.value('tokens'),315);assert.equal(f.visited.length,0);assert.equal(f.sent(),0);
+  const log=JSON.parse(fs.readFileSync(f.root+'/runtime/logs/exploration/'+row.id+'.json','utf8'));assert.equal(log.trace.filter((e:any)=>e.continuation).length,2);assert.equal(log.trace.filter((e:any)=>e.usage).length,3);
+  const activity=await new ActivityHistory(f.root,f.store,f.store).detail('exploration:'+row.id);assert.equal(activity.state,'paused');assert.equal(activity.usage.calls,3);assert.equal(activity.events.filter(e=>e.name==='探索继续提示').length,2);
+ }finally{f.cleanup();}
+});
+test('cancellation after a text-only decision prevents continuation; finish prevents later effects in the batch',async()=>{
+ const f=setup();let n=0;
+ try{
+  const cancelled=await run(f,provider(async()=>{n++;f.state.cancel();return {text:'还想看看。',usage:{input:100,output:5}};}));assert.equal(n,1);assert.equal(cancelled.state,'cancelled');assert.equal(f.sent(),0);
+  const done=await run(f,provider(async()=>({...quiet(),tool_calls:[...quiet().tool_calls!,...call('late-send','send_message',{text:'不该发送'}).tool_calls!]})));
+  assert.equal(done.state,'completed');assert.equal(f.sent(),0);assert.equal(f.state.observations(done.id).observations.length,1);
  }finally{f.cleanup();}
 });
 test('real image catalog stores downloaded original, collects it and sends it by model choice',async()=>{
@@ -182,7 +226,7 @@ test('long exploration compacts whole native tool groups while full earlier acti
  try{const row=await run(f,provider(async messages=>{
   maximum=Math.max(maximum,messages.length);const ids=new Set<string>();for(const m of messages){if(m.role==='assistant')for(const c of m.tool_calls??[])ids.add(c.id);if(m.role==='tool')assert.ok(ids.has(m.tool_call_id!),'no orphan tool results after compaction');}
   if(++n>24)return quiet();return {...call('long-'+n,'get_knowledge',{}),text:'想法还可以顺着另一条路继续看。'.repeat(250),usage:{input:100,output:3000}};
- }));assert.equal(row.state,'completed');const log=JSON.parse(fs.readFileSync(f.root+'/runtime/logs/exploration/'+row.id+'.json','utf8'));assert.ok(log.trace.some((e:any)=>e.contextCompacted));assert.equal(log.trace.filter((e:any)=>e.tool).length,24);assert.ok(maximum<3+2*24);assert.ok(f.state.observations(row.id).nextOffset);}
+ }));assert.equal(row.state,'completed');const log=JSON.parse(fs.readFileSync(f.root+'/runtime/logs/exploration/'+row.id+'.json','utf8'));assert.ok(log.trace.some((e:any)=>e.contextCompacted));assert.equal(log.trace.filter((e:any)=>e.tool).length,25);assert.ok(maximum<3+2*24);assert.ok(f.state.observations(row.id).nextOffset);}
  finally{f.cleanup();}
 });
 

@@ -4,7 +4,7 @@ import {redact} from '../storage/db.js';
 import {BudgetedModel,ModelResponseError,inputBound} from '../agent/model.js';
 import {TurnContext,contextMetrics} from '../agent/context.js';
 import {appearancePrompt} from '../character.js';
-import {explorationPrompt} from './prompt.js';
+import {explorationPrompt,explorationContinuation} from './prompt.js';
 import {newsMemory} from '../qq/daily-news.js';
 import {qqResources} from '../qq/resources.js';
 import {FishError,codeOf,type ChatMessage} from '../types.js';
@@ -43,7 +43,7 @@ export class ExplorationWorker{
   let kept=0;for(const f of files){kept+=f.stat.size;if(kept>128*1024*1024||f.stat.mtimeMs<this.now()-90*86400000)fs.unlinkSync(safePath(dir,f.name));}
  }
  private async execute(run:ExplorationRun,controller:AbortController){
-  const {root,cfg,ledger}=this.services,started=this.now(),trace:any[]=[],context=new TurnContext();let round=0,step=0,tokens=0,note='',state='completed',error:string|null=null;
+  const {root,cfg,ledger}=this.services,started=this.now(),trace:any[]=[],context=new TurnContext();let round=0,step=0,tokens=0,textOnly=0,note='',state='completed',error:string|null=null;
   const services={...this.services,state:this.state,readRun:(id:string|undefined,offset:number,query?:string)=>explorationRead(root,this.state,id,offset,run.owner,query)};
   const capabilities=new ExplorationTools(services,run,context,controller.signal),seen=new Set<string>();
   const group='private:'+run.owner;
@@ -81,7 +81,17 @@ export class ExplorationWorker{
     tokens+=response.usage.input+response.usage.output;this.state.store.db.prepare('UPDATE exploration_runs SET tokens=? WHERE id=? AND lock=?').run(tokens,run.id,run.lock!);
     trace.push({round,assistant:response.text,toolCalls:response.tool_calls,usage:response.usage,finishReason:response.finishReason});save();
     controller.signal.throwIfAborted();this.state.guard(run.id,run.lock!);
-    if(!response.tool_calls?.length){if(hasToolMarkup(response.text))throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');note=response.text.slice(0,4000);break;}
+    if(!response.tool_calls?.length){
+      if(hasToolMarkup(response.text))throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');
+      note=response.text.slice(0,4000);
+      // A completion's stop is not an agent decision to end its session. Keep
+      // the actual assistant turn; the continuation is runtime data, not a user.
+      // Two protocol repair opportunities bound empty chatter, not exploration.
+      if(++textOnly>2)throw new FishError('EXPLORATION_DECISION_STALLED');
+      messages.push({role:'assistant',content:response.text},{role:'system',content:explorationContinuation});
+      trace.push({round,continuation:{reason:'text_without_action',attempt:textOnly,content:explorationContinuation}});save();continue;
+    }
+    textOnly=0;
     messages.push({role:'assistant',content:hasToolMarkup(response.text)?'':response.text,tool_calls:response.tool_calls});
     let finished=false;
     for(const call of response.tool_calls){
@@ -94,10 +104,11 @@ export class ExplorationWorker{
       }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};}
       this.state.observation(run.id,step++,call.function.name,args??{},result);
       trace.push({tool:call.function.name,callId:call.id,result});messages.push(context.result(call.function.name,call.id,result,round,parts));save();
+      if(finished)break;
     }
     if(finished)break;
    }
-  }catch(e){error=codeOf(e);if(controller.signal.aborted)error=controller.signal.reason instanceof FishError?controller.signal.reason.code:'EXPLORATION_CANCELLED';state=error.includes('BUDGET')?'paused':error==='EXPLORATION_CANCELLED'?'cancelled':'failed';trace.push({error});}
+  }catch(e){error=codeOf(e);if(controller.signal.aborted)error=controller.signal.reason instanceof FishError?controller.signal.reason.code:'EXPLORATION_CANCELLED';state=error.includes('BUDGET')||error==='EXPLORATION_DECISION_STALLED'?'paused':error==='EXPLORATION_CANCELLED'?'cancelled':'failed';trace.push({error});}
   finally{
    clearInterval(heartbeat);if(state==='running')state='completed';
    this.state.store.db.prepare('UPDATE exploration_runs SET tokens=? WHERE id=? AND lock=?').run(tokens,run.id,run.lock!);
