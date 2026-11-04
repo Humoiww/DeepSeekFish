@@ -45,7 +45,7 @@ export function newsMemory(store:Store,owner:string,now=Date.now()){
     if(tokens+cost>2000||recent.length>=36)break;
     recent.unshift({role:r.role,at:new Date(r.observed).toISOString(),text});tokens+=cost;
   }
-  return {timezone:PROJECT_TIMEZONE,recent,textTokens:tokens,more:'recall_chat'};
+  return {timezone:PROJECT_TIMEZONE,conversation:'private:'+owner,peerQQ:owner,recent,textTokens:tokens,more:'recall_chat'};
 }
 const memoryDecision:ModelTool={type:'function',function:{name:'finish_memory',description:'结束后台回顾；有值得长期保留的内容时附带memory，没有则省略。',parameters:{type:'object',properties:{memory:knowledgeUpdateParameters},additionalProperties:false}}};
 const draftNews:ModelTool={type:'function',function:{name:'draft_news',description:'完成要私聊给主人的新闻分享。sources填写本次实际查到的来源链接，memory可顺便后台记住新知识。',parameters:{type:'object',properties:{text:{type:'string',maxLength:1800},sources:{type:'array',items:{type:'string'},minItems:1,maxItems:4},memory:knowledgeUpdateParameters},required:['text','sources'],additionalProperties:false}}};
@@ -169,8 +169,8 @@ export class DailyNews {
       const draft=JSON.parse(row.draft!),m:Message={id:'daily-news:'+day,group:'private:'+s.owner,user:s.owner,text:'每日新闻',at:this.now(),mentioned:false,event:'ordinary'};
       this.save(day,{state:'sending',error:null});await this.transport.send(m,draft.text);
       this.save(day,{state:'sent',error:null});
-      this.memory.record({id:m.id,conversation:m.group,actor:'DeepSeekFish',role:'assistant',text:draft.text,at:this.now(),source:'daily-news'});
-      this.store.db.prepare('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)').run(m.id,m.group,'DeepSeekFish',draft.text,this.now(),0,'ordinary');
+      this.memory.record({id:m.id,conversation:m.group,actor:'DeepSeekFish',replyTo:s.owner,role:'assistant',text:draft.text,at:this.now(),source:'daily-news'});
+      this.store.db.prepare('INSERT OR IGNORE INTO messages(id,grp,usr,text,at,mentioned,event,reply_to) VALUES (?,?,?,?,?,?,?,?)').run(m.id,m.group,'DeepSeekFish',draft.text,this.now(),0,'ordinary',s.owner);
       this.store.prune(this.cfg().historyHours,this.cfg().windowSize);return {state:'sent',day};
     }catch(e){
       const row=this.row(day)!,safe=['DAILY_NEWS_CONNECT_FAILED','ONEBOT_NOT_CONNECTED','ONEBOT_GROUP_NOT_ALLOWED','ONEBOT_INVALID_TARGET','ONEBOT_ACTION_FAILED'].includes(codeOf(e));

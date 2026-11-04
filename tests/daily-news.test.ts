@@ -37,7 +37,8 @@ test('08:00 Hong Kong starts one bounded morning window; setup date and pause ar
     f.set({enabled:false});await assert.rejects(f.daily().run(),/DISABLED/);
   }finally{f.cleanup();}
 });
-test('morning reviews memory and researches real sources, sends only to the owner once across restarts',async()=>{
+test('morning reviews memory and researches real sources, sends only to the owner once across restarts',async(t)=>{
+  t.mock.method(Date,'now',()=>morning);
   const f=setup();try{
     for(const [id,conversation,text] of [['owner','private:20002','我喜欢鲸鱼'],['other','private:30003','别人的秘密'],['group','g','群里的秘密']] as const)f.journal.record({id,conversation,text,actor:'u',role:'user',at:morning-3600000});
     assert.equal((await f.daily().run()).state,'sent');assert.equal(f.deliveries.length,1);assert.equal(f.deliveries[0].m.group,'private:20002');assert.match(f.deliveries[0].text,/https:\/\/example.com\/news\/today/);

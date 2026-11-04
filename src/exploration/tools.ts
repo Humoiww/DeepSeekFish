@@ -75,8 +75,8 @@ export class ExplorationTools{
   return result;
  }
  private recordSent(id:string,text:string){
-  const m=this.message();this.memory.record({id,conversation:m.group,actor:'DeepSeekFish',role:'assistant',text,at:Date.now(),source:'exploration'});
-  this.s.state.store.db.prepare('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)').run(id,m.group,'DeepSeekFish',text,Date.now(),0,'ordinary');
+  const m=this.message();this.memory.record({id,conversation:m.group,actor:'DeepSeekFish',replyTo:m.user,role:'assistant',text,at:Date.now(),source:'exploration'});
+  this.s.state.store.db.prepare('INSERT OR IGNORE INTO messages(id,grp,usr,text,at,mentioned,event,reply_to) VALUES (?,?,?,?,?,?,?,?)').run(id,m.group,'DeepSeekFish',text,Date.now(),0,'ordinary',m.user);
  }
  async execute(name:string,args:any,callId:string):Promise<{result:any;parts?:ChatPart[];finish?:boolean}>{
   this.guard();const s=this.s,m=this.message(callId),store=s.state.store;

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash,randomUUID } from 'node:crypto';
 import { validateOneBotUrl } from '../config.js';
 import { safePath } from '../paths.js';
-import { Store } from '../storage/db.js';
+import { Store,senderNames } from '../storage/db.js';
 import { FishError,codeOf,type Message,type Transport } from '../types.js';
 import { echoKey } from './adapter.js';
 import { verifyPng } from '../image/provider.js';
@@ -20,6 +20,8 @@ export function normalizeOneBot(event:any,self:string):Message|undefined{
   if(event?.post_type!=='message'||!['group','private'].includes(event.message_type)||id(event.self_id)!==self||!Array.isArray(event.message)||event.message.length>256)return;
   const user=id(event.user_id),group=event.message_type==='private'&&user?'private:'+user:id(event.group_id),messageId=id(event.message_id,true);
   if(!group||!user||!messageId||user===self||!Number.isSafeInteger(event.time))return;
+  const sender=event.sender?.user_id!==undefined&&id(event.sender.user_id)!==user?undefined:
+    senderNames({nickname:event.sender?.nickname,...(event.message_type==='group'?{card:event.sender?.card}:{})});
   let mentioned=event.message_type==='private',text='';const images:NonNullable<Message['images']>=[],forwards:NonNullable<Message['forwards']>=[];
   for(const segment of event.message){
     if(segment?.type==='text'&&typeof segment.data?.text==='string')text+=segment.data.text.slice(0,16000);
@@ -43,7 +45,7 @@ export function normalizeOneBot(event:any,self:string):Message|undefined{
     else if(segment?.type==='file')text+='[文件：未读取内容]';
     if(text.length>=16000)break;
   }
-  return {id:messageId,group,user,text:text.trim().slice(0,16000)||(mentioned&&event.message_type==='group'?'[@你]':''),at:event.time*1000,mentioned,event:mentioned?'mention':'ordinary',...(images.length?{images}:{}),...(forwards.length?{forwards}:{})};
+  return {id:messageId,group,user,text:text.trim().slice(0,16000)||(mentioned&&event.message_type==='group'?'[@你]':''),at:event.time*1000,mentioned,event:mentioned?'mention':'ordinary',...(sender?{sender}:{}),...(images.length?{images}:{}),...(forwards.length?{forwards}:{})};
 }
 export function onebotCredential(root:string):string{
   const file=safePath(root,'runtime/data/onebot-credentials.json');

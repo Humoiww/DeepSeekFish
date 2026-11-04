@@ -8,7 +8,7 @@ export function recentDialogue(history:Message[],batch:Message[]):Message[]{
   const previous=history.filter(m=>!ids.has(m.id)&&m.at<=last.at),selected:Message[]=[];
   let tokens=0;
   for(const m of previous.reverse()){
-    const cost=knowledgeTokens(m.text)+16;
+    const cost=knowledgeTokens(m.text)+knowledgeTokens(JSON.stringify(m.sender??{})+(m.replyTo??''))+16;
     if(selected.length+batch.length>=RECENT_MESSAGES||tokens+cost>1500)break;
     selected.unshift(m);tokens+=cost;
   }
@@ -23,7 +23,8 @@ export function dialogueMessages(dialogue:Message[],batch:Message[]):ChatMessage
   const current=new Set(batch.map(m=>m.id));
   return dialogue.map(m=>({role:m.user==='DeepSeekFish'?'assistant':'user',content:
     '['+dialogueTime(m.at)+(current.has(m.id)?' · 本轮消息':m.id.startsWith('daily-news:')?' · 早间新闻':'')+'] '+
-    (m.user==='DeepSeekFish'||m.group.startsWith('private:')?'':'['+m.user+'] ')+m.text}));
+    (m.user==='DeepSeekFish'?(m.replyTo?'[回复 QQ '+m.replyTo+'] ':''):
+      '[QQ '+m.user+(m.sender?' '+JSON.stringify(m.sender):'')+'] ')+m.text}));
 }
 
 export const contextTools:ModelTool[]=[{type:'function',function:{name:'read_tool_result',description:'取回本轮工具资料；网页默认只读正文。section可选text/images/links/posts/raw，offset按回执续读；数组按条、文字按字符。不重新联网。',parameters:{type:'object',properties:{resultId:{type:'string'},section:{type:'string',enum:['text','images','links','posts','raw']},offset:{type:'integer',minimum:0}},required:['resultId'],additionalProperties:false}}}];

@@ -18,6 +18,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,at INTEGER,kind TEXT,grp TEXT,detail TEXT);
       CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,grp TEXT,usr TEXT,request TEXT,brief TEXT,state TEXT,created INTEGER,started INTEGER,result TEXT,manifest TEXT,reservation TEXT,source TEXT);
       CREATE TABLE IF NOT EXISTS cache(key TEXT PRIMARY KEY,expires INTEGER,value TEXT);`);
+    this.transaction(()=>{
+      const columns=this.db.prepare('PRAGMA table_info(messages)').all() as any[];
+      for(const name of ['sender','reply_to'])if(!columns.some(c=>c.name===name))this.db.exec('ALTER TABLE messages ADD COLUMN '+name+' TEXT');
+    });
   }
   transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
@@ -30,7 +34,7 @@ export class Store {
     return this.transaction(() => {
       const fresh = this.db.prepare('INSERT OR IGNORE INTO seen VALUES (?,?,?)').run(m.group, m.id, Date.now()).changes;
       if (!fresh) return false;
-      this.db.prepare('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)').run(m.id, m.group, m.user, redact(m.text).slice(0, 2000), m.at, Number(m.mentioned), m.event);
+      this.db.prepare('INSERT OR IGNORE INTO messages(id,grp,usr,text,at,mentioned,event,sender,reply_to) VALUES (?,?,?,?,?,?,?,?,?)').run(m.id, m.group, m.user, redact(m.text).slice(0, 2000), m.at, Number(m.mentioned), m.event,JSON.stringify(senderNames(m.sender)??null),m.replyTo??null);
       this.prune(hours, max);
       return true;
     });
@@ -46,7 +50,7 @@ export class Store {
       UPDATE tasks SET state='cancelled',request='',brief='',source='',result='EXPIRED' WHERE created<(strftime('%s','now')-86400)*1000 AND state='waiting';`);
   }
   history(group: string, count: number): Message[] {
-    return (this.db.prepare('SELECT * FROM messages WHERE grp=? ORDER BY at DESC,rowid DESC LIMIT ?').all(group, count) as any[]).reverse().map(r => ({ id:r.id, group:r.grp, user:r.usr, text:r.text, at:r.at, mentioned:!!r.mentioned, event:r.event }));
+    return (this.db.prepare('SELECT * FROM messages WHERE grp=? ORDER BY at DESC,rowid DESC LIMIT ?').all(group, count) as any[]).reverse().map(r => ({ id:r.id, group:r.grp, user:r.usr, text:r.text, at:r.at, mentioned:!!r.mentioned, event:r.event,...(r.sender?{sender:senderNames(JSON.parse(r.sender))}:{}),...(r.reply_to?{replyTo:r.reply_to}:{}) }));
   }
   clear(group: string): void { this.db.prepare('DELETE FROM messages WHERE grp=?').run(group); }
   audit(kind: string, group = '', detail = ''): void {
@@ -58,4 +62,13 @@ export class Store {
 export function redact(text: string): string {
   return text.replace(/\bsk-[a-zA-Z0-9_-]{8,}/g, '[REDACTED]').replace(/(Bearer\s+)[^\s"']+/gi, '$1[REDACTED]')
     .replace(/((?:api[_-]?key|app[_-]?secret|access[_-]?token|password)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]');
+}
+/** Keep only the names reported by QQ, bounded and separate from message text. */
+export function senderNames(value:any):Message['sender']{
+  const names:NonNullable<Message['sender']>={};
+  for(const key of ['nickname','card'] as const)if(typeof value?.[key]==='string'){
+    const name=redact(value[key]).replace(/[\u0000-\u001f\u007f]/g,' ').trim().slice(0,100);
+    if(name)names[key]=name;
+  }
+  return Object.keys(names).length?names:undefined;
 }

@@ -66,7 +66,7 @@ export class Bot {
     m={...m,text:archiveText.slice(0,2000)};
     if(this.store.db.prepare('SELECT key FROM cache WHERE key=? AND expires>?').get(echoKey(m.group,m.text),Date.now()))return;
     if(!this.store.observe(m,c.historyHours,c.windowSize))return;
-    this.memory.record({id:m.id,conversation:m.group,actor:m.user,role:'user',text:archiveText,at:Date.now()});
+    this.memory.record({id:m.id,conversation:m.group,actor:m.user,sender:m.sender,role:'user',text:archiveText,at:Date.now()});
     if(m.text.startsWith('/fish ')){
       if(/^\/fish\s+cancel\b/.test(m.text)){await this.command(m);return;}
       this.enqueue(m.group,()=>this.command(m));await this.chains.get(m.group);return;
@@ -107,7 +107,7 @@ export class Bot {
       const incoming=this.media?await this.media.ingest(batch,this.controller.signal):[];
       const mediaIds=[...new Set(incoming.flatMap(m=>m.id?[m.id]:[]))];
       const PERSONA=personalityPrompt(this.root),SYSTEM=qqPrompt(this.root);
-      const identity={self:(await this.transport.identity?.())?.userId,speaker:last.user};
+      const identity={self:(await this.transport.identity?.())?.userId,speaker:last.user,...(last.sender?{sender:last.sender}:{})};
       const recent=recentDialogue(history,batch),contextSince=recent[0]?.at??last.at,contextUntil=last.at,contextIds=recent.map(m=>m.id);
       const context={currentTurn:{messageId:last.id,at:dialogueTime(last.at),historySince:dialogueTime(contextSince)},qqIdentity:identity,
         ...(this.forwards?{forwardedChats:this.forwards.recent(last.group,0,3,contextSince,contextUntil)}:{}),
@@ -225,7 +225,7 @@ export class Bot {
                 const remembered=this.media.remember(last.group,args.images,mediaIds);result={images:remembered};classified=true;
                 for(const item of remembered){
                   const source=incoming.find(m=>m.id===item.id)!,owner=batch.find(m=>m.id===source.messageId)!;
-                  this.memory.record({id:'media:'+owner.id+':'+item.id,conversation:last.group,actor:owner.user,role:'user',text:JSON.stringify({imageId:item.id,description:item.description,animated:item.animated,meme:item.meme,tags:item.tags}),at:owner.at,source:'qq-image-observation'});
+                  this.memory.record({id:'media:'+owner.id+':'+item.id,conversation:last.group,actor:owner.user,sender:owner.sender,role:'user',text:JSON.stringify({imageId:item.id,description:item.description,animated:item.animated,meme:item.meme,tags:item.tags}),at:owner.at,source:'qq-image-observation'});
                 }
               }else if(call.function.name==='collect_meme'){
                 if(!this.media||!this.imageClient||Object.keys(args).some(k=>!['imageId','description','tags','images'].includes(k))||args.images!==undefined&&Object.keys(args).some(k=>k!=='images'))throw new FishError('INVALID_TOOL_ARGS');
@@ -364,9 +364,9 @@ export class Bot {
     const sent=redact(text).slice(0,this.cfg().maxChars);
     await this.transport.send(m,sent);
     const id='assistant:'+randomUUID();
-    this.memory.record({id,conversation:m.group,actor:'DeepSeekFish',role:'assistant',text:sent,at:Date.now()});
+    this.memory.record({id,conversation:m.group,actor:'DeepSeekFish',replyTo:m.user,role:'assistant',text:sent,at:Date.now()});
     if(this.cfg().qqTransport==='onebot'){
-      this.store.db.prepare('INSERT INTO messages VALUES (?,?,?,?,?,?,?)').run(id,m.group,'DeepSeekFish',sent,Date.now(),0,'ordinary');
+      this.store.db.prepare('INSERT INTO messages(id,grp,usr,text,at,mentioned,event,reply_to) VALUES (?,?,?,?,?,?,?,?)').run(id,m.group,'DeepSeekFish',sent,Date.now(),0,'ordinary',m.user);
       this.store.prune(this.cfg().historyHours,this.cfg().windowSize);
     }
   }

@@ -1,6 +1,9 @@
 export interface Message {
   id: string; group: string; user: string; text: string; at: number;
   mentioned: boolean; bot?: boolean; event: 'mention' | 'ordinary';
+  // Names observed on this message, not an account key or an authorization role.
+  sender?: {nickname?:string;card?:string};
+  replyTo?: string;
   // Transport-only download handles; never archive URLs or expose them to models.
   images?: {url?:string;file?:string;stickerHint:boolean}[];
   forwards?: {id?:string;content?:unknown[];title?:string}[];
