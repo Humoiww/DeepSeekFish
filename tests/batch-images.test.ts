@@ -37,7 +37,7 @@ test('HTML prioritizes content, deduplicates GitHub originals, and discovers que
  const filtered=await browsePage('https://example.com/index.json',0,undefined,reader,'鲸鱼42');assert.equal(filtered.totalImages,1);
 });
 test('QQ completes ten new downloads, classifications and deliveries; one failed download does not discard successes',async t=>{
- const f=fixture({qqTransport:'onebot',privateUsers:['20002'],bufferMs:10000,search:true,dailyTokens:1000000,groupDailyTokens:1000000,maxOutputTokens:768});
+ const f=fixture({qqTransport:'onebot',privateUsers:['20002'],bufferMs:10000,search:true,dailyCny:5,groupDailyCny:0,maxOutputTokens:768});
  const bytes=await Promise.all(Array.from({length:10},(_,i)=>sharp({create:{width:20+i,height:20,channels:3,background:{r:20*i,g:30,b:50}}}).webp().toBuffer()));
  t.mock.method(dns,'lookup',async()=>[{address:'1.1.1.1',family:4}]);
  t.mock.method(https,'get',(url:URL,_opts:any,cb:any)=>{
@@ -66,7 +66,7 @@ test('QQ completes ten new downloads, classifications and deliveries; one failed
  finally{await bot.stop();f.cleanup();}
 });
 test('truncated native JSON is recorded and retried in smaller batches without executing partial calls',async()=>{
- const f=fixture({dailyTokens:1000000,groupDailyTokens:1000000});let calls=0;const spoken:string[]=[];
+ const f=fixture({dailyCny:5,groupDailyCny:0});let calls=0;const spoken:string[]=[];
  const provider:Model={kind:'fixture',async complete(messages){if(++calls===1)throw new ModelResponseError('DEEPSEEK_TOOL_OUTPUT_TRUNCATED',{input:20,output:20},{finishReason:'length',toolCount:1,issues:['incomplete JSON'],response:{tool_calls:[]}});assert.ok(messages.some(m=>m.role==='system'&&String(m.content).includes('尚未执行')));return {text:'继续聊。',usage:{input:20,output:10}};}};
  const tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),transport:Transport={status:'test',send:async(_m,t)=>{spoken.push(t);},file:async()=>{},stop(){}};
  const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),tasks,new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport);

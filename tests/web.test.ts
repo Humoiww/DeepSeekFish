@@ -124,7 +124,7 @@ test('WebUI budget is checked before HTTP, no-key requests cost nothing, and QQ 
   let calls=0;const http=(async()=>{calls++;return reply({content:'hello'});}) as typeof fetch;
   const w=web(false,http);try{
     const s=w.app.createSession();await assert.rejects(w.app.chat(s.id,'hello','chat',new AbortController().signal,()=>{}),/KEY_MISSING/);assert.equal(calls,0);
-    w.app.configure({apiKey:'fixture-key',dailyTokens:1000});await w.app.chat(s.id,'hello','chat',new AbortController().signal,()=>{});assert.equal(calls,0);assert.equal(w.app.detail(s.id).turns[0].answer,'TOKEN_BUDGET_EXHAUSTED');
+    w.app.configure({apiKey:'fixture-key',dailyCny:0});await w.app.chat(s.id,'hello','chat',new AbortController().signal,()=>{});assert.equal(calls,0);assert.equal(w.app.detail(s.id).turns[0].answer,'CNY_BUDGET_EXHAUSTED');
     const lease=w.f.ledger.reserve('codex','web:'+s.id,'webui-local');
     new Tasks(w.f.root,w.f.store,w.f.ledger,w.f.cfg,new MockTaskRunner()).recover();
     const row:any=w.f.store.db.prepare('SELECT state FROM reservations WHERE id=?').get(lease);assert.equal(row.state,'held');

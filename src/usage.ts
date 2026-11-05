@@ -1,7 +1,7 @@
 import type {Usage} from './types.js';
 
 const tokens=(v:unknown):v is number=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0;
-/** Optional cache telemetry must never change settlement or reject a valid completion. */
+/** Normalize optional cache telemetry; missing or inconsistent splits stay unknown. */
 export function inputCache(input:number,hit:unknown,miss:unknown):Pick<Usage,'cachedInput'|'uncachedInput'>{
   if(!tokens(input)||hit==null&&miss==null)return {};
   if(hit!=null&&!tokens(hit)||miss!=null&&!tokens(miss))return {};

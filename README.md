@@ -180,7 +180,7 @@ npm run cli -- set enabled false
 npm run cli -- set autonomous true
 npm run cli -- set search true
 npm run cli -- set codex true
-npm run cli -- set dailyTokens 1000000
+npm run cli -- set dailyCny 5
 npm run cli -- history 群OPENID
 npm run cli -- clear 群OPENID
 npm run cli -- cancel 任务UUID
@@ -257,4 +257,4 @@ QQ 登录状态复用见 [QQ 接入](docs/qq-onebot.md)，说说序号与配图�
 
 QQ 自主联网已接入 DeepSeek 官方 Search / Fetch：每轮均可选择搜索或读取网页，不依赖关键词与固定开场白。WebUI「连接与设置 → 允许自主联网」同时控制 QQ 与网页助手，保存后下一轮生效。
 
-QQ 现可自主浏览网页、下载原图、看图后收藏表情并交给 GPT。联网费用折算进既有 token 预算，不再另设联网次数额度。独立知识库由肥鱼后台按条维护，每轮完整注入，使用官方 tokenizer 严格限制为 5000 tokens。操作与迁移见 [自主联网和知识库](docs/web-knowledge.md)。
+QQ 现可自主浏览网页、下载原图、看图后收藏表情并交给 GPT。联网费用按人民币计入每日共享费用额度（默认 ¥5），不再另设联网次数额度。独立知识库由肥鱼后台按条维护，每轮完整注入，使用官方 tokenizer 严格限制为 5000 tokens。操作与迁移见 [自主联网和知识库](docs/web-knowledge.md)。

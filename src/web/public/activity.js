@@ -84,7 +84,8 @@
         summary.append(node('span','activity-step-number',String(i+1)),title);
         if(e.state)summary.append(tag(e.state));step.append(summary);if(e.state==='failed')step.open=true;
         if(e.decision?.actions.length>1)step.append(node('p','activity-step-meta','共享动作：'+e.decision.actions.map(n=>toolNames[n]||n).join('、')+'。接口未提供各动作单独占用的 token。'));
-        if(e.result?.billing)step.append(node('p','activity-step-meta','联网请求 '+e.result.billing.requests+' 次 · 折算 '+number(e.result.billing.chargedTokens)+' token'+(e.result.billing.cached?' · 缓存命中':'')+(e.result.billing.uncertain?' · 费用未确认，保留预留量':'')));
+        if(e.type==='tool'&&e.result?.billing)step.append(node('p','activity-step-meta','联网请求 '+e.result.billing.requests+' 次 · '+(e.result.billing.chargedCny!==undefined?'¥'+e.result.billing.chargedCny.toFixed(6):'旧账本折算 '+number(e.result.billing.chargedTokens)+' token')+(e.result.billing.cached?' · 缓存命中':'')+(e.result.billing.uncertain?' · 费用未确认，保留预留量':'')));
+        if(e.type==='model'&&e.result?.billing){const b=e.result.billing;step.append(node('p','activity-step-meta','本次费用 ¥'+b.amountCny.toFixed(6)+' · '+({confirmed:'按返回用量计费',estimated:'估算',held:'预留',unknown:'费用未确认',refunded:'未计费'}[b.status]||b.status)));}
         if(e.type==='tool')step.append(node('p','activity-step-meta','以上为 DeepSeek 决策调用用量；搜索、GPT 生图等工具的独立服务费用不算作这里的对话 token。'));
         if(e.round!==undefined||e.at)step.append(node('p','activity-step-meta',(e.round!==undefined?'第 '+(e.round+1)+' 轮':'')+(e.at?' · '+date(e.at):'')));
         if(e.durationMs!==undefined)step.append(node('p','activity-step-meta','耗时 '+(e.durationMs/1000).toFixed(2)+' 秒'));

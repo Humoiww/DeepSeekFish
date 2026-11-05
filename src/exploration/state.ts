@@ -9,7 +9,7 @@ export type ExplorationSettings={enabled:boolean;owner:string;minMinutes:number;
 export const explorationDefaults:ExplorationSettings={enabled:false,owner:'',minMinutes:9,maxMinutes:11,probability:0.028,maxRunMinutes:60,runTokens:0,allowImages:false,allowPublicPosts:false};
 export const interval=(s:ExplorationSettings,rng=random)=>Math.round((s.minMinutes+(s.maxMinutes-s.minMinutes)*rng())*60000);
 export const expectedPerDay=(s:ExplorationSettings)=>1440/((s.minMinutes+s.maxMinutes)/2)*s.probability;
-export type ExplorationRun={id:string;owner:string;trigger:string;state:string;created:number;started:number|null;finished:number|null;lease:number;lock:string|null;error:string|null;tokens:number;web_tokens:number;unknown_tokens:number;shared:number;note:string|null;cancel:number};
+export type ExplorationRun={id:string;owner:string;trigger:string;state:string;created:number;started:number|null;finished:number|null;lease:number;lock:string|null;error:string|null;tokens:number;web_tokens:number;web_nano:number;unknown_tokens:number;shared:number;note:string|null;cancel:number};
 const active="state IN ('queued','running')";
 export class ExplorationState{
   constructor(public store:Store,private cfg:()=>Config,private now=Date.now,private rng=random){
@@ -23,7 +23,7 @@ export class ExplorationState{
       CREATE TABLE IF NOT EXISTS curiosity_revisions(seq INTEGER PRIMARY KEY,id TEXT NOT NULL,run_id TEXT NOT NULL,version INTEGER NOT NULL,at INTEGER NOT NULL,entry TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS exploration_proposals(task_id TEXT PRIMARY KEY,run_id TEXT NOT NULL,created INTEGER NOT NULL);`);
     store.db.exec('CREATE TABLE IF NOT EXISTS exploration_observations(run_id TEXT NOT NULL,step INTEGER NOT NULL,tool TEXT NOT NULL,data TEXT NOT NULL,at INTEGER NOT NULL,PRIMARY KEY(run_id,step))');
-    store.transaction(()=>{for(const column of ['web_tokens','unknown_tokens'])if(!store.db.prepare('PRAGMA table_info(exploration_runs)').all().some((c:any)=>c.name===column))store.db.exec('ALTER TABLE exploration_runs ADD COLUMN '+column+' INTEGER NOT NULL DEFAULT 0');});
+    store.transaction(()=>{for(const column of ['web_tokens','unknown_tokens','web_nano'])if(!store.db.prepare('PRAGMA table_info(exploration_runs)').all().some((c:any)=>c.name===column))store.db.exec('ALTER TABLE exploration_runs ADD COLUMN '+column+' INTEGER NOT NULL DEFAULT 0');});
   }
   settings():ExplorationSettings{
     const configured=JSON.parse(this.store.getMeta('exploration:settings')??'{}'),users=this.cfg().privateUsers;

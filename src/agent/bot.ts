@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { conversationAllowed,type Config } from '../config.js';
 import { Store, redact } from '../storage/db.js';
-import { Ledger,TokenBudgetError } from '../budget/ledger.js';
+import { Ledger,BudgetError } from '../budget/ledger.js';
 import { SocialGate } from '../social/gate.js';
 import { BudgetedModel,ModelResponseError,modelPayload } from './model.js';
 import {traceModel} from './model-trace.js';
@@ -355,7 +355,7 @@ export class Bot {
         }
       }catch(e){traceState='failed';trace.push({error:codeOf(e),phase:'turn',diagnostic:errorDiagnostic(e),at:Date.now()});throw e;}finally{finishedAt=Date.now();if(traceState==='running')traceState='completed';saveTrace();}
       this.gate.record(last.group);this.store.audit('speech',last.group,reason);
-    }catch(e){this.store.audit('error',last.group,JSON.stringify(errorDiagnostic(e)));if(!spontaneous&&this.accepting)await this.send(last,e instanceof TokenBudgetError?e.notice:'当前无法回答：'+codeOf(e));}
+    }catch(e){this.store.audit('error',last.group,JSON.stringify(errorDiagnostic(e)));if(!spontaneous&&this.accepting)await this.send(last,e instanceof BudgetError?e.notice:'当前无法回答：'+codeOf(e));}
     finally{if(lease)this.ledger.settle(lease);}
   }
   private async send(m:Message,text:string):Promise<void>{

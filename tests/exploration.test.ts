@@ -22,7 +22,7 @@ import {FishError,type Model,type ModelResult,type ChatMessage} from '../src/typ
 const call=(id:string,name:string,args:any):ModelResult=>({text:'',tool_calls:[{id,type:'function',function:{name,arguments:JSON.stringify(args)}}],usage:{input:100,output:20,cachedInput:60,uncachedInput:40}});
 const quiet=():ModelResult=>({...call('finish','finish_exploration',{note:'先歇会儿。'}),usage:{input:100,output:5,cachedInput:80,uncachedInput:20}});
 function setup(){
- const f=fixture({enabled:true,qqTransport:'onebot',privateUsers:['20002'],admins:['20002'],search:true,dailyTokens:10000000,groupDailyTokens:10000000,userDailyRequests:1000}),state=new ExplorationState(f.store,f.cfg);
+ const f=fixture({enabled:true,qqTransport:'onebot',privateUsers:['20002'],admins:['20002'],search:true,dailyCny:5,groupDailyCny:0,userDailyRequests:1000}),state=new ExplorationState(f.store,f.cfg);
  f.store.db.exec('CREATE TABLE IF NOT EXISTS qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT,PRIMARY KEY(conversation,message_id))');
  let sent=0,failure=false;const deliveries:any[]=[],queries:string[]=[],visited:string[]=[];
  const transport={status:'mock',async file(){throw Error('unexpected file');},async stop(){},async send(m:any,text:string){sent++;if(failure)throw new FishError('ONEBOT_ACTION_TIMEOUT');deliveries.push({m,text});},async meme(m:any,image:any){sent++;deliveries.push({m,image});}};
@@ -181,7 +181,7 @@ test('one actual OS process claims the run, a restarted process observes durable
 test('per-action network charges reuse the ledger; cached calls cost zero, failures preserve unknown charges',async()=>{
  const f=setup();const {SearchService}=await import('../src/search/provider.js');let requests=0;const search=new SearchService({async search(){requests++;if(requests===2)throw new FishError('NETWORK_TIMEOUT');return [{title:'one',url:'https://example.com/one',snippet:'one'}];}},f.ledger,f.cfg);
  try{f.state.manual();const active=f.state.claim()!,tools=new ExplorationTools({...f.services,search,state:f.state,readRun:()=>({})},active,new TurnContext(),new AbortController().signal);
- const a=await tools.execute('search_web',{query:'a'},'a'),cached=await tools.execute('search_web',{query:'a'},'b'),failed=await tools.execute('search_web',{query:'b'},'c');assert.equal(a.result.billing.chargedTokens,2500);assert.equal(cached.result.billing.chargedTokens,0);assert.equal(failed.result.billing.uncertain,true);assert.equal(failed.result.error,'NETWORK_TIMEOUT');assert.equal(f.state.get(active.id).web_tokens,5000);assert.equal(f.ledger.value('tokens'),5000);assert.equal(requests,2);
+ const a=await tools.execute('search_web',{query:'a'},'a'),cached=await tools.execute('search_web',{query:'a'},'b'),failed=await tools.execute('search_web',{query:'b'},'c');assert.equal(a.result.billing.chargedCny,0.005);assert.equal(cached.result.billing.chargedCny,0);assert.equal(failed.result.billing.uncertain,true);assert.equal(failed.result.error,'NETWORK_TIMEOUT');assert.equal(f.state.get(active.id).web_nano,10000000);assert.equal(f.ledger.costSummary().used,0.01);assert.equal(requests,2);
  }finally{f.cleanup();}
 });
 

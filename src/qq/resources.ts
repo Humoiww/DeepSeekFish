@@ -1,17 +1,15 @@
 import { networkPricing } from '../budget/pricing.js';
-import { dayKey,Ledger,conversationTokenLimit } from '../budget/ledger.js';
+import { dayKey,Ledger } from '../budget/ledger.js';
 import type { Config } from '../config.js';
 import { PROJECT_TIMEZONE } from '../time.js';
 
 export function qqResources(cfg:Config,ledger:Ledger,conversation:string,user:string){
-  const used=ledger.value('tokens'),conversationUsed=ledger.value('tokens','g:'+conversation),imagesUsed=ledger.value('image');
-  const conversationDaily=conversationTokenLimit(cfg,conversation);
+  const energy=ledger.costSummary(),conversationBudget=ledger.costSummary(conversation),imagesUsed=ledger.value('image');
   const dailyRemaining=Math.max(0,cfg.imageDaily-imagesUsed);
   return {day:dayKey(),timezone:PROJECT_TIMEZONE,
-    energy:{unit:'token',daily:cfg.dailyTokens,used,remaining:Math.max(0,cfg.dailyTokens-used),
-      conversationDaily,conversationRemaining:Math.max(0,Math.min(cfg.dailyTokens-used,conversationDaily-conversationUsed)),
+    energy:{unit:'CNY',...energy,conversationDaily:conversationBudget.daily,conversationRemaining:conversationBudget.remaining,
       requestsRemaining:Math.max(0,cfg.userDailyRequests-ledger.value('requests','u:'+user))},
-    web:{enabled:cfg.search,requests:ledger.value('search'),chargedTokens:ledger.value('webTokens'),budget:'energy',...networkPricing(cfg.model)},
+    web:{enabled:cfg.search,requests:ledger.value('search'),budget:'energy',...networkPricing(cfg.model)},
     images:{collaborator:'GPT小姐',enabled:cfg.images,daily:cfg.imageDaily,used:imagesUsed,
       remaining:dailyRemaining,
       busy:!!ledger.store.db.prepare("SELECT id FROM reservations WHERE kind='codex' AND state='held'").get()}};

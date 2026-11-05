@@ -36,7 +36,7 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
   let config=validateConfig({...base,...qqBase,...JSON.parse(store.getMeta('settings')??'{}'),...override});
   if(process.env.FISH_CODEX_IMAGE_ONLY==='1')config.codex=false;
   if(mock)config={...config,groups:config.groups.length?config.groups:['demo-group'],admins:config.admins.length?config.admins:['demo-admin']};
-  const cfg=()=>{const saved=readQQSettings(root),{enabled,...options}=saved,shared=JSON.parse(store.getMeta('settings')??'{}');return validateConfig({...config,...options,...Object.fromEntries(['search','dailyTokens','groupDailyTokens'].filter(k=>shared[k]!==undefined).map(k=>[k,shared[k]])),enabled:config.enabled&&enabled!==false,codex:process.env.FISH_CODEX_IMAGE_ONLY==='1'?false:config.codex});};
+  const cfg=()=>{const saved=readQQSettings(root),{enabled,...options}=saved,shared=JSON.parse(store.getMeta('settings')??'{}');return validateConfig({...config,...options,...Object.fromEntries(['search','dailyCny','groupDailyCny'].filter(k=>shared[k]!==undefined).map(k=>[k,shared[k]])),enabled:config.enabled&&enabled!==false,codex:process.env.FISH_CODEX_IMAGE_ONLY==='1'?false:config.codex});};
   const key=mock?'':deepseekCredential(root);
   const ledger=new Ledger(store,cfg),provider=mock?new MockModel():new DeepSeekModel(key,cfg);
   const model=new BudgetedModel(provider,ledger,cfg);
@@ -68,7 +68,7 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
   function set(key:string,value:unknown):void{
     if(key==='codex'&&value===true&&process.env.FISH_CODEX_IMAGE_ONLY==='1')throw new FishError('CODEX_IMAGE_ONLY');
     // Permission lists and resource boundaries are deployment config only.
-    if(!['enabled','autonomous','autoReply','search','codex','images','dailyTokens','groupDailyTokens','userDailyRequests','maxOutputTokens','codexDaily','codexDailyMs','probability','activity','cooldownMs','dailyInterjections','maxChars','quietHours'].includes(key))throw new FishError('SETTING_NOT_MUTABLE');
+    if(!['enabled','autonomous','autoReply','search','codex','images','dailyCny','groupDailyCny','userDailyRequests','maxOutputTokens','codexDaily','codexDailyMs','probability','activity','cooldownMs','dailyInterjections','maxChars','quietHours'].includes(key))throw new FishError('SETTING_NOT_MUTABLE');
     config=validateConfig({...config,[key]:value});
     const saved=JSON.parse(store.getMeta('settings')??'{}');saved[key]=value;store.setMeta('settings',JSON.stringify(saved));
     if((key==='enabled'||key==='codex')&&value===false)void tasks.stop();
@@ -87,8 +87,8 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
     deepseek:{provider:provider.kind,model:config.model,credentialPresent:!!key,status:store.getMeta('modelStatus')??'not probed'},
     codex:{enabled:config.codex,provider:mock?'mock':'official-app-server',unattended:false,localApprovalRequired:true,
       projectLoginPresent:projectLoginPresent(),isolation:mock?'mock only':boundaryStatus(root)},
-    features:{autonomous:config.autonomous,search:cfg().search,images:config.images},web:{enabled:cfg().search,requests:ledger.value('search'),chargedTokens:ledger.value('webTokens'),budget:'tokens',...networkPricing(cfg().model)},
-    budgets:{dailyTokens:cfg().dailyTokens,groupDailyTokens:cfg().groupDailyTokens,maxOutputTokens:config.maxOutputTokens,usage:ledger.snapshot(),fault:store.getMeta('budgetFault')??null},
+    features:{autonomous:config.autonomous,search:cfg().search,images:config.images},web:{enabled:cfg().search,requests:ledger.value('search'),budget:'CNY',...networkPricing(cfg().model)},
+    budgets:{cost:ledger.costSummary(),dailyCny:cfg().dailyCny,groupDailyCny:cfg().groupDailyCny,maxOutputTokens:config.maxOutputTokens,usage:ledger.snapshot(),fault:store.getMeta('budgetFault')??null},
     groups:cfg().groups.map(group=>({group,ordinaryMessages:store.getMeta('qqOrdinary:'+group)?'observed':'unverified; mention-only capability assumed'})),
     groupCount:cfg().groups.length,tasks:tasks.list().map(t=>({id:t.id,group:t.grp,state:t.state,created:t.created,result:t.result})),
     recent:store.db.prepare('SELECT at,kind,grp,detail FROM audit ORDER BY id DESC LIMIT 30').all()});

@@ -1,6 +1,6 @@
 import type { ChatMessage, Model, ModelResult,CompletionOptions } from '../types.js';
 import { FishError,type Usage } from '../types.js';
-import { Ledger,conversationTokenLimit } from '../budget/ledger.js';
+import { Ledger,BudgetError } from '../budget/ledger.js';
 import type { Config } from '../config.js';
 import { redact } from '../storage/db.js';
 import { recordPrompt } from '../prompt-record.js';
@@ -114,14 +114,12 @@ export class BudgetedModel {
     let id:string;
     try{id=this.ledger.reserve('model',group,user,bound,max);}
     catch(e){
-      if(e instanceof FishError&&e.code==='TOKEN_BUDGET_EXHAUSTED'){
-        const cfg=this.cfg(),dailyUsed=this.ledger.value('tokens'),conversationUsed=this.ledger.value('tokens','g:'+group),requestsUsed=this.ledger.value('requests','u:'+user),conversationLimit=conversationTokenLimit(cfg,group);
-        const reason=max>cfg.maxOutputTokens?'output':dailyUsed+bound+max>cfg.dailyTokens?'daily':conversationUsed+bound+max>conversationLimit?'conversation':'requests';
-        this.ledger.store.audit('budget-denied',group,JSON.stringify({reason,inputReservation:bound,outputReservation:max,dailyUsed,dailyLimit:cfg.dailyTokens,conversationUsed,conversationLimit,requestsUsed,requestsLimit:cfg.userDailyRequests}));
+      if(e instanceof BudgetError){
+        this.ledger.store.audit('budget-denied',group,JSON.stringify({reason:e.reason,scope:e.scope,currency:'CNY',remainingCny:e.remaining,requiredCny:e.required,inputReservation:bound,outputReservation:max,budget:this.ledger.costSummary(group)}));
       }
       throw e;
     }
-    try { options.onReservation?.({id,reservedTokens:bound+max});recordPrompt(this.ledger.store,user==='exploration'?'exploration':user==='daily-qzone'?'daily':user==='daily-news'?'news':user==='memory-review'?'memory':'qq',modelPayload(this.cfg(),messages,max,options));const r=await this.provider.complete(messages,max,options);this.ledger.settle(id,r.usage);this.ledger.store.setMeta('modelStatus','last call succeeded');return r; }
-    catch(e) { this.ledger.settle(id,e instanceof ModelResponseError?e.usage:undefined);if(e instanceof ModelResponseError){this.ledger.store.setMeta('model:last-invalid',redact(JSON.stringify({at:Date.now(),code:e.code,...e.diagnostic})));this.ledger.store.audit('model-invalid',group,JSON.stringify({code:e.code,issues:e.diagnostic.issues,finishReason:e.diagnostic.finishReason}));}this.ledger.error();this.ledger.store.setMeta('modelStatus','last call failed');throw e; }
+    try { options.onReservation?.({id,reservedTokens:bound+max,reservedCny:this.ledger.receipt(id)?.amountCny});recordPrompt(this.ledger.store,user==='exploration'?'exploration':user==='daily-qzone'?'daily':user==='daily-news'?'news':user==='memory-review'?'memory':'qq',modelPayload(this.cfg(),messages,max,options));const r=await this.provider.complete(messages,max,options);this.ledger.settle(id,r.usage);this.ledger.store.setMeta('modelStatus','last call succeeded');return {...r,billing:this.ledger.receipt(id)}; }
+    catch(e) { this.ledger.settle(id,e instanceof ModelResponseError?e.usage:undefined);if(e instanceof Error)Object.assign(e,{billing:this.ledger.receipt(id)});if(e instanceof ModelResponseError){this.ledger.store.setMeta('model:last-invalid',redact(JSON.stringify({at:Date.now(),code:e.code,...e.diagnostic})));this.ledger.store.audit('model-invalid',group,JSON.stringify({code:e.code,issues:e.diagnostic.issues,finishReason:e.diagnostic.finishReason}));}this.ledger.error();this.ledger.store.setMeta('modelStatus','last call failed');throw e; }
   }
 }

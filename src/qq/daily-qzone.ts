@@ -16,7 +16,7 @@ import { PROJECT_TIMEZONE,projectDay,projectDayStart,DAY_MS } from '../time.js';
 
 export interface DailySettings {enabled:boolean;owner:string;startsOn:string;timezone:typeof PROJECT_TIMEZONE}
 interface DailyRow {day:string;self:string;state:string;draft:string|null;image_key:string|null;image_id:string|null;photo:string|null;post_id:string|null;url:string|null;error:string|null;updated:number;lease:number;lock:string|null;refreshed:number;attempts:number}
-const safeRetry=new Set(['IMAGE_BUDGET_EXHAUSTED','CODEX_BUDGET_EXHAUSTED','CODEX_TIME_BUDGET','CODEX_BUSY','TOKEN_BUDGET_EXHAUSTED','QZONE_LOGIN_REQUIRED','CODEX_QUOTA_CONFIRM_REQUIRED']);
+const safeRetry=new Set(['IMAGE_BUDGET_EXHAUSTED','CODEX_BUDGET_EXHAUSTED','CODEX_TIME_BUDGET','CODEX_BUSY','CNY_BUDGET_EXHAUSTED','QZONE_LOGIN_REQUIRED','CODEX_QUOTA_CONFIRM_REQUIRED']);
 const imageLookup=new Set(['QQ_IMAGE_BROKER_UNAVAILABLE','DAILY_QZONE_IMAGE_UNCONFIRMED']);
 export function dailySettings(root:string):DailySettings|undefined{
   const file=safePath(root,'runtime/data/daily-qzone.json');if(!fs.existsSync(file))return;

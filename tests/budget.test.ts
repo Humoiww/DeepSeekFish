@@ -7,42 +7,35 @@ import { Store } from '../src/storage/db.js';
 import { Ledger, dayKey } from '../src/budget/ledger.js';
 import { MockModel, BudgetedModel } from '../src/agent/model.js';
 import { qqResources } from '../src/qq/resources.js';
-test('QQ private chats use the global daily allowance while groups, request limits and actual usage remain enforced',async()=>{
-  const f=fixture({dailyTokens:80000,groupDailyTokens:30000,maxOutputTokens:256,userDailyRequests:30});
-  try{
-    const group='private:20002';f.ledger.add('tokens',24000);f.ledger.add('tokens',24000,'g:'+group);
-    const provider=new MockModel(),model=new BudgetedModel(provider,f.ledger,f.cfg);
-    // Synthetic limits: crossing 30k works privately, while 80k remains the ceiling.
-    const lease=f.ledger.reserve('model',group,'20002',8000,256);f.ledger.settle(lease,{input:500,output:50});
-    assert.equal(f.ledger.value('tokens'),24550);
-    const resources=qqResources(f.cfg(),f.ledger,group,'20002');assert.equal(resources.energy.daily,80000);assert.equal(resources.energy.conversationDaily,80000);assert.equal(resources.energy.conversationRemaining,55450);
-    f.ledger.add('tokens',29000,'g:g');assert.throws(()=>f.ledger.reserve('model','g','20002',1001,0),/TOKEN_BUDGET_EXHAUSTED/);
-    f.ledger.add('tokens',54000);await assert.rejects(model.call(group,'20002',[{role:'user',content:'hello'}]),/TOKEN_BUDGET_EXHAUSTED/);assert.equal(provider.calls,0);
-    const denial=f.store.db.prepare("SELECT detail FROM audit WHERE kind='budget-denied' ORDER BY id DESC LIMIT 1").get() as any;
-    assert.equal(JSON.parse(denial.detail).reason,'daily');assert.ok(JSON.parse(denial.detail).inputReservation>0);
-  }finally{f.cleanup();}
+test('QQ private shares global CNY while per-group cash caps and denial diagnostics are explicit',async()=>{
+ const f=fixture({dailyCny:0.08,groupDailyCny:0.03,maxOutputTokens:256});try{
+  const group='private:20002';for(const scope of ['*','g:'+group])f.ledger.add('costNano',30000000,scope);
+  const lease=f.ledger.reserve('model',group,'20002',8000,256);f.ledger.settle(lease,{input:500,output:50,cachedInput:400,uncachedInput:100});
+  const resources=qqResources(f.cfg(),f.ledger,group,'20002');assert.equal(resources.energy.daily,0.08);assert.equal(resources.energy.conversationDaily,0.08);assert.ok(resources.energy.conversationRemaining>0.049);
+  f.ledger.add('costNano',29000000,'g:g');assert.throws(()=>f.ledger.reserve('model','g','20002',1001,0),/CNY_BUDGET_EXHAUSTED/);
+  f.set({dailyCny:0});const provider=new MockModel(),model=new BudgetedModel(provider,f.ledger,f.cfg);
+  await assert.rejects(model.call(group,'20002',[{role:'user',content:'hello'}]),/CNY_BUDGET_EXHAUSTED/);assert.equal(provider.calls,0);
+  const denial=JSON.parse((f.store.db.prepare("SELECT detail FROM audit WHERE kind='budget-denied' ORDER BY id DESC LIMIT 1").get() as any).detail);
+  assert.equal(denial.reason,'cost');assert.equal(denial.scope,'daily');assert.ok(denial.requiredCny>0);
+ }finally{f.cleanup();}
 });
-test('global/group/user budget checked BEFORE provider; actual usage settles and survives reopen',async()=>{
-  const f=fixture({dailyTokens:20000,groupDailyTokens:15000,userDailyRequests:1});
-  try{
-    const provider=new MockModel(),model=new BudgetedModel(provider,f.ledger,f.cfg);
-    await model.call('g','admin',[{role:'user',content:JSON.stringify({messages:[{text:'hello'}]})}]);
-    await assert.rejects(model.call('g','admin',[{role:'user',content:'{}'}]),/TOKEN_BUDGET/);
-    assert.equal(provider.calls,1);assert.ok(f.ledger.value('input')>0);
-    const second=new Store(f.root),ledger=new Ledger(second,f.cfg);
-    assert.equal(ledger.value('tokens'),f.ledger.value('input')+f.ledger.value('output'));second.close();
-    f.set({dailyTokens:1});await assert.rejects(model.call('g','new',[{role:'user',content:'{}'}]),/TOKEN_BUDGET/);assert.equal(provider.calls,1);
-  }finally{f.cleanup();}
+test('cash/request limits precheck provider, actual usage settles and survives reopen',async()=>{
+ const f=fixture({dailyCny:1,groupDailyCny:0.5,userDailyRequests:1});try{
+  const provider=new MockModel(),model=new BudgetedModel(provider,f.ledger,f.cfg);
+  const result=await model.complete('g','admin',[{role:'user',content:'hello'}]);
+  await assert.rejects(model.call('g','admin',[{role:'user',content:'{}'}]),/DAILY_REQUEST_LIMIT/);
+  assert.equal(provider.calls,1);assert.ok(result.billing!.amountCny>0);
+  const second=new Store(f.root);try{const ledger=new Ledger(second,f.cfg);assert.deepEqual(ledger.receipt(result.billing!.reservationId),result.billing);assert.equal(ledger.value('tokens'),f.ledger.value('input')+f.ledger.value('output'));}finally{second.close();}
+  f.set({dailyCny:0});await assert.rejects(model.call('g','new',[{role:'user',content:'{}'}]),/CNY_BUDGET/);assert.equal(provider.calls,1);
+ }finally{f.cleanup();}
 });
-test('separate worker connections cannot overbook atomic reservations',async()=>{
-  const f=fixture({dailyTokens:200,groupDailyTokens:200,userDailyRequests:100});
-  const workers=Array.from({length:4},()=>new Worker(new URL('./budget-worker.js',import.meta.url),{workerData:{root:f.root,config:f.cfg()}}));
-  try{
-    await Promise.all(workers.map(w=>once(w,'message')));
-    const results=workers.map(w=>once(w,'message'));workers.forEach(w=>w.postMessage('go'));
-    const accepted=(await Promise.all(results)).reduce((sum,[n])=>sum+Number(n),0);
-    assert.equal(accepted,10);assert.equal(f.ledger.value('tokens'),200);
-  }finally{await Promise.all(workers.map(w=>w.terminate()));f.cleanup();}
+test('four processes cannot overbook the cash allowance, including off-peak reservation',async()=>{
+ const f=fixture({dailyCny:0.001,groupDailyCny:0,userDailyRequests:100});
+ const workers=Array.from({length:4},()=>new Worker(new URL('./budget-worker.js',import.meta.url),{workerData:{root:f.root,config:f.cfg()}}));
+ try{
+  await Promise.all(workers.map(w=>once(w,'message')));const results=workers.map(w=>once(w,'message'));workers.forEach(w=>w.postMessage('go'));
+  assert.equal((await Promise.all(results)).reduce((sum,[n])=>sum+Number(n),0),10);assert.equal(f.ledger.costSummary().used,0.001);assert.equal(f.ledger.value('tokens'),200);
+ }finally{await Promise.all(workers.map(w=>w.terminate()));f.cleanup();}
 });
 test('errors retain held tokens; usage anomaly locks further calls; settlement is idempotent',()=>{
   const f=fixture();try{

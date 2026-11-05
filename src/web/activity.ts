@@ -59,7 +59,7 @@ function traceRecord(r:RecordItem,trace:any[]){
   let currentModel:Step|undefined;
   const diagnostic=(e:any)=>e.diagnostic??(e.diagnostics?.length?e.diagnostics:undefined)??(e.error==='INTERNAL_ERROR'?{missing:true,message:'旧版本只保存了 INTERNAL_ERROR，没有保留原始异常，无法从该记录恢复具体原因。'}:undefined);
   const recordModel=(e:any,calls:any[])=>{
-    currentModel={type:'model',name:'DeepSeek',modelCall:e.notRequested?undefined:r.usage.calls+1,round:e.round,at:e.startedAt,durationMs:e.durationMs,request:e.request,diagnostic:diagnostic(e),usage:e.notRequested?undefined:addUsage(r,e.usage),state:e.error?'failed':e.state??'completed',result:{text:e.assistant??e.text??'',finishReason:e.finishReason,error:e.error,responseId:e.responseId,reservation:e.reservation,notRequested:e.notRequested,toolCalls:calls?.map((c:any)=>c.function?.name??c.name)}};
+    currentModel={type:'model',name:'DeepSeek',modelCall:e.notRequested?undefined:r.usage.calls+1,round:e.round,at:e.startedAt,durationMs:e.durationMs,request:e.request,diagnostic:diagnostic(e),usage:e.notRequested?undefined:addUsage(r,e.usage),state:e.error?'failed':e.state??'completed',result:{text:e.assistant??e.text??'',finishReason:e.finishReason,error:e.error,responseId:e.responseId,billing:e.billing,reservation:e.reservation,notRequested:e.notRequested,toolCalls:calls?.map((c:any)=>c.function?.name??c.name)}};
     if(e.reservation?.state==='unknown')r.usage.unconfirmedTokens+=finite(e.reservation.reservedTokens??e.reservation.retainedTokens);
     r.events.push(currentModel);
   };

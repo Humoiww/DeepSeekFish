@@ -7,8 +7,8 @@ import { boundedJson } from '../agent/model.js';
 import { pageEvidence } from './evidence.js';
 
 export interface SearchResult { title:string; url:string; snippet:string; summary?:string; date?:string|null; siteName?:string|null; retrievedAt?:string }
-export type WebCharge={requests:number;chargedTokens:number;cached:boolean;uncertain?:boolean;reservationId?:string};
-export const searchEvidence=(results:SearchResult[])=>({source:'DeepSeek Search',evidence:'search_index',latestVerified:false,notice:'搜索排序不代表时间顺序；确认最新内容需读取原站列表及发布时间。',results});
+export type WebCharge={requests:number;chargedCny:number;cached:boolean;uncertain?:boolean;reservationId?:string};
+export const searchEvidence=(results:SearchResult[])=>({source:'DeepSeek Search',evidence:'search_index',latestVerified:false,notice:'搜索排序不代表时间顺序；确认最新内容需读取原站列表及发布时间。',results,billing:(results as any).billing});
 export interface FetchedPage {url:string;title:string;content:string;truncated:boolean;fetchedAt:string}
 export interface SearchProvider { search(query:string):Promise<SearchResult[]>;fetch?(url:string):Promise<FetchedPage> }
 /** No arbitrary URL fetching: only a fixed official API. IPv6 literals fail closed. */
@@ -85,19 +85,21 @@ export class SearchService {
     const content=page.content.slice(offset,offset+6000),nextOffset=offset+content.length<page.content.length?offset+content.length:null;
     return {...page,...pageEvidence(page.title,page.content),content,offset,totalCharacters:page.content.length,nextOffset,truncated:nextOffset!==null||page.truncated};
   }
-  private async cached<T>(identity:string,group:string,user:string,operation:()=>Promise<T>,fresh=false,charge?:(usage:WebCharge)=>void):Promise<T>{
+  private async cached<T extends object>(identity:string,group:string,user:string,operation:()=>Promise<T>,fresh=false,charge?:(usage:WebCharge)=>void):Promise<T>{
+    const withBilling=(result:T,billing:WebCharge):T=>Object.assign(Array.isArray(result)?[...result]:{...result},{billing}) as T;
+    const free:WebCharge={requests:0,chargedCny:0,cached:true};
     const key=createHash('sha256').update(identity).digest('hex');
     const cached=this.ledger.store.db.prepare('SELECT value FROM cache WHERE key=? AND expires>?').get(key,Date.now()) as any;
-    if(cached&&!fresh){charge?.({requests:0,chargedTokens:0,cached:true});return JSON.parse(cached.value);}
-    const running=this.pending.get(key);if(running){charge?.({requests:0,chargedTokens:0,cached:true});return running as Promise<T>;}
+    if(cached&&!fresh){charge?.(free);return withBilling(JSON.parse(cached.value),free);}
+    const running=this.pending.get(key);if(running){charge?.(free);return withBilling(await running as T,free);}
     const pending=(async()=>{
       const id=this.ledger.reserve('search',group,user);
       let billed:boolean|undefined;
       try{
         const result=await operation();billed=(result as any)?.billable??(Array.isArray(result)?result.length>0:!!(result as any)?.content?.trim());
         this.ledger.store.db.prepare('INSERT OR REPLACE INTO cache VALUES (?,?,?)').run(key,Date.now()+600000,JSON.stringify(result));
-        return result;
-      }catch(e){if(/^(SEARCH|FETCH)_HTTP_/.test(codeOf(e)))billed=false;this.ledger.error();throw e;}finally{this.ledger.settleSearch(id,billed);charge?.({requests:1,chargedTokens:billed===false?0:Number((this.ledger.store.db.prepare('SELECT input FROM reservations WHERE id=?').get(id) as any).input),cached:false,uncertain:billed===undefined,reservationId:id});}
+        return withBilling(result,{requests:1,chargedCny:billed?0.005:0,cached:false,reservationId:id});
+      }catch(e){if(/^(SEARCH|FETCH)_HTTP_/.test(codeOf(e)))billed=false;this.ledger.error();throw e;}finally{this.ledger.settleSearch(id,billed);charge?.({requests:1,chargedCny:this.ledger.receipt(id)?.amountCny??0,cached:false,uncertain:billed===undefined,reservationId:id});}
     })();
     this.pending.set(key,pending);try{return await pending;}finally{this.pending.delete(key);}
   }

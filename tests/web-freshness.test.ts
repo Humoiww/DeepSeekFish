@@ -6,16 +6,16 @@ import {SearchService,searchEvidence,type SearchProvider} from '../src/search/pr
 import {FishError,type ChatMessage} from '../src/types.js';
 import {inputBound,BudgetedModel} from '../src/agent/model.js';
 import {knowledgeTokens} from '../src/memory/knowledge.js';
-import {TokenBudgetError} from '../src/budget/ledger.js';
+import {BudgetError} from '../src/budget/ledger.js';
 
 test('search timestamps survive caching; explicit refresh is charged once; index is not latest evidence',async()=>{
- const f=fixture({search:true,dailyTokens:100000,groupDailyTokens:100000});let searches=0,reads=0;
+ const f=fixture({search:true,dailyCny:5,groupDailyCny:0});let searches=0,reads=0;
  const provider:SearchProvider={async search(){searches++;return [{title:'旧动态',url:'https://example.com/old',snippet:'旧文',date:'2026-04-29'}];},async fetch(url){reads++;return {url,title:'验证码',content:'',truncated:false,fetchedAt:'2026-11-01T00:00:00Z'};}};
  try{
   const service=new SearchService(provider,f.ledger,f.cfg),first=await service.search('动态','g','u');
   assert.ok(first[0].retrievedAt);assert.equal(searchEvidence(first).latestVerified,false);
-  assert.deepEqual(await service.search('动态','g','u'),first);assert.equal(searches,1);
-  await service.search('动态','g','u',true);assert.equal(searches,2);assert.equal(f.ledger.value('webTokens'),5000);
+  assert.deepEqual([...(await service.search('动态','g','u'))],[...first]);assert.equal(searches,1);
+  await service.search('动态','g','u',true);assert.equal(searches,2);assert.equal(f.ledger.costSummary().used,0.01);
   assert.equal((await service.fetch('https://example.com','g','u')).status,'challenge');
   await service.fetch('https://example.com','g','u');assert.equal(reads,1);
   await service.fetch('https://example.com','g','u',0,true);assert.equal(reads,2);
@@ -68,7 +68,7 @@ test('following-feed homepage identifies missing target instead of claiming a ta
  assert.equal(page.status,'target_account_required');assert.equal(page.latestVerified,false);assert.ok('notice' in page);assert.match(page.notice!,/数字UID/);
 });
 test('Chinese tool contexts fit remaining budget with official tokens, while actual usage and exhausted budget remain enforced',async()=>{
- const f=fixture({dailyTokens:1000000,groupDailyTokens:1000000,maxOutputTokens:256});
+ const f=fixture({dailyCny:5,groupDailyCny:0,maxOutputTokens:256});
  const messages:ChatMessage[]=[{role:'user',content:'这是公开网页里的中文文字与图片描述。'.repeat(1800)}];
  const bound=inputBound(messages),actual=knowledgeTokens(messages[0].content as string);
  assert.ok(bound>actual);assert.ok(bound<Buffer.byteLength(JSON.stringify(messages))*.65);
@@ -76,7 +76,7 @@ test('Chinese tool contexts fit remaining budget with official tokens, while act
   f.ledger.add('tokens',927529);f.ledger.add('tokens',927529,'g:g');let called=0;
   const provider={kind:'fixture',async complete(){called++;return {text:'收到',usage:{input:actual,output:2}};}};
   await new BudgetedModel(provider,f.ledger,f.cfg).call('g','u',messages);assert.equal(called,1);assert.equal(f.ledger.value('tokens'),927529+actual+2);assert.equal(f.store.getMeta('budgetFault'),undefined);
-  f.set({dailyTokens:f.ledger.value('tokens')});
-  assert.throws(()=>f.ledger.reserve('model','g','u',100,0),(e:any)=>e instanceof TokenBudgetError&&e.remaining===0&&e.notice.includes('00:00'));
+  f.set({dailyCny:f.ledger.costSummary().used});
+  assert.throws(()=>f.ledger.reserve('model','g','u',100,0),(e:any)=>e instanceof BudgetError&&e.remaining===0&&e.notice.includes('00:00'));
  }finally{f.cleanup();}
 });

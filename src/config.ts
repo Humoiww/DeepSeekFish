@@ -9,19 +9,18 @@ export interface Config {
   autonomous: boolean; autoReply: boolean; probability: number; activity: number;
   cooldownMs: number; dailyInterjections: number; windowSize: number; maxChars: number;
   quietHours: number[]; interests: string[]; bufferMs: number; historyHours: number;
-  dailyTokens: number; groupDailyTokens: number; userDailyRequests: number; maxOutputTokens: number;
+  dailyCny: number; groupDailyCny: number; userDailyRequests: number; maxOutputTokens: number;
   search: boolean; searchCount: number; searchTimeoutMs: number;
   codex: boolean; codexDaily: number; codexTimeoutMs: number; codexDailyMs: number;
   maxFiles: number; maxArtifactBytes: number; images: boolean; imageDaily: number;
   port: number; model: string; qqTransport:'official'|'onebot'; onebotUrl:string; privateUsers:string[];
 }
-export const MAX_DAILY_TOKENS=10_000_000;
 export const defaults: Config = {
   enabled: true, groups: [], admins: [], names: ['肥鱼', 'Deepseek'],
   autonomous: false, autoReply: false, probability: 0.02, activity: 0.5,
   cooldownMs: 480000, dailyInterjections: 12, windowSize: 20, maxChars: 600,
   quietHours: [0, 7], interests: ['AI', '编程', '游戏'], bufferMs: 1200, historyHours: 24,
-  dailyTokens: 1000000, groupDailyTokens: 0, userDailyRequests: 1000, maxOutputTokens: 256,
+  dailyCny: 5, groupDailyCny: 0, userDailyRequests: 1000, maxOutputTokens: 256,
   search: false, searchCount: 3, searchTimeoutMs: 10000,
   codex: false, codexDaily: 22, codexTimeoutMs: 300000, codexDailyMs: 6600000,
   maxFiles: 20, maxArtifactBytes: 10485760, images: false, imageDaily: 20,
@@ -29,14 +28,14 @@ export const defaults: Config = {
 };
 export function validateConfig(input: Record<string, unknown>): Config {
   // Ignore the obsolete per-day search count in existing installations.
-  const {searchDaily:_obsolete,...current}=input;input=current;
+  const {searchDaily:_obsolete,dailyTokens:_oldTokens,groupDailyTokens:_oldGroupTokens,...current}=input;input=current;
   const c = { ...defaults, ...input } as Config;
   for (const [k, v] of Object.entries(input)) {
     if (!(k in defaults) || typeof v !== typeof defaults[k as keyof Config]) throw new FishError('INVALID_CONFIG_' + k);
   }
   for (const [k, v] of Object.entries(c)) {
     if (typeof v === 'number' && (!Number.isFinite(v) || v < 0 ||
-      (!['probability', 'activity'].includes(k) && !Number.isInteger(v)))) throw new FishError('INVALID_CONFIG_' + k);
+      (!['probability', 'activity','dailyCny','groupDailyCny'].includes(k) && !Number.isInteger(v)))) throw new FishError('INVALID_CONFIG_' + k);
   }
   for (const key of ['groups', 'admins', 'names', 'interests', 'privateUsers'] as const) {
     if (!Array.isArray(c[key]) || !c[key].every(v => typeof v === 'string' && v.length > 0 && v.length <= 256)) throw new FishError('INVALID_CONFIG_' + key);
@@ -44,7 +43,7 @@ export function validateConfig(input: Record<string, unknown>): Config {
   c.names=triggerKeywords(c.names);
   if (!Array.isArray(c.quietHours) || c.quietHours.length !== 2 || !c.quietHours.every(v => Number.isInteger(v) && v >= 0 && v < 24) ||
     c.probability > 1 || c.activity > 1 || c.maxOutputTokens < 1 || c.maxOutputTokens > 4096 ||
-    c.dailyTokens > MAX_DAILY_TOKENS || c.groupDailyTokens > MAX_DAILY_TOKENS || c.windowSize < 1 || c.windowSize > 100 || c.maxChars < 32 || c.maxChars > 4000 ||
+    ![c.dailyCny,c.groupDailyCny].every(n=>Number.isSafeInteger(Math.round(n*1e9))) || c.windowSize < 1 || c.windowSize > 100 || c.maxChars < 32 || c.maxChars > 4000 ||
     c.searchCount < 1 || c.searchCount > 5 || c.codexTimeoutMs < 10 || c.codexTimeoutMs > 1800000 ||
     c.port < 1024 || c.port > 65535 || c.historyHours < 1 || c.historyHours > 168 || c.bufferMs > 10000 ||
     !/^[a-zA-Z0-9._-]{1,80}$/.test(c.model)) throw new FishError('INVALID_CONFIG');

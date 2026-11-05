@@ -96,7 +96,7 @@ export class ExplorationTools{
   if(name==='update_knowledge')return out(updateKnowledge(s.root,args));
   if(name==='search_web'||name==='fetch_page'){
     let billing:WebCharge|undefined;
-    const charged=(usage:WebCharge)=>{billing=usage;store.db.prepare('UPDATE exploration_runs SET web_tokens=web_tokens+? WHERE id=?').run(usage.chargedTokens,this.run.id);};
+    const charged=(usage:WebCharge)=>{billing=usage;store.db.prepare('UPDATE exploration_runs SET web_nano=web_nano+? WHERE id=?').run(Math.round(usage.chargedCny*1e9),this.run.id);};
     try{const result=name==='search_web'?searchEvidence(await s.search.search(args.query,m.group,'exploration',args.fresh,charged)):await s.search.fetch(args.url,m.group,'exploration',args.offset,args.fresh,charged);return out({...result,billing});}
     catch(e){this.diagnostics.push(errorDiagnostic(e));return out({error:codeOf(e),billing});}
   }

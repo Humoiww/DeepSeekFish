@@ -59,7 +59,7 @@ test('energy and image allowance come from live counters; the model composes the
   let round=0,f:ReturnType<typeof setup>;
   const client={status:async()=>qqResources(f.cfg(),f.ledger,'private:20002','20002')} as unknown as QQImageClient;
   const provider:Model={kind:'fixture',async complete(messages){round++;if(round===1)return {text:'',tool_calls:[call('get_quota',{})],usage:{input:100,output:20}};
-    const result=JSON.parse(String(messages.at(-1)!.content));assert.equal(result.images.remaining,17);assert.equal(result.energy.used,1354);
+    const result=JSON.parse(String(messages.at(-1)!.content));assert.equal(result.images.remaining,17);assert.equal(result.energy.unit,'CNY');assert.ok(result.energy.used>0);assert.equal(result.energy.tokens.input,100);assert.equal(result.energy.tokens.output,20);
     return {text:'还活蹦乱跳呢，今天还能找 GPT小姐画 17 张。',usage:{input:100,output:30}};
   }};
   f=setup(provider,undefined,client);f.ledger.add('image',3);f.ledger.add('tokens',1234);

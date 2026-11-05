@@ -59,8 +59,8 @@ test('web model has the same timeout diagnosis and budget denial is not a fabric
   const web=new WebModel(()=> 'fixture-key',f.cfg,f.ledger,false,(async()=>{throw new DOMException('timed out','TimeoutError');}) as typeof fetch),messages=[{role:'user' as const,content:'hello'}];
   await assert.rejects(traceModel(trace,()=>{},modelPayload(f.cfg(),messages,256),0,onReservation=>web.complete('web:test',messages,[],new AbortController().signal,false,onReservation)),/DEEPSEEK_TIMEOUT/);
   assert.equal(trace[0].reservation.state,'unknown');assert.equal(trace[0].diagnostic.cause.name,'TimeoutError');
-  f.set({dailyTokens:0});const denied:any[]=[];
-  await assert.rejects(traceModel(denied,()=>{},modelPayload(f.cfg(),messages,256),0,onReservation=>web.complete('web:test',messages,[],new AbortController().signal,false,onReservation)),/TOKEN_BUDGET/);
+  f.set({dailyCny:0});const denied:any[]=[];
+  await assert.rejects(traceModel(denied,()=>{},modelPayload(f.cfg(),messages,256),0,onReservation=>web.complete('web:test',messages,[],new AbortController().signal,false,onReservation)),/CNY_BUDGET/);
   assert.equal(denied[0].notRequested,true);assert.equal(denied[0].reservation,undefined);
  }finally{f.cleanup();}
 });

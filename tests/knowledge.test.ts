@@ -34,7 +34,7 @@ test('an overlong first write leaves no partial rows and a later valid write suc
   }finally{f.cleanup();}
 });
 test('QQ knowledge edits are background tools and refresh the next model request without a chat status message',async()=>{
-  const f=fixture({dailyTokens:1000000,groupDailyTokens:1000000,bufferMs:10000});let round=0;
+  const f=fixture({dailyCny:5,groupDailyCny:0,bufferMs:10000});let round=0;
   const provider:Model={kind:'fixture',async complete(messages,_max,options){
     assert.ok(options?.tools?.some(t=>t.function.name==='update_knowledge'));assert.equal(options?.toolChoice,undefined);
     if(++round===1)return {text:'后台维护状态不能发送到QQ',tool_calls:[{id:'k1',type:'function',function:{name:'update_knowledge',arguments:JSON.stringify({version:0,changes:[{action:'add',text:'海豚用名字般的哨声交流。'}]})}}],usage:{input:100,output:50}};
@@ -49,7 +49,7 @@ test('QQ knowledge edits are background tools and refresh the next model request
 });
 test('QQ can remember a preference alongside its reply in one model call; overlong edits retry privately',async()=>{
   for(const oversized of [false,true]){
-    const f=fixture({dailyTokens:1000000,groupDailyTokens:1000000,bufferMs:10000});let calls=0;
+    const f=fixture({dailyCny:5,groupDailyCny:0,bufferMs:10000});let calls=0;
     const provider:Model={kind:'fixture',async complete(messages,_max,options){
       calls++;assert.ok((options?.tools?.find(t=>t.function.name==='reply')?.function.parameters.properties as any).memory);
       if(oversized&&calls===2){assert.equal(transport.sent.length,0);assert.match(String(messages.at(-1)!.content),/KNOWLEDGE_TOO_LONG/);}

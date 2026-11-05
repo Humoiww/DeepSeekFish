@@ -49,7 +49,7 @@ test('search cache and source attachment; image Mock is valid and real provider 
 });
 test('budget exhausted and disabled bot cannot invoke provider; bounded rolling history',async()=>{
   const f=setup();try{
-    f.set({dailyTokens:1});await f.bot.receive(message());await f.bot.flush();assert.equal(f.provider.calls,0);
+    f.set({dailyCny:0});await f.bot.receive(message());await f.bot.flush();assert.equal(f.provider.calls,0);
     f.set({enabled:false});await f.bot.receive(message());await f.bot.flush();assert.equal(f.provider.calls,0);
     f.set({enabled:true,windowSize:3});for(let i=0;i<10;i++)await f.bot.receive(message('ordinary '+i,{mentioned:false,event:'ordinary'}));await f.bot.flush();
     assert.equal(f.store.history('g',100).length,3);

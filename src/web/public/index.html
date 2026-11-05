@@ -11,7 +11,7 @@
     <div class="nav-caption">我的对话 <span id="session-count">0</span></div>
     <nav id="sessions" aria-label="对话列表"></nav>
     <div class="sidebar-bottom">
-      <div class="budget-box"><div><span>今日对话用量</span><strong id="budget-text">—</strong></div><div class="meter"><i id="budget-bar"></i></div><small id="budget-detail">每次请求前检查预算</small><button id="reset-tokens" class="budget-reset" type="button" title="重置 QQ 和网页共用的今日 token 用量，保留调用记录">Reset 今日 tokens</button></div>
+      <div class="budget-box"><div><span>今日 API 费用</span><strong id="budget-text">—</strong></div><div class="meter"><i id="budget-bar"></i></div><small id="budget-detail">每次请求前检查预算</small><button id="reset-tokens" class="budget-reset" type="button" title="重置今日可用费用额度，保留实际消费记录及未确认费用">Reset 今日额度</button></div>
       <button id="qq-button" class="sidebar-action"><span>◉</span> QQ 对话 <span class="arrow">↗</span></button>
       <button id="exploration-button" class="sidebar-action"><span>♧</span> 自主探索 <span class="arrow">↗</span></button>
       <button id="activity-button" class="sidebar-action"><span>≡</span> 活动记录 <span class="arrow">↗</span></button>
@@ -92,7 +92,7 @@
 <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-heading"><div><span class="eyebrow">MAKE A CONNECTION</span><h2>连接你自己的 DeepSeek</h2></div><button type="button" class="icon-button" data-close="settings-dialog" aria-label="关闭设置">×</button></div><p class="dialog-description">密钥只保存在本机服务器，不会返回浏览器。保存配置不会发起模型请求。</p>
   <label>API Key <span id="key-state">尚未配置</span><input id="api-key" name="apiKey" type="password" placeholder="sk-…（已有密钥时留空保留）" autocomplete="off" spellcheck="false"></label>
   <label>模型<input id="model" name="model" value="deepseek-flash" maxlength="80" required spellcheck="false"><small>官方接口：https://api.deepseek.com · 当前使用非思考模式</small></label>
-  <div class="form-grid"><label>单次最多输出 tokens<input id="max-output" type="number" min="128" max="4096" step="1" value="1024" required></label><label>每日全局 tokens 上限<input id="daily-tokens" type="number" min="1000" max="10000000" step="1" value="1000000" required></label><label>每个QQ群 tokens 上限（0 为共用全局）<input id="group-daily-tokens" type="number" min="0" max="10000000" step="1" value="0" required></label></div>
+  <div class="form-grid"><label>单次最多输出 tokens<input id="max-output" type="number" min="128" max="4096" step="1" value="1024" required></label><label>每日全局费用上限（元）<input id="daily-cny" type="number" min="0" step="0.01" value="5" required></label><label>每个QQ群费用上限（元，0 为共用全局）<input id="group-daily-cny" type="number" min="0" step="0.01" value="0" required></label></div>
   <label class="checkbox-row"><input id="search-enabled" type="checkbox"><span><strong>允许自主联网（QQ 与网页助手）</strong><small>由肥鱼自行决定何时搜索、打开网页；复用 DeepSeek 连接，搜索与网页读取按次数计费。</small></span></label>
   <label class="checkbox-row"><input id="codex-enabled" type="checkbox"><span><strong>允许提交 Codex 待审任务</strong><small>只排队。仍须在本机终端逐次批准，DeepSeek 不能授权执行。</small></span></label>
   <p class="form-error" id="settings-error" role="alert"></p><div class="dialog-footer"><button type="button" class="quiet-button" data-close="settings-dialog">取消</button><button class="primary-button" type="submit">保存连接</button></div>

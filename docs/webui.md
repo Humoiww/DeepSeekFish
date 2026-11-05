@@ -22,7 +22,7 @@ QQ 新日志额外保存开始/结束时间与状态；网页新日志保存逐�
 
 连接失效时，重新运行根目录启动脚本即可。若服务已运行，新脚本使用项目令牌向该服务申请新的一次性连接，再打开默认浏览器；不重置凭据、不恢复失效链接、不重放消息。此时沿用已运行服务的正式/Mock 模式，需要切换模式时先 `npm run cli -- web-stop` 再启动。
 
-设置窗口允许填写 Key、模型、输出上限和每日全局 token 上限，并单独开启搜索/Codex 排队。Key 只写到 `runtime/data/webui-secrets.json`，在 POSIX 上新文件为 0600；也可从项目 `.env` 读取。配置接口只返回 credentialPresent，不返回 Key。不要在聊天中粘贴密钥。保存配置不验证余额或发起请求；HTTP 401/402/429 等错误在实际发送消息时显示。正式/Mock 共享本机连接令牌和密钥文件，但使用不同会话数据库与 Mock 预算，Mock 不发真实 HTTP。
+设置窗口允许填写 Key、模型、输出上限和每日全局人民币费用上限，并单独开启搜索/Codex 排队。Key 只写到 `runtime/data/webui-secrets.json`，在 POSIX 上新文件为 0600；也可从项目 `.env` 读取。配置接口只返回 credentialPresent，不返回 Key。不要在聊天中粘贴密钥。保存配置不验证余额或发起请求；HTTP 401/402/429 等错误在实际发送消息时显示。正式/Mock 共享本机连接令牌和密钥文件，但使用不同会话数据库与 Mock 预算，Mock 不发真实 HTTP。
 
 模型默认 `deepseek-flash`。采用[官方非思考模式 Function Calling](https://api-docs.deepseek.com/guides/tool_calls/)的 assistant.tool_calls → tool.tool_call_id → assistant 循环；请求固定发往 `https://api.deepseek.com/chat/completions`，禁止重定向和自定义内网 endpoint。不依赖 OpenAI SDK，不额外引入前端构建链。主模型每轮非流式返回；浏览器通过 NDJSON 实时显示请求阶段、工具结果和最终文字，**不是 token 级输出流**。
 
@@ -38,7 +38,7 @@ QQ 新日志额外保存开始/结束时间与状态；网页新日志保存逐�
 | read_file | 工作区内白名单文本类型；64 KiB；不读取 dotfile、凭据命名或链接 |
 | write_file | 同上；最多 20 文件 / 合计 1 MiB；不写项目源码；临时文件后原子替换 |
 | search_web | 与 QQ 共用联网开关；模型自主查询公开网页，返回摘要、日期及来源 |
-| fetch_page | 经 DeepSeek 官方接口读取公开网页正文；offset 续读，复用缓存，按价格折算进现有 token 预算 |
+| fetch_page | 经 DeepSeek 官方接口读取公开网页正文；offset 续读，复用缓存，按人民币计入共享费用额度 |
 | queue_codex | 设置默认关闭；只创建 waiting 任务，返回明确待审状态；没有授权工具 |
 
 普通聊天完全不向 API 提供文件/任务工具，收到意外工具调用也拒绝；当前用户消息明确要求画图时，服务器选择下面的独立单张生图流程。受限模式只暴露上表当前允许的工具；服务器验证名字、参数字段、类型和实际权限，模型输出无法开启设置。文件工作区由服务器按 UUID 生成在 `runtime/workspace/web-UUID/`；拒绝绝对路径、../、Windows ADS/设备名、symlink/junction、硬链接、隐藏路径和任意执行文件。模型不会获得操作系统 shell 或项目目录访问能力，文件限制由 Node 工具处理器执行，不依赖 prompt 充当文件隔离。
@@ -84,7 +84,7 @@ npm run cli -- web-approve 任务UUID --reviewed
 
 ## 预算、取消与持久化
 
-侧栏「今日对话用量」下的 **Reset 今日 tokens** 可直接重置香港日期当天已结算的 token 额度；手机从左上角菜单进入。QQ、网页、群聊/私聊及联网折算的 token 计数同步更新，不用重启。调用历史、原始 input/output 统计、请求次数、图片/Codex 计数和每日上限保留。运行中和用量未确认的预留继续记账，页面会提示保留数量，后续结算仍正确；不更改上游实际账单。重置只对已鉴权的人机页面开放，不是模型工具。
+侧栏「今日 API 费用」显示已用 / 每日人民币额度、已结算和未确认费用；默认 ¥5，在「连接与设置」修改后即时生效。「Reset 今日额度」释放当天已结算与估算的本地费用额度，保留输入/输出/cache token、历史账单、查询次数、生图限额及未确认/进行中的费用。旧 `/api/tokens/reset` 是 `/api/costs/reset` 的兼容入口，均需人机鉴权；不更改上游账单。详见 [计费说明](cny-budget.md)。
 
 正式模式复用 `runtime/data/fish.sqlite` 的全局额度，QQ 与 WebUI 的调用合并统计。会话/任务记录在 `webui.sqlite`；Mock 使用 `webui-mock.sqlite` 和 `webui-mock-budget.sqlite`，不污染正式账本。每轮 API 请求在发送前按序列化消息、工具 schema、输出上限原子预留，按真实 usage 结算；无有效 usage 的失败保留预留，异常超额锁住后续请求。默认全局 120000 tokens、每用户每日 50 次模型请求；工具循环中的每轮也算请求。输出默认 1024，上限可设 128–4096。
 

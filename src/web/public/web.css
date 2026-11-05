@@ -126,3 +126,5 @@ dialog{max-height:calc(var(--app-height,100dvh) - 24px);overflow-y:auto;overscro
 #exploration-entries a {overflow-wrap:anywhere}
 @media(max-width:480px){#exploration-dialog{padding:18px}.exploration-grid{gap:8px}}
 #exploration-dialog select {width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--line,#dce3d8);border-radius:10px;background:#fff;color:inherit;font:inherit}
+
+#budget-detail{white-space:pre-line;overflow-wrap:anywhere}
