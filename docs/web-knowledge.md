@@ -12,6 +12,10 @@ Search / Fetch 成功且非空的请求按 ¥0.005 / 次计入共享 dailyCny，
 
 模型预留使用已有官方 tokenizer，加 25% 文本余量、消息/工具框架余量和每图最多 1024 tokens；数据缺失时退回保守字节预留。最终仍以提供商 usage 结算；未知用量仍保留预留，超出预估仍触发账本异常保护。此调整不改变每日上限。额度拒绝会显示实际剩余和本轮所需预留，不再只给 QQ 一个笼统错误码。
 
+## 社交平台阅读
+
+`browse_page` 已接入 X/Twitter、Reddit、Bluesky、Mastodon 和 RSS/Atom，QQ、探索、每日新闻和网页受限助手共用。平台回退路径、分页、来源区分和实测限制见 [社交平台公开阅读](social-browsing.md)。
+
 ## 图片工具
 
 - `search_web` 找公开网页，`fetch_page` 读正文。

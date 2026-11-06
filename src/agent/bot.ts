@@ -120,7 +120,7 @@ export class Bot {
         const current=messages.at(-1)!;
         messages[messages.length-1]=turnContext.images({...current,content:[{type:'text',text:String(current.content)},...this.media!.parts(last.group,incoming)]},-1);
       }
-      const tools=[...recallTools,...contextTools,...knowledgeTools,...(this.forwards?forwardTools:[]),...(c.search?[...webTools,...(this.media?browseTools:[])]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
+      const tools=[...recallTools,...contextTools,...knowledgeTools,...(this.forwards?forwardTools:[]),...(c.search?[...webTools,...browseTools.filter(t=>t.function.name==='browse_page'||this.media)]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeSent=false;
       let imageOutcome:Record<string,unknown>|undefined;const memeResults=new Map<string,Record<string,unknown>>();
       const visibleImages=new Set(mediaIds);

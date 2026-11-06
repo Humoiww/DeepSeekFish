@@ -10,7 +10,8 @@ import { Ledger,dayKey } from '../budget/ledger.js';
 import { Tasks } from '../codex/tasks.js';
 import { AppServerRunner,MockTaskRunner } from '../codex/runner.js';
 import { knowledgeTools,knowledgeSnapshot,updateKnowledge } from '../memory/knowledge.js';
-import { webTools } from '../search/tools.js';
+import {browsePage,readPublic,type PublicReader} from '../search/public-web.js';
+import { webTools,browseTools } from '../search/tools.js';
 import { SearchService,DeepSeekSearchProvider,MockSearchProvider,searchEvidence } from '../search/provider.js';
 import { FishError,codeOf } from '../types.js';
 import { SessionWorkspace } from './workspace.js';
@@ -39,10 +40,10 @@ const tool=(name:string,description:string,properties:Record<string,unknown>={},
 const tools=[tool('list_files','列出当前会话工作区内的文件'),
   tool('read_file','读取当前会话工作区的 UTF-8 文本文件，最多 64 KiB',{path:{type:'string'}},['path']),
   tool('write_file','在当前会话工作区创建或更新文本文件，最多 64 KiB；无权访问其他目录',{path:{type:'string'},content:{type:'string'}},['path','content']),
-  ...webTools,...knowledgeTools,
+  ...webTools,...browseTools.filter(t=>t.function.name==='browse_page'),...knowledgeTools,
   tool('queue_codex','提出独立 Codex 任务，只进入待审队列，不能执行或批准任务',{task:{type:'string'}},['task'])];
 
-export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imageRunner?:ImageRunner,quotaReader?:QuotaReader){
+export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imageRunner?:ImageRunner,quotaReader?:QuotaReader,publicReader:PublicReader=readPublic){
   prepare(root);loadSecrets(root);
   const store=new Store(root,mock?'webui-mock.sqlite':'webui.sqlite');
   const budgetStore=new Store(root,mock?'webui-mock-budget.sqlite':'fish.sqlite');
@@ -115,7 +116,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     capabilities:['会话文件列表','会话文本读写','明确请求后设计并生成单张图片',...(cfg().search?['公开搜索与网页读取']:[]),...(settings.codexQueue?['提交 Codex 待审任务']:[])],
     budgets:{cost:ledger.costSummary(),dailyCny:cfg().dailyCny,groupDailyCny:cfg().groupDailyCny,usage:ledger.snapshot(),fault:budgetStore.getMeta('budgetFault')??null},
     tasks:tasks.list().map(t=>({id:t.id,sessionId:t.grp.slice(4),request:t.request,brief:t.brief,state:t.state,result:t.result})),active:active.size};}
-  async function execute(s:Session,name:string,args:any){
+  async function execute(s:Session,name:string,args:any,signal?:AbortSignal){
     if(!args||typeof args!=='object'||Array.isArray(args))throw new FishError('INVALID_TOOL_ARGS');
     const schema=tools.find(t=>t.function.name===name)?.function.parameters;
     if(!schema)throw new FishError('TOOL_NOT_ALLOWED');
@@ -129,6 +130,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       case 'read_file':return {path:args.path,content:workspace.read(args.path)};
       case 'write_file':return workspace.write(args.path,args.content);
       case 'search_web':return searchEvidence(await search.search(args.query,'web:'+s.id,'webui-local',args.fresh));
+      case 'browse_page':return browsePage(args.url,args.offset,signal,publicReader,args.query,args.textOffset);
       case 'fetch_page':return search.fetch(args.url,'web:'+s.id,'webui-local',args.offset,args.fresh);
       case 'queue_codex':{
         if(typeof args.task!=='string'||args.task.length>1500)throw new FishError('INVALID_TASK_BRIEF');
@@ -156,7 +158,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     const recalled=memory.recall('web:'+s.id,text,prior.flatMap(t=>[{id:t.id+':user'},{id:t.id+':assistant'}]));
     const memoryContext:WireMessage[]=recalled.events.length||recalled.needsReference?[{role:'user',content:JSON.stringify({memory:recalled})}]:[];
     const current:WireMessage[]=[{role:'user',content:redact(text.trim())}],sent:WireMessage[]=[{role:'system',content:webPrompt(root)},...memoryContext,...history];
-    const offered=mode==='agent'?tools.filter(t=>!['search_web','fetch_page'].includes(t.function.name)||cfg().search).filter(t=>t.function.name!=='queue_codex'||settings.codexQueue):[];
+    const offered=mode==='agent'?tools.filter(t=>!['search_web','fetch_page','browse_page'].includes(t.function.name)||cfg().search).filter(t=>t.function.name!=='queue_codex'||settings.codexQueue):[];
     store.db.prepare('INSERT INTO web_turns VALUES (?,?,?,?,?,?,?,?)').run(turnId,s.id,current[0].content,'','[]','[]','running',Date.now());
     store.db.prepare('UPDATE web_sessions SET title=?,updated=? WHERE id=?').run(s.title==='新的对话'?redact(text.trim()).slice(0,26):s.title,Date.now(),s.id);
     let answer='',calls=0;
@@ -193,7 +195,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
           let result:unknown;
           try{
             if(!offered.some(t=>t.function.name===c.function.name))throw new FishError('TOOL_NOT_ALLOWED');
-            result=await execute(s,c.function.name,JSON.parse(c.function.arguments));
+            result=await execute(s,c.function.name,JSON.parse(c.function.arguments),joined);
             if(c.function.name==='update_knowledge')sent[0]={role:'system',content:webPrompt(root)};
             record({name:c.function.name,state:'completed',round,callId:c.id,args:JSON.parse(c.function.arguments),result:redact(JSON.stringify(result))});
           }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};record({name:c.function.name,state:'failed',round,callId:c.id,args:c.function.arguments,result:JSON.stringify(result),diagnostic:errorDiagnostic(e)});}

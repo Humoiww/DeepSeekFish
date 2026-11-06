@@ -7,6 +7,12 @@ import { FishError } from '../types.js';
 import { publicUrl } from './provider.js';
 import { pageEvidence } from './evidence.js';
 import { bilibiliSpace } from './bilibili.js';
+import {twitterPage} from './twitter.js';
+import {redditPage} from './reddit.js';
+import {blueskyPage} from './bluesky.js';
+import {mastodonPage} from './mastodon.js';
+import {parseFeed} from './feeds.js';
+import {socialOutput} from './social-common.js';
 import { tiebaPage } from './tieba.js';
 import { MAX_IMAGE_BYTES } from '../image/limits.js';
 
@@ -20,7 +26,7 @@ export function publicAddress(address:string):boolean{
   const [first,second]=address.split(':').map(v=>parseInt(v||'0',16));
   return first>=0x2000&&first<0x4000&&first!==0x2002&&first!==0x3fff&&!(first===0x2001&&(second<0x200||second===0xdb8));
 }
-export interface PublicResource {url:string;type:string;bytes:Buffer}
+export interface PublicResource {url:string;type:string;bytes:Buffer;fetchedAt?:string;cached?:boolean}
 export type PublicReader=(url:string,limit:number,signal?:AbortSignal)=>Promise<PublicResource>;
 export type PublicPoster=(url:string,body:URLSearchParams,signal?:AbortSignal)=>Promise<PublicResource>;
 /** Pin checked DNS addresses on every hop; never forward cookies, auth or local files. */
@@ -97,6 +103,7 @@ export function pageAssets(html:string,base:string){
       }
       if(name==='meta'&&/^(og:image(?::url)?|twitter:image(?::src)?)$/i.test(a.property??a.name??'')&&a.content)addImage(a.content,'网页预览图','page_preview',0);
       if(name==='video'&&a.poster)addImage(a.poster,'视频封面','video_cover');
+      if(name==='link'&&a.rel==='alternate'&&/application\/(?:rss|atom)\+xml/i.test(a.type??'')&&a.href)addLink(a.href,a.title??'RSS/Atom 订阅',3);
       if(name==='script'&&a.src)addLink(a.src,'网页脚本（可读取公开数据入口，不执行）',0);
       if(name==='link'&&['modulepreload','preload'].includes(a.rel)&&a.href)addLink(a.href,'网页资源',0);
       if(name==='a'&&a.href){const url=absolute(a.href);if(url){addLink(url,a.title??'');anchor=links.get(url);if(/\.(png|jpe?g|gif|webp)(?:[?#]|$)/i.test(url))addImage(url,a.title??'');}}
@@ -138,10 +145,12 @@ export async function browsePage(url:string,offset=0,signal?:AbortSignal,reader:
   const feed=await bilibiliSpace(url,reader,signal);
   if(feed)return {...feed,text:feed.text.slice(textOffset,textOffset+5000),textOffset,nextTextOffset:textOffset+5000<feed.text.length?textOffset+5000:null,
     images:feed.images.slice(offset,offset+25),links:feed.links.slice(offset,offset+25),totalImages:feed.images.length,totalLinks:feed.links.length,nextOffset:Math.max(feed.images.length,feed.links.length)>offset+25?offset+25:null};
+  for(const read of [twitterPage,redditPage,blueskyPage,mastodonPage]){const page=await read(url,reader,signal);if(page)return socialOutput(page,offset,textOffset,query);}
   const r=await reader(url,2097152,signal);
   if(/^image\//i.test(r.type))return {url:r.url,title:'图片',status:'image',fetchedAt:new Date().toISOString(),latestVerified:false,text:'',textOffset:0,nextTextOffset:null,images:[{url:r.url,kind:'image',label:'直接图片地址'}],links:[],totalImages:1,totalLinks:0,nextOffset:null};
-  if(!/^(text\/|application\/(xhtml\+xml|json|javascript))/i.test(r.type))throw new FishError('WEB_PAGE_TYPE_UNSUPPORTED');
+  if(!/^(text\/|application\/(xhtml\+xml|atom\+xml|rss\+xml|xml|json|javascript))/i.test(r.type))throw new FishError('WEB_PAGE_TYPE_UNSUPPORTED');
   let html:string;try{html=new TextDecoder(/charset=["']?([^;\s"']+)/i.exec(r.type)?.[1]??'utf-8').decode(r.bytes);}catch{html=r.bytes.toString('utf8');}
+  const subscription=parseFeed(html,r.url);if(subscription)return socialOutput(subscription,offset,textOffset,query);
   let p;try{p=/json/i.test(r.type)||/^\s*[\[{]/.test(html)?jsonAssets(JSON.parse(html),r.url):pageAssets(html,r.url);}catch{p=pageAssets(html,r.url);}
   const terms=query.toLowerCase().split(/\s+/).filter(Boolean),images=terms.length?p.images.filter(i=>terms.every(t=>(i.label+' '+i.url).toLowerCase().includes(t))):p.images;
   const end=offset+25,content=p.text.slice(textOffset,textOffset+5000);

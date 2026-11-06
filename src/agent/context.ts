@@ -52,7 +52,7 @@ function clipTokens(text:string,limit:number){
 }
 function webView(id:string,r:Result,body:string,older=false){
   const d=r.data,out:Record<string,unknown>={resultId:id};
-  for(const key of ['url','source','sourceUrl','title','status','coverage','forum','thread','page','totalPages','totalReported','returned','fetchedAt','latestVerified','notice','unavailable','nextPage','textOffset','nextTextOffset','offset','nextOffset','totalCharacters','truncated','totalImages','totalLinks'])if(d[key]!==undefined)out[key]=d[key];
+  for(const key of ['url','source','sourceUrl','provider','cached','commentsUrl','totalPosts','postsTruncated','imagesTruncated','title','status','coverage','forum','thread','page','totalPages','totalReported','returned','fetchedAt','latestVerified','notice','unavailable','nextPage','textOffset','nextTextOffset','offset','nextOffset','totalCharacters','truncated','totalImages','totalLinks'])if(d[key]!==undefined)out[key]=d[key];
   out[typeof d.text==='string'?'text':'content']=body;
   if(body.length<r.body!.length)out.retainedText={characters:body.length,totalCharacters:r.body!.length,readWith:'read_tool_result',section:'text',offset:body.length};
   // Do not pay for all signed image URLs and repeated per-floor metadata on
