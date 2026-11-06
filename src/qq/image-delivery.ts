@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import type { Store } from '../storage/db.js';
 import { safePath } from '../paths.js';
-import { verifyPng } from '../image/provider.js';
+import {generatedImage,generatedInfo} from '../image/generated.js';
 import { verifyArtifact } from '../codex/verify.js';
 import { FishError,codeOf,type Message,type Transport } from '../types.js';
 
@@ -14,7 +14,7 @@ export async function sendGeneratedImage(root:string,store:Store,transport:Trans
   const previous=JSON.parse(store.getMeta(key)??'{}');
   const scoped=previous.conversation===message.group||store.db.prepare("SELECT name FROM sqlite_master WHERE name='qq_image_requests'").get()&&store.db.prepare("SELECT 1 FROM qq_image_requests WHERE conversation=? AND image_id=? AND state='completed'").get(message.group,imageId);
   if(!scoped)throw new FishError('IMAGE_REFERENCE_NOT_AVAILABLE');
-  const file=verifyPng(safePath(root,'runtime/outputs'),imageId+'/image.png',maxBytes);
+  const file=generatedImage(root,imageId,maxBytes,previous.manifest?.name);
   if(previous.manifest)verifyArtifact(file,previous.manifest,maxBytes);
   const receipt=(value:any)=>{const {manifest:_manifest,conversation:_conversation,resources:_resources,next:_next,...safe}=value;return safe;};
   if(previous.deliveryStatus==='confirmed')return {...receipt(previous),reused:true};
@@ -24,7 +24,7 @@ export async function sendGeneratedImage(root:string,store:Store,transport:Trans
     if(found){const updated={...previous,delivered:true,deliveryStatus:'confirmed',qqMessageId:found};store.setMeta(key,JSON.stringify(updated));return {...receipt(updated),reused:true};}
     return {...receipt(previous),reused:true,deliveryNote:'QQ尚未确认送达；查询了发送记录，没有重复投递。'};
   }
-  let outcome={...previous,created:true,imageId,catalogId,conversation:message.group,submittedAt:Date.now(),next:undefined,deliveryStatus:'unconfirmed',retryScheduled:false};
+  let outcome={...previous,...generatedInfo(file),created:true,imageId,catalogId,conversation:message.group,submittedAt:Date.now(),next:undefined,deliveryStatus:'unconfirmed',retryScheduled:false};
   store.setMeta(key,JSON.stringify(outcome));
   store.audit('qq-image-send',message.group,JSON.stringify({imageId,phase:'submitted',messageId:message.id}));
   try{await transport.file(message,file);outcome={...outcome,delivered:true,deliveryStatus:'confirmed'};}

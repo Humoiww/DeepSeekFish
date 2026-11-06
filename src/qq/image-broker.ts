@@ -1,3 +1,4 @@
+import {generatedInfo} from '../image/generated.js';
 import fs from 'node:fs';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
@@ -75,7 +76,7 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
           if(!result.ok||result.manifest?.length!==1)throw new FishError(result.error??'CODEX_IMAGE_GENERATION_FAILED');
           store.db.prepare("UPDATE qq_image_requests SET state='completed',image_id=? WHERE conversation=? AND message_id=?").run(result.id,body.conversation,body.messageId);
           store.audit('qq-image',body.conversation,result.id);
-          res.end(JSON.stringify({imageId:result.id,manifest:result.manifest[0],mock,references:selected.map(({path,...image})=>image),characterReference:character,resources:qqResources(c,ledger,body.conversation,body.user)}));
+          res.end(JSON.stringify({imageId:result.id,manifest:result.manifest[0],...generatedInfo(result.outputDir+'/'+result.manifest[0].name),mock,references:selected.map(({path,...image})=>image),characterReference:character,resources:qqResources(c,ledger,body.conversation,body.user)}));
         }catch(e){store.db.prepare("UPDATE qq_image_requests SET state='failed',error=? WHERE conversation=? AND message_id=?").run(codeOf(e),body.conversation,body.messageId);throw e;}
       }catch(e){if(!res.destroyed){res.statusCode=400;res.end(JSON.stringify({error:codeOf(e)}));}}
       finally{res.off('close',disconnected);controllers.delete(controller);}

@@ -7,10 +7,11 @@ import { FishError } from '../types.js';
 import { dayStart } from '../memory/journal.js';
 import { resolveCharacterReference } from '../image/character-reference.js';
 import { readReference,type SelectedReference } from '../image/references.js';
+import {generatedImage,generatedInfo} from '../image/generated.js';
 import { MAX_IMAGE_BYTES,MAX_VISION_ORIGINAL_BYTES } from '../image/limits.js';
 
 export type ImageSource='all'|'character'|'avatar'|'qzone'|'generated'|'received'|'collected'|'web';
-export interface LibraryImage {id:string;source:Exclude<ImageSource,'all'>;label:string;owner?:string;postId?:string;position?:number;observedAt?:number;messageId?:string;sourceImageId?:string;sourceUrl?:string;path:string}
+export interface LibraryImage {id:string;source:Exclude<ImageSource,'all'>;label:string;owner?:string;postId?:string;position?:number;observedAt?:number;messageId?:string;sourceImageId?:string;sourceUrl?:string;path:string;format?:string;animated?:boolean;frames?:number}
 export class QQImageLibrary{
   constructor(private root:string,private broker:Store){}
   private entries(conversation:string,user:string):LibraryImage[]{
@@ -57,9 +58,9 @@ export class QQImageLibrary{
     }finally{db?.close();}
     const rows=this.broker.db.prepare("SELECT image_id,message_id FROM qq_image_requests WHERE conversation=? AND state='completed' ORDER BY rowid DESC LIMIT 40").all(conversation) as {image_id:string;message_id:string}[];
     for(const [i,row] of rows.entries()){
-      const file=safePath(this.root,'runtime/outputs/'+row.image_id+'/image.png');
+      let file:string;try{file=generatedImage(this.root,row.image_id,MAX_IMAGE_BYTES);}catch{continue;}
       let observedAt:number|undefined;try{observedAt=fs.statSync(file).mtimeMs;}catch{}
-      images.push({id:'generated-'+row.image_id,source:'generated',label:i===0?'当前聊天最新生成的图片':'当前聊天倒数第'+(i+1)+'张生成图',position:i+1,observedAt,messageId:row.message_id,path:file});
+      images.push({id:'generated-'+row.image_id,source:'generated',label:i===0?'当前聊天最新生成的图片':'当前聊天倒数第'+(i+1)+'张生成图',position:i+1,observedAt,messageId:row.message_id,path:file,...generatedInfo(file)});
     }
     return images.filter(image=>{try{const st=fs.lstatSync(image.path);return st.isFile()&&st.nlink===1&&st.size>=12&&st.size<=MAX_IMAGE_BYTES;}catch{return false;}});
   }

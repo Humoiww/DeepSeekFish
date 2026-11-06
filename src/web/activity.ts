@@ -1,3 +1,4 @@
+import {generatedImage} from '../image/generated.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Store,redact } from '../storage/db.js';
@@ -181,7 +182,7 @@ export class ActivityHistory {
   async image(id:unknown){
     const record=await this.detail(id);
     if(record.kind!=='image'||!/^image:[a-f0-9-]{36}$/.test(record.id))throw new FishError('ACTIVITY_NOT_FOUND');
-    const file=safePath(this.root,'runtime/outputs/'+record.id.slice(6)+'/image.png');
+    const file=generatedImage(this.root,record.id.slice(6),MAX_IMAGE_BYTES);
     try{const stat=await fs.lstat(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size>MAX_IMAGE_BYTES)throw Error('invalid');return await fs.readFile(file);}catch{throw new FishError('ACTIVITY_IMAGE_UNAVAILABLE');}
   }
 }

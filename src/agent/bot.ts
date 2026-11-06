@@ -317,7 +317,7 @@ export class Bot {
                   if(image.alreadyRequested){
                     result={created:image.state==='completed',imageId:image.imageId,deliveryStatus:'unconfirmed',...JSON.parse(this.store.getMeta('qq-image-result:'+image.imageId)??'{}'),reused:true,state:image.state,...(image.error?{error:image.error}:{})};
                   }else{
-                  result={created:true,deliveryStatus:'not_attempted',retryScheduled:false,imageId:image.imageId,catalogId:'generated-'+image.imageId,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
+                  result={created:true,deliveryStatus:'not_attempted',retryScheduled:false,imageId:image.imageId,catalogId:'generated-'+image.imageId,format:image.format,animated:image.animated,frames:image.frames,mock:image.mock,references:image.references,characterReference:image.characterReference,resources:image.resources};
                   this.imageClient.verifiedImage(image.imageId,image.manifest,this.cfg().maxArtifactBytes);
                   result={...result as Record<string,unknown>,conversation:last.group,manifest:image.manifest,next:{tool:'send_image',imageId:'generated-'+image.imageId}};
                   }

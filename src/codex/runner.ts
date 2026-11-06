@@ -57,7 +57,7 @@ export class AppServerRunner implements TaskRunner {
       diagnostic.event('thread-requested',{permissions:PERMISSION_PROFILE,features});
       const threadResult=await rpc.call('thread/start',{cwd,ephemeral:true,approvalPolicy:'never',permissions:PERMISSION_PROFILE,
         config:{web_search:'disabled',mcp_servers:{},features},
-        ...(imageGeneration?{developerInstructions:'This is one locally authorized single-image request. Use only the built-in image generation tool, exactly once, generating one PNG. No shell tools, external APIs, paid API keys, MCP, code-drawn images, or substitute images. If the built-in tool is unavailable, report unsupported. Do not retry or edit. The harness will collect the generated image; do not move files or read credentials.'}: {})});
+        ...(imageGeneration?{developerInstructions:'This is one locally authorized single-image request. Use only the built-in image generation tool, exactly once, generating one PNG or animated GIF as requested. No shell tools, external APIs, paid API keys, MCP, code-drawn images, or substitute images. If the built-in tool is unavailable, report unsupported. Do not retry or edit. The harness will collect the generated image; do not move files or read credentials.'}: {})});
       diagnostic.record.threadId=threadResult.thread?.id;diagnostic.record.model=threadResult.model;
       if(threadResult.activePermissionProfile?.id!==PERMISSION_PROFILE)throw new FishError('CODEX_EFFECTIVE_PROFILE_MISMATCH');
       const {thread}=threadResult;
@@ -93,7 +93,7 @@ export class AppServerRunner implements TaskRunner {
       diagnostic.event('turn-requested',{referenceAttached:!!referencePath||!!additionalReferences.length,referenceCount:Number(!!referencePath)+additionalReferences.length});
       await rpc.call('turn/start',{threadId:thread.id,cwd,approvalPolicy:'never',permissions:PERMISSION_PROFILE,
         input:[{type:'text',text:imageGeneration?
-          'Use your built-in image generation tool to generate exactly one PNG for this prompt. Do not call any separate Image API or create a replacement with code. No retries.\n'+brief:
+          'Use your built-in image generation tool to generate exactly one image for this prompt, PNG or animated GIF as requested. Do not call any separate Image API or create a replacement with code. No retries.\n'+brief:
           '只处理以下有限任务。仅在当前目录创建产物；不访问私人文件、凭据、网络或其他项目。\n'+brief},
           ...[...(referencePath?[referencePath]:[]),...additionalReferences].map(path=>({type:'localImage',path}))]});
       return await done;

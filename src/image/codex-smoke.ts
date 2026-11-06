@@ -8,6 +8,7 @@ import { Store } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
 import { AppServerRunner, type CodexImageItem,type CodexRunResult } from '../codex/runner.js';
 import { collectArtifacts, type Artifact } from '../codex/artifacts.js';
+import {verifyGeneratedImage} from './generated.js';
 import { verifyPng,MockImageProvider } from './provider.js';
 import { prepareCharacterPortrait,verifyCharacterReference,type CharacterReference } from './character-reference.js';
 import { CodexRateLimitError } from '../codex/rate-limit.js';
@@ -20,39 +21,36 @@ export function captureCodexImage(root:string,cwd:string,images:CodexImageItem[]
   if(images.length!==1)throw new FishError('CODEX_IMAGE_UNSUPPORTED_OR_MISSING');
   const item=images[0];
   if(item.failure||item.status!=='completed')throw new FishError('CODEX_IMAGE_GENERATION_FAILED');
-  const target=safePath(cwd,'image.png');
-  let created=false;
+  let target:string|undefined,created=false;
   try{
     if(item.savedPath){
       const generated=makeDir(root,'runtime/codex-home/generated_images');
       const base=path.resolve(item.savedPath).startsWith(generated+path.sep)?generated:cwd;
       const relative=path.relative(base,path.resolve(item.savedPath)).split(path.sep).join('/');
-      const source=safePath(base,relative);
-      if(path.extname(source).toLowerCase()!=='.png')throw new FishError('CODEX_IMAGE_NOT_PNG');
-      verifyPng(base,relative,maxBytes);
+      const source=safePath(base,relative),ext=path.extname(source).toLowerCase();
+      if(!['.png','.gif'].includes(ext))throw new FishError('CODEX_IMAGE_FORMAT_UNSUPPORTED');
+      verifyGeneratedImage(base,relative,maxBytes);target=safePath(cwd,'image'+ext);
       if(source!==target){fs.copyFileSync(source,target,fs.constants.COPYFILE_EXCL);created=true;}
     }else if(item.result){
-      const base64=item.result.replace(/^data:image\/png;base64,/, '');
+      const base64=item.result.replace(/^data:image\/(?:png|gif);base64,/, '');
       if(base64.length>Math.ceil(maxBytes/3)*4||!base64.length||base64.length%4!==0||!/^[A-Za-z0-9+/]*={0,2}$/.test(base64))throw new FishError('CODEX_IMAGE_INVALID_DATA');
-      fs.writeFileSync(target,Buffer.from(base64,'base64'),{flag:'wx',mode:0o600});
-      created=true;
+      const bytes=Buffer.from(base64,'base64'),gif=['GIF87a','GIF89a'].includes(bytes.toString('ascii',0,6));target=safePath(cwd,gif?'image.gif':'image.png');
+      fs.writeFileSync(target,bytes,{flag:'wx',mode:0o600});created=true;
     }else throw new FishError('CODEX_IMAGE_ATTACHMENT_UNAVAILABLE');
-    return verifyPng(cwd,'image.png',maxBytes);
-  }catch(e){
-    // This generated task directory belongs exclusively to this attempt.
-    if(created)fs.rmSync(target,{force:true});
-    throw e;
-  }
+    return verifyGeneratedImage(cwd,path.basename(target),maxBytes);
+  }catch(e){if(created&&target)fs.rmSync(target,{force:true});throw e;}
 }
 
 export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server'|'mock';error?:string;retryAt?:number;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number;diagnostic?:CodexRecord}
 export function publishCodexImage(root:string,id:string,maxBytes:number):Artifact[]{
   if(!/^[a-z0-9-]{1,64}$/.test(id))throw new FishError('INVALID_TASK_ID');
   const cwd=safePath(root,'runtime/workspace/'+id);
-  verifyPng(cwd,'image.png',maxBytes);
+  const names=['image.png','image.gif'].filter(name=>fs.existsSync(safePath(cwd,name)));
+  if(names.length!==1)throw new FishError('INVALID_IMAGE_MANIFEST');
+  verifyGeneratedImage(cwd,names[0],maxBytes);
   // Native Codex can create empty .git/.codex/.agents/.aws protection directories.
   // collectArtifacts ignores empty directories, rejects links, and validates the
-  // whole file set before publishing. image.png consumes the only file allowance.
+  // whole file set before publishing. The native image consumes the only file allowance.
   return collectArtifacts(root,id,1,maxBytes);
 }
 export interface ImageRunner {generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string,additionalReferences?:string[]):Promise<CodexRunResult>}

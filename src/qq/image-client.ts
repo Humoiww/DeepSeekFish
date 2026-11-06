@@ -2,6 +2,7 @@ import { request } from 'node:http';
 import { safePath } from '../paths.js';
 import { FishError,type Message } from '../types.js';
 import type { ImagePlan } from '../web/images.js';
+import {verifyGeneratedImage} from '../image/generated.js';
 import { verifyArtifact } from '../codex/verify.js';
 import type { Artifact } from '../codex/artifacts.js';
 import type { ImageSource } from './image-library.js';
@@ -27,7 +28,7 @@ export class QQImageClient {
     return this.call({op:'image',conversation:message.group,user:message.user,messageId:message.id,request:message.text,plan,referenceIds},timeout+45000,signal);
   }
   verifiedImage(id:string,manifest:Artifact,maxBytes:number):string{
-    if(!/^[0-9a-f-]{36}$/.test(id)||manifest?.name!=='image.png')throw new FishError('INVALID_IMAGE_MANIFEST');
-    const file=safePath(this.root,'runtime/outputs/'+id+'/image.png');verifyArtifact(file,manifest,maxBytes);return file;
+    if(!/^[0-9a-f-]{36}$/.test(id)||!['image.png','image.gif'].includes(manifest?.name))throw new FishError('INVALID_IMAGE_MANIFEST');
+    const file=safePath(this.root,'runtime/outputs/'+id+'/'+manifest.name);verifyArtifact(file,manifest,maxBytes);return verifyGeneratedImage(this.root,'runtime/outputs/'+id+'/'+manifest.name,maxBytes);
   }
 }

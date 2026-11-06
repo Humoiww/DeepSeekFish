@@ -5,7 +5,7 @@ import { safePath, makeDir, noLinks } from '../paths.js';
 import { FishError } from '../types.js';
 
 export interface Artifact { name:string; bytes:number; sha256:string }
-const allowed=new Set(['.txt','.md','.json','.csv','.ts','.js','.py','.html','.css','.svg','.png','.jpg','.webp','.pdf']);
+const allowed=new Set(['.txt','.md','.json','.csv','.ts','.js','.py','.html','.css','.svg','.png','.gif','.jpg','.webp','.pdf']);
 export function collectArtifacts(root:string,id:string,maxFiles:number,maxBytes:number):Artifact[] {
   if(!/^[a-z0-9-]{1,64}$/.test(id))throw new FishError('INVALID_TASK_ID');
   const workspace=safePath(root,'runtime/workspace/'+id);

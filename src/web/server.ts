@@ -1,3 +1,4 @@
+import {imageMime} from '../memory/people.js';
 import fs from 'node:fs';
 import { createServer,type IncomingMessage } from 'node:http';
 import { randomBytes,timingSafeEqual } from 'node:crypto';
@@ -44,7 +45,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       else if(req.method==='GET'&&url.pathname==='/api/activity/detail')value=await app.activityDetail(url.searchParams.get('id'));
       else if(req.method==='GET'&&url.pathname==='/api/activity/image'){
         const bytes=await app.activityImage(url.searchParams.get('id'));
-        res.setHeader('Content-Type','image/png');res.setHeader('Content-Security-Policy',"default-src 'none'; sandbox");res.end(bytes);return;
+        res.setHeader('Content-Type',imageMime(bytes));res.setHeader('Content-Security-Policy',"default-src 'none'; sandbox");res.end(bytes);return;
       }
       else if(req.method==='GET'&&url.pathname==='/api/persona')value=app.persona();
       else if(req.method==='GET'&&url.pathname==='/api/prompts')value=app.prompts();
@@ -53,7 +54,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       else if(req.method==='GET'&&url.pathname==='/api/session')value=app.detail(url.searchParams.get('id'));
       else if(req.method==='GET'&&url.pathname==='/api/image'){
         const image=app.image(url.searchParams.get('sessionId'),url.searchParams.get('id'));
-        res.setHeader('Content-Type','image/png');res.setHeader('Content-Disposition','inline; filename="image.png"');
+        const mime=imageMime(image);res.setHeader('Content-Type',mime);res.setHeader('Content-Disposition','inline; filename="image.'+(mime==='image/gif'?'gif':'png')+'"');
         res.setHeader('Content-Security-Policy',"default-src 'none'; sandbox");res.end(image);return;
       }
       else if(req.method==='GET'&&url.pathname==='/api/file'){

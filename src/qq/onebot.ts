@@ -6,7 +6,7 @@ import { safePath } from '../paths.js';
 import { Store,senderNames } from '../storage/db.js';
 import { FishError,codeOf,type Message,type Transport } from '../types.js';
 import { echoKey } from './adapter.js';
-import { verifyPng } from '../image/provider.js';
+import {verifyGeneratedImage} from '../image/generated.js';
 import { imageMime } from '../memory/people.js';
 import { forwardHandle } from './forward.js';
 
@@ -173,7 +173,7 @@ export class OneBotTransport implements Transport {
   async file(message:Message,file:string):Promise<void>{
     if(!this.allowed(message.group))throw new FishError('ONEBOT_GROUP_NOT_ALLOWED');
     const base=safePath(this.root,'runtime/outputs'),relative=path.relative(base,file).split(path.sep).join('/');
-    const png=verifyPng(base,relative,10485760);
+    const png=verifyGeneratedImage(base,relative,10485760);
     const original=fs.readFileSync(png),bytes=await deliveryImage(original);
     const imageId=relative.split('/')[0],key='qq-image-result:'+imageId;
     if(/^[0-9a-f-]{36}$/.test(imageId)){

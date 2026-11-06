@@ -144,7 +144,7 @@ export class ExplorationTools{
     const result=await s.images!.generate(m,plan,s.cfg().codexTimeoutMs,this.signal,referenceIds);
     if(result.alreadyRequested)return out({...result,...JSON.parse(store.getMeta('qq-image-result:'+result.imageId)??'{}'),reused:true});
     s.images!.verifiedImage(result.imageId,result.manifest,s.cfg().maxArtifactBytes);
-    const receipt={created:true,imageId:result.imageId,catalogId:'generated-'+result.imageId,conversation:m.group,manifest:result.manifest,references:result.references,deliveryStatus:'not_attempted'};
+    const receipt={created:true,imageId:result.imageId,catalogId:'generated-'+result.imageId,format:result.format,animated:result.animated,frames:result.frames,conversation:m.group,manifest:result.manifest,references:result.references,deliveryStatus:'not_attempted'};
     store.setMeta('qq-image-result:'+result.imageId,JSON.stringify(receipt));return out(receipt);
   }
   if(name==='publish_qzone'){
