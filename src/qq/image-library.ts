@@ -14,7 +14,7 @@ export type ImageSource='all'|'character'|'avatar'|'qzone'|'generated'|'received
 export interface LibraryImage {id:string;source:Exclude<ImageSource,'all'>;label:string;owner?:string;postId?:string;position?:number;observedAt?:number;messageId?:string;sourceImageId?:string;sourceUrl?:string;path:string;format?:string;animated?:boolean;frames?:number}
 export class QQImageLibrary{
   constructor(private root:string,private broker:Store){}
-  private entries(conversation:string,user:string):LibraryImage[]{
+  entries(conversation:string,user:string):LibraryImage[]{
     const images:LibraryImage[]=[];
     try{images.push({id:'character',source:'character',label:'鲸酱本人原设定图',path:resolveCharacterReference(this.root)});}catch{}
     for(const folder of ['assets/character','runtime/character']){

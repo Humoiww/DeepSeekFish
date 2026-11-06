@@ -8,7 +8,7 @@ import {traceModel} from '../agent/model-trace.js';
 import {diagnosticSafe,errorDiagnostic} from '../diagnostics.js';
 import { TurnContext,contextTools } from '../agent/context.js';
 import { FishError,codeOf,type ChatMessage,type ModelTool,type Transport,type Message } from '../types.js';
-import { qqChatTools,imageLibraryTools } from './chat-tools.js';
+import { qqChatTools,imageLibraryTools,fileTools } from './chat-tools.js';
 import { forwardTools } from './forward.js';
 import { qqPrompt } from '../prompts.js';
 import { hasToolMarkup } from '../agent/tool-protocol.js';
@@ -66,7 +66,7 @@ export class DailyNews {
     const s=this.config(),trace:any[]=[],file='memory-'+randomUUID(),context=new TurnContext(),used=new Set<string>();
     const tools=[...recallTools,...contextTools,...knowledgeTools,memoryDecision];
     const startedAt=this.now(),saveTrace=()=>this.log(file,{startedAt,at:this.now(),conversation:'private:'+s.owner,trace});
-    const messages:ChatMessage[]=[{role:'system',content:qqPrompt(this.root)},{role:'user',content:JSON.stringify({task:'这是后台记忆回顾，不发QQ消息。近期私聊在recent；自己判断哪些知识、偏好、约定或经验值得长期记住，也可以不更新。当前QQ工具在qqTools，联网方法在qqWebTools；历史失败是当时的情况，不代表现在不能做。',qqTools:this.cfg().qqTransport==='onebot'?[...qqChatTools(true,this.cfg().images,true),...imageLibraryTools(),...forwardTools].map(t=>t.function.name):[],qqWebTools:this.cfg().search?[...webTools,...browseTools].map(t=>({name:t.function.name,description:t.function.description})):[],...newsMemory(this.store,s.owner,this.now())})}];
+    const messages:ChatMessage[]=[{role:'system',content:qqPrompt(this.root)},{role:'user',content:JSON.stringify({task:'这是后台记忆回顾，不发QQ消息。近期私聊在recent；自己判断哪些知识、偏好、约定或经验值得长期记住，也可以不更新。当前QQ工具在qqTools，联网方法在qqWebTools；历史失败是当时的情况，不代表现在不能做。',qqTools:this.cfg().qqTransport==='onebot'?[...qqChatTools(true,this.cfg().images,true),...imageLibraryTools(),...fileTools(),...forwardTools].map(t=>t.function.name):[],qqWebTools:this.cfg().search?[...webTools,...browseTools].map(t=>({name:t.function.name,description:t.function.description})):[],...newsMemory(this.store,s.owner,this.now())})}];
     try{
       for(let round=0;round<4;round++){
         context.compact(round);

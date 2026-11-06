@@ -9,6 +9,8 @@ import { echoKey } from './adapter.js';
 import {verifyGeneratedImage} from '../image/generated.js';
 import { imageMime } from '../memory/people.js';
 import { forwardHandle } from './forward.js';
+import {MAX_IMAGE_BYTES} from '../image/limits.js';
+import {fileName} from './file-library.js';
 
 function id(value:unknown,signed=false):string|undefined{
   if(typeof value==='number'&&!Number.isSafeInteger(value))return;
@@ -173,6 +175,11 @@ export class OneBotTransport implements Transport {
   async file(message:Message,file:string):Promise<void>{
     if(!this.allowed(message.group))throw new FishError('ONEBOT_GROUP_NOT_ALLOWED');
     const base=safePath(this.root,'runtime/outputs'),relative=path.relative(base,file).split(path.sep).join('/');
+    if(!/\.(?:png|gif)$/i.test(relative)){
+      const p=safePath(base,relative),st=fs.lstatSync(p);
+      if(!st.isFile()||st.nlink!==1||st.size>MAX_IMAGE_BYTES)throw new FishError('FILE_NOT_AVAILABLE');
+      await this.attachment(message,fs.readFileSync(p),path.basename(p));return;
+    }
     const png=verifyGeneratedImage(base,relative,10485760);
     const original=fs.readFileSync(png),bytes=await deliveryImage(original);
     const imageId=relative.split('/')[0],key='qq-image-result:'+imageId;
@@ -188,7 +195,21 @@ export class OneBotTransport implements Transport {
     if(original.length>10485760)throw new FishError('QQ_MEDIA_TOO_LARGE');imageMime(original);
     await this.sendImage(message,original,true);
   }
-  private async sendImage(message:Message,original:Buffer,sticker=false):Promise<void>{
+  async image(message:Message,original:Buffer):Promise<{messageId:string}>{
+    if(!this.allowed(message.group))throw new FishError('ONEBOT_GROUP_NOT_ALLOWED');
+    if(original.length>MAX_IMAGE_BYTES)throw new FishError('QQ_MEDIA_TOO_LARGE');imageMime(original);
+    return {messageId:await this.sendImage(message,original)};
+  }
+  async attachment(message:Message,original:Buffer,name:string):Promise<{messageId:string}>{
+    if(!this.allowed(message.group))throw new FishError('ONEBOT_GROUP_NOT_ALLOWED');
+    fileName(name);if(original.length>MAX_IMAGE_BYTES)throw new FishError('QQ_FILE_TOO_LARGE');
+    await this.open();const target=this.target(message.group);
+    const receipt=await this.call(target.action,{...target.params,timeout:IMAGE_SEND_TIMEOUT_MS,
+      message:[{type:'file',data:{file:'base64://'+original.toString('base64'),name}}]},IMAGE_RESPONSE_TIMEOUT_MS);
+    const messageId=id(receipt?.message_id,true);if(!messageId)throw new FishError('ONEBOT_SEND_UNCONFIRMED');return {messageId};
+  }
+  private async sendImage(message:Message,original:Buffer,sticker=false):Promise<string>{
+    await this.open();
     const target=this.target(message.group);
     // NapCat's native send wait defaults to ~10s + size/256KBps, independently
     // of our WebSocket deadline. Override it per image; allow reply overhead.
@@ -197,10 +218,11 @@ export class OneBotTransport implements Transport {
       const receipt=await this.call(target.action,{...target.params,timeout:IMAGE_SEND_TIMEOUT_MS,
         message:[{type:'image',data:{file:'base64://'+original.toString('base64'),...(sticker?{sub_type:1}:{})}}]},IMAGE_RESPONSE_TIMEOUT_MS);
       if(!id(receipt?.message_id,true))throw new FishError('ONEBOT_SEND_UNCONFIRMED');
+      return String(receipt.message_id);
     }catch(e){
       if(['ONEBOT_SEND_UNCONFIRMED','ONEBOT_ACTION_TIMEOUT'].includes(codeOf(e))){
         const found=await this.imageReceipt(message,createHash('md5').update(original).digest('hex'),started).catch(()=>undefined);
-        if(found)return;
+        if(found)return found;
       }
       throw e;
     }

@@ -16,8 +16,12 @@ export function qqChatTools(profile:boolean,image:boolean,qzone=false):ModelTool
   ];
 }
 export function imageLibraryTools():ModelTool[]{return [
-  {type:'function',function:{name:'send_image',description:'将图库中已生成的成图发到当前对话，随后再reply。催图时使用已有ID，不需要重画；重复调用查询送达结果，未确认的发送不重复投递。',parameters:{type:'object',properties:{imageId:{type:'string',description:'generate_image返回的catalogId，或list_images中generated-开头的ID'}},required:['imageId'],additionalProperties:false}}},
+  {type:'function',function:{name:'send_image',description:'将图库任意图片发到当前对话，包括下载图、参考图、生成图；无需收藏成表情。重复调用查询送达结果，未确认的发送不重复投递。',parameters:{type:'object',properties:{imageId:{type:'string',description:'download_image/list_images/view_images返回的ID或生成图catalogId'}},required:['imageId'],additionalProperties:false}}},
   {type:'function',function:{name:'list_images',description:'图库：设定图、收到的图片/空间配图/头像、收藏表情、生成图、网页下载图。生成图按新到旧排列，position=1 是最新；可收藏或交给GPT。',parameters:{type:'object',properties:{source:{type:'string',enum:['all','character','qzone','avatar','generated','received','collected','web']},offset:{type:'integer',minimum:0,maximum:1000}},additionalProperties:false}}},
   {type:'function',function:{name:'view_images',description:'查看所选ID的原图，可作为GPT生图参考。',parameters:{type:'object',properties:{imageIds:{type:'array',items:{type:'string'},minItems:1,maxItems:3}},required:['imageIds'],additionalProperties:false}}}
+];}
+export function fileTools():ModelTool[]{return [
+ {type:'function',function:{name:'list_files',description:'查看当前对话可发送的文件：图库原图和已完成Codex任务的产物。与表情包无关。',parameters:{type:'object',properties:{offset:{type:'integer',minimum:0,maximum:10000}},additionalProperties:false}}},
+ {type:'function',function:{name:'send_file',description:'把已有文件作为普通QQ附件发送，保留原始字节和文件名。可用list_files的ID或图库ID；不需要将图片收藏成表情包。',parameters:{type:'object',properties:{fileId:{type:'string'}},required:['fileId'],additionalProperties:false}}}
 ];}
 export function requestsReferences(text:string):boolean{return /参考图|设定图|设定集|参考原图|图片库/.test(text);}

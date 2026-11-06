@@ -26,6 +26,8 @@ export interface Transport {
   identity?():Promise<{userId:string}>;
   send(message: Message, text: string): Promise<void>;
   file(message: Message, path: string): Promise<void>;
+  image?(message:Message,original:Buffer):Promise<{messageId?:string}>;
+  attachment?(message:Message,original:Buffer,name:string):Promise<{messageId?:string}>;
   imageReceipt?(message:Message,fingerprint:string,since:number):Promise<string|undefined>;
   meme?(message:Message,original:Buffer):Promise<void>;
   stop(): void;

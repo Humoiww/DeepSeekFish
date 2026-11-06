@@ -53,7 +53,7 @@ function addUsage(r:RecordItem,usage:any):Usage|undefined{
 }
 function count(r:RecordItem,name:string){
   r.counts.tools++;
-  const key: keyof RecordItem['counts']|undefined=({search_web:'search',fetch_page:'fetch',browse_page:'browse',download_image:'downloads',generate_image:'images',send_image:'sends',send_meme:'sends',send_message:'sends',publish_qzone:'sends'} as Record<string,keyof RecordItem['counts']>)[name];
+  const key: keyof RecordItem['counts']|undefined=({search_web:'search',fetch_page:'fetch',browse_page:'browse',download_image:'downloads',generate_image:'images',send_image:'sends',send_file:'sends',send_meme:'sends',send_message:'sends',publish_qzone:'sends'} as Record<string,keyof RecordItem['counts']>)[name];
   if(key)r.counts[key]++;
 }
 function traceRecord(r:RecordItem,trace:any[]){

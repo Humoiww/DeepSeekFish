@@ -15,8 +15,9 @@ import {browsePage,downloadWebImage} from '../search/public-web.js';
 import {QQMedia,mediaTools} from '../qq/media.js';
 import {QQImageLibrary} from '../qq/image-library.js';
 import {QQImageClient} from '../qq/image-client.js';
-import {imageLibraryTools,qqChatTools} from '../qq/chat-tools.js';
-import {sendGeneratedImage} from '../qq/image-delivery.js';
+import {imageLibraryTools,qqChatTools,fileTools} from '../qq/chat-tools.js';
+import {sendLibraryImage,sendCatalogFile} from '../qq/file-delivery.js';
+import {QQFileLibrary} from '../qq/file-library.js';
 import {qqResources} from '../qq/resources.js';
 import {validateImagePlan} from '../web/images.js';
 import type {QzoneMemory} from '../memory/qzone.js';
@@ -58,7 +59,7 @@ export class ExplorationTools{
     if(copy.function.name==='generate_image')copy.function.description='请GPT小姐画图，参考图与画面由你选择；返回图库ID，是否发送由你决定。';return copy;
   });
   return [...extraTools,recall,...contextTools,...knowledgeTools,...(s.cfg().search?[...webTools,...browseTools]:[]),...chat,
-    ...imageLibraryTools().map(t=>t.function.name==='send_image'?{...t,function:{...t.function,description:'把已有成图私聊给主人；重复调用读取投递回执，未确认的不会重发。'}}:t),
+    ...imageLibraryTools(),...(s.transport.attachment?fileTools():[]),
     ...mediaTools([]),...(s.forwards?forwardTools:[]),...(settings.allowPublicPosts&&s.publisher?[tool('publish_qzone','在你自己的QQ空间公开发布图文；与私聊不同，内容会公开。',{text:string,imageId:string},['text','imageId'])]:[])];
  }
  /** Persist before external I/O. Unknown outcomes also block identical sends in later runs. */
@@ -108,6 +109,7 @@ export class ExplorationTools{
     return out(args.urls?{images}:images[0],parts);
   }
   if(name==='list_images')return out(s.library.list(m.group,m.user,args.source??'all',args.offset??0));
+  if(name==='list_files')return out(new QQFileLibrary(s.root,store,s.library).list(m.group,m.user,args.offset??0));
   if(name==='view_images'){
     const viewed=s.library.view(m.group,m.user,args.imageIds);for(const i of viewed.images)this.seen.add(i.id);
     return out({images:viewed.images.map(({data,...i}:any)=>i)},viewed.images.flatMap((i:any)=>[{type:'text' as const,text:JSON.stringify({imageId:i.id,label:i.label})},{type:'image_url' as const,image_url:{url:'data:'+i.mime+';base64,'+i.data,detail:'high' as const}}]));
@@ -131,9 +133,10 @@ export class ExplorationTools{
     if(typeof args.text!=='string'||!args.text.trim()||args.text.length>s.cfg().maxChars||hasToolMarkup(args.text))throw new FishError('INVALID_MESSAGE');
     const text=redact(args.text);return out(await this.effect('text',text,async()=>{await s.transport.send(m,text);this.recordSent('exploration-message:'+this.run.id+':'+createHash('sha256').update(text).digest('hex'),text);return {sent:true,text};}));
   }
-  if(name==='send_image')return out(await this.effect('image',args.imageId,async()=>{
-    const result=await sendGeneratedImage(s.root,store,s.transport,m,args.imageId,s.cfg().maxArtifactBytes);
-    if(result.deliveryStatus==='confirmed')this.recordSent('exploration-image:'+this.run.id+':'+args.imageId,'[发送图片] '+args.imageId);return result;
+  if(name==='send_image'||name==='send_file')return out(await this.effect(name==='send_image'?'image':'file',args.imageId??args.fileId,async()=>{
+    const resolver={resolveFile:async(_m:Message,id:string)=>new QQFileLibrary(s.root,store,s.library).resolve(m.group,m.user,id)},options={signal:this.signal,guard:()=>this.guard(),diagnostic:(d:Record<string,any>)=>{this.diagnostics.push(d);}};
+    const result=name==='send_image'?await sendLibraryImage(s.root,store,s.transport,resolver,m,args.imageId,s.cfg().maxArtifactBytes,options):await sendCatalogFile(s.root,store,s.transport,resolver,m,args.fileId,'file',options);
+    if(result.deliveryStatus==='confirmed')this.recordSent('exploration-file:'+this.run.id+':'+(args.imageId??args.fileId),'[发送'+(name==='send_image'?'图片':'文件')+'] '+(args.imageId??args.fileId));return result;
   }));
   if(name==='get_quota')return out(s.images?await s.images.status(m,this.signal):qqResources(s.cfg(),s.ledger,m.group,m.user));
   if(name==='get_person'){const snap=await s.people!.refresh(m.user,m.group,true);return out({profile:snap.profile,errors:snap.errors},s.people!.images(snap));}

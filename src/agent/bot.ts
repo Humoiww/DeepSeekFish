@@ -22,7 +22,7 @@ import { MemoryJournal,dayStart,recallTools } from '../memory/journal.js';
 import { recentDialogue,dialogueMessages,dialogueTime,TurnContext,contextTools,contextMetrics } from './context.js';
 import { PersonMemory } from '../memory/people.js';
 import { qqResources,qqImageActivity } from '../qq/resources.js';
-import { qqChatTools,imageLibraryTools } from '../qq/chat-tools.js';
+import { qqChatTools,imageLibraryTools,fileTools } from '../qq/chat-tools.js';
 import { QQImageClient } from '../qq/image-client.js';
 import { validateImagePlan } from '../web/images.js';
 import { writePrivateAtomic } from '../paths.js';
@@ -31,7 +31,7 @@ import { hasToolMarkup } from './tool-protocol.js';
 import { QQMedia,mediaTools } from '../qq/media.js';
 import { ForwardRecords,forwardTools } from '../qq/forward.js';
 
-import { sendGeneratedImage } from '../qq/image-delivery.js';
+import {sendLibraryImage,sendCatalogFile} from '../qq/file-delivery.js';
 import { qqPrompt } from '../prompts.js';
 function personContext(person:ReturnType<PersonMemory['remembered']>){
   return person?{profile:person.profile}:null;
@@ -120,7 +120,7 @@ export class Bot {
         const current=messages.at(-1)!;
         messages[messages.length-1]=turnContext.images({...current,content:[{type:'text',text:String(current.content)},...this.media!.parts(last.group,incoming)]},-1);
       }
-      const tools=[...recallTools,...contextTools,...knowledgeTools,...(this.forwards?forwardTools:[]),...(c.search?[...webTools,...browseTools.filter(t=>t.function.name==='browse_page'||this.media)]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
+      const tools=[...recallTools,...contextTools,...knowledgeTools,...(this.forwards?forwardTools:[]),...(c.search?[...webTools,...browseTools.filter(t=>t.function.name==='browse_page'||this.media)]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.imageClient&&this.transport.attachment?fileTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeSent=false;
       let imageOutcome:Record<string,unknown>|undefined;const memeResults=new Map<string,Record<string,unknown>>();
       const visibleImages=new Set(mediaIds);
@@ -273,11 +273,24 @@ export class Bot {
                 if(!this.imageClient||typeof args.imageId!=='string'||Object.keys(args).some(k=>k!=='imageId'))throw new FishError('INVALID_TOOL_ARGS');
                 this.controller.signal.throwIfAborted();
                 if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');
-                result=await sendGeneratedImage(this.root,this.store,this.transport,last,args.imageId,this.cfg().maxArtifactBytes);
+                result=await sendLibraryImage(this.root,this.store,this.transport,this.imageClient,last,args.imageId,this.cfg().maxArtifactBytes,{signal:this.controller.signal,diagnostic:d=>{diagnostic=d;},guard:()=>{if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');}});
                 const outcome=result as Record<string,unknown>;
+                if(!args.imageId.startsWith('generated-'))this.recordFile(last,outcome);
                 if(imageOutcome?.catalogId===args.imageId)imageOutcome={...imageOutcome,...outcome,next:undefined};
                 const background=JSON.parse(String(messages[1].content));
                 messages[1]={role:'system',content:JSON.stringify({...background,actions:{...qqImageActivity(this.ledger,last.group,last.id,contextIds),lastImage:{created:outcome.created,delivery:outcome.delivered?'sent':outcome.deliveryStatus,catalogId:args.imageId,referenceIds:((outcome.references??[]) as {id:string}[]).map(r=>r.id),retryScheduled:false}}})};
+              }else if(call.function.name==='send_file'){
+                if(!this.imageClient||typeof args.fileId!=='string'||Object.keys(args).some(k=>k!=='fileId'))throw new FishError('INVALID_TOOL_ARGS');
+                result=await sendCatalogFile(this.root,this.store,this.transport,this.imageClient,last,args.fileId,'file',{signal:this.controller.signal,diagnostic:d=>{diagnostic=d;},guard:()=>{if(!this.cfg().enabled||!conversationAllowed(this.cfg(),last.group))throw new FishError('QQ_DELIVERY_PAUSED');}});
+                this.recordFile(last,result as Record<string,unknown>);
+                if(imageOutcome?.catalogId===args.fileId){
+                  const outcome:Record<string,unknown>={...imageOutcome,...result as Record<string,unknown>,next:undefined};imageOutcome=outcome;
+                  const background=JSON.parse(String(messages[1].content));
+                  messages[1]={role:'system',content:JSON.stringify({...background,actions:{...qqImageActivity(this.ledger,last.group,last.id,contextIds),lastImage:{created:true,catalogId:args.fileId,delivery:outcome.delivered?'sent':outcome.deliveryStatus,deliveryMode:'file',retryScheduled:false}}})};
+                }
+              }else if(call.function.name==='list_files'){
+                if(!this.imageClient||Object.keys(args).some(k=>k!=='offset'))throw new FishError('INVALID_TOOL_ARGS');
+                result=await this.imageClient.listFiles(last,args.offset??0,this.controller.signal);
               }else if(call.function.name==='list_images'){
                 if(!this.imageClient||Object.keys(args).some(k=>!['source','offset'].includes(k)))throw new FishError('INVALID_TOOL_ARGS');
                 result=await this.imageClient.list(last,args.source??'all',args.offset??0,this.controller.signal);
@@ -357,6 +370,12 @@ export class Bot {
       this.gate.record(last.group);this.store.audit('speech',last.group,reason);
     }catch(e){this.store.audit('error',last.group,JSON.stringify(errorDiagnostic(e)));if(!spontaneous&&this.accepting)await this.send(last,e instanceof BudgetError?e.notice:'当前无法回答：'+codeOf(e));}
     finally{if(lease)this.ledger.settle(lease);}
+  }
+  private recordFile(m:Message,result:Record<string,unknown>):void{
+    if(result.deliveryStatus!=='confirmed'||result.reused)return;
+    const id='attachment:'+randomUUID(),text='[发送'+(result.mode==='image'?'图片':'文件')+'] '+result.name+'（ID：'+result.fileId+'）',at=Date.now();
+    this.memory.record({id,conversation:m.group,actor:'DeepSeekFish',replyTo:m.user,role:'assistant',text,at,source:'qq-file-sent'});
+    this.store.db.prepare('INSERT OR IGNORE INTO messages(id,grp,usr,text,at,mentioned,event,reply_to) VALUES (?,?,?,?,?,?,?,?)').run(id,m.group,'DeepSeekFish',text,at,0,'ordinary',m.user);
   }
   private async send(m:Message,text:string):Promise<void>{
     if(!this.cfg().enabled||!conversationAllowed(this.cfg(),m.group))return;

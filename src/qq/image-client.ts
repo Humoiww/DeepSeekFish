@@ -6,6 +6,7 @@ import {verifyGeneratedImage} from '../image/generated.js';
 import { verifyArtifact } from '../codex/verify.js';
 import type { Artifact } from '../codex/artifacts.js';
 import type { ImageSource } from './image-library.js';
+import {catalogPath,type CatalogFile} from './file-library.js';
 
 export const qqBrokerSocket=(root:string)=>safePath(root,'runtime/broker/qq.sock');
 export class QQImageClient {
@@ -24,6 +25,11 @@ export class QQImageClient {
   status(message:Message,signal?:AbortSignal){return this.call({op:'status',conversation:message.group,user:message.user},20000,signal);}
   list(message:Message,source:ImageSource='all',offset=0,signal?:AbortSignal){return this.call({op:'list',conversation:message.group,user:message.user,source,offset},20000,signal);}
   view(message:Message,imageIds:string[],signal?:AbortSignal){return this.call({op:'view',conversation:message.group,user:message.user,referenceIds:imageIds},20000,signal,18000000);}
+  listFiles(message:Message,offset=0,signal?:AbortSignal){return this.call({op:'files',conversation:message.group,user:message.user,offset},20000,signal);}
+  async resolveFile(message:Message,fileId:string,signal?:AbortSignal):Promise<CatalogFile>{
+    const file=await this.call({op:'file',conversation:message.group,user:message.user,fileId},20000,signal);
+    if(file.id!==fileId)throw new FishError('FILE_NOT_AVAILABLE');catalogPath(this.root,file);return file;
+  }
   generate(message:Message,plan:ImagePlan,timeout:number,signal?:AbortSignal,referenceIds:string[]=[]){
     return this.call({op:'image',conversation:message.group,user:message.user,messageId:message.id,request:message.text,plan,referenceIds},timeout+45000,signal);
   }

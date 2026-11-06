@@ -15,6 +15,7 @@ import { runCodexImage,type ImageRunner } from '../image/codex-smoke.js';
 import { CodexQuotaMonitor } from '../codex/quota.js';
 import { CodexRateLimitError } from '../codex/rate-limit.js';
 import { QQImageLibrary } from './image-library.js';
+import {QQFileLibrary} from './file-library.js';
 import { ExplorationState } from '../exploration/state.js';
 
 /** Only the trusted QQ process can reach this private socket. No shell, paths,
@@ -24,6 +25,7 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
   const ledger=new Ledger(store,cfg),socket=qqBrokerSocket(root),active=new Set<Promise<void>>(),controllers=new Set<AbortController>();
   store.db.exec('CREATE TABLE IF NOT EXISTS qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT,PRIMARY KEY(conversation,message_id))');
   const library=new QQImageLibrary(root,store);
+  const files=new QQFileLibrary(root,store,library);
   const exploration=new ExplorationState(store,cfg);
   makeDir(root,'runtime/broker');
   if(fs.existsSync(socket)){const st=fs.lstatSync(socket);if(!st.isSocket()||st.uid!==process.getuid?.())throw new FishError('QQ_BROKER_PATH_OCCUPIED');fs.unlinkSync(socket);}
@@ -38,7 +40,7 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
         let text='';for await(const part of req){text+=part;if(Buffer.byteLength(text)>16384)throw new FishError('BODY_LIMIT');}
         let body:any;try{body=JSON.parse(text);}catch{throw new FishError('INVALID_JSON');}
         const c=cfg();
-        if(!body||Object.keys(body).some(k=>!['op','conversation','user','messageId','request','plan','referenceIds','source','offset'].includes(k))||
+        if(!body||Object.keys(body).some(k=>!['op','conversation','user','messageId','request','plan','referenceIds','source','offset','fileId'].includes(k))||
           typeof body.conversation!=='string'||typeof body.user!=='string'||!/^[1-9]\d{0,19}$/.test(body.user)||!c.enabled||!conversationAllowed(c,body.conversation)||
           (body.conversation.startsWith('private:')?body.conversation!=='private:'+body.user:!c.admins.includes(body.user)&&!c.groups.includes(body.conversation)))throw new FishError('QQ_BROKER_TARGET_DENIED');
         if(body.op==='status'){
@@ -47,6 +49,8 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
         }
         if(body.op==='list'){res.end(JSON.stringify(library.list(body.conversation,body.user,body.source,body.offset)));return;}
         if(body.op==='view'){res.end(JSON.stringify(library.view(body.conversation,body.user,body.referenceIds)));return;}
+        if(body.op==='files'){res.end(JSON.stringify(files.list(body.conversation,body.user,body.offset)));return;}
+        if(body.op==='file'){res.end(JSON.stringify(files.resolve(body.conversation,body.user,body.fileId)));return;}
         if(body.op!=='image'||!c.images)throw new FishError('IMAGE_DISABLED');
         if(typeof body.messageId!=='string'||!body.messageId.trim()||body.messageId.length>200||typeof body.request!=='string'||body.request.length>2000||!body.request.trim())throw new FishError('INVALID_QQ_IMAGE_REQUEST');
         const checkBackground=()=>{

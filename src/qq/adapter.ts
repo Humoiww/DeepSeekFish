@@ -6,6 +6,7 @@ import type { Message, Transport } from '../types.js';
 import { FishError, codeOf } from '../types.js';
 import { Store } from '../storage/db.js';
 import { safePath, writePrivate } from '../paths.js';
+import {fileName} from './file-library.js';
 
 export function normalize(msg:QQBotInboundMessage,appId:string):Message|undefined{
   if(msg.kind!=='group'||!msg.groupOpenid||!msg.messageId||!msg.senderId)return;
@@ -53,13 +54,26 @@ export class QQTransport implements Transport {
     if(p.toLowerCase().endsWith('.png'))await this.bot.sendImage(this.target(m),{localPath:p});
     else await this.bot.sendFile(this.target(m),{localPath:p},{fileName:p.split(/[\\/]/).at(-1)});
   }
+  async image(m:Message,original:Buffer):Promise<{messageId?:string}>{
+    if(!this.allowed(m.group))throw new FishError('QQ_GROUP_NOT_ALLOWED');
+    const r=await this.bot.sendImage(this.target(m),{buffer:original});
+    if(!r.message?.id)throw new FishError('ONEBOT_SEND_UNCONFIRMED');return {messageId:r.message.id};
+  }
+  async attachment(m:Message,original:Buffer,name:string):Promise<{messageId?:string}>{
+    if(!this.allowed(m.group))throw new FishError('QQ_GROUP_NOT_ALLOWED');fileName(name);
+    const r=await this.bot.sendFile(this.target(m),{buffer:original},{fileName:name});
+    if(!r.message?.id)throw new FishError('ONEBOT_SEND_UNCONFIRMED');return {messageId:r.message.id};
+  }
   stop():void{this.stopped=true;this.bot.stop();this.status='stopped';}
 }
 export function echoKey(group:string,text:string):string{return 'echo:'+createHash('sha256').update(group+'\0'+text).digest('hex');}
 export class MockTransport implements Transport {
   status='mock';sent:{group:string;text:string}[]=[];files:string[]=[];
+  pictures:{group:string;bytes:Buffer}[]=[];attachments:{group:string;name:string;bytes:Buffer}[]=[];
   async send(m:Message,text:string):Promise<void>{this.sent.push({group:m.group,text});}
   async file(_m:Message,p:string):Promise<void>{if(!fs.existsSync(p))throw new FishError('FILE_MISSING');this.files.push(p);}
+  async image(m:Message,bytes:Buffer){this.pictures.push({group:m.group,bytes});return {messageId:'mock-image-'+this.pictures.length};}
+  async attachment(m:Message,bytes:Buffer,name:string){this.attachments.push({group:m.group,bytes,name});return {messageId:'mock-file-'+this.attachments.length};}
   stop():void{this.status='stopped';}
 }
 export function credentials(root:string):{appId:string;appSecret:string}|undefined{
