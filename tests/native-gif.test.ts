@@ -47,3 +47,28 @@ test('uncertain GIF delivery preserves its receipt and never blindly uploads twi
   const a=await sendGeneratedImage(f.root,f.store,transport,message(),'generated-'+id,10485760),b=await sendGeneratedImage(f.root,f.store,transport,message(),'generated-'+id,10485760);assert.equal(a.deliveryStatus,'unconfirmed');assert.equal(b.reused,true);assert.equal(sent,1);
  }finally{f.cleanup();}
 });
+
+test('QQ native GIF options pass from the same image tool through the broker to the runner and consume one image',async()=>{
+ const {validateImagePlan}=await import('../src/web/images.js'),{startQQImageBroker}=await import('../src/qq/image-broker.js'),{CodexQuotaMonitor}=await import('../src/codex/quota.js');
+ const {executionFeatures}=await import('../src/codex/platform.js');
+ const f=fixture({qqTransport:'onebot',privateUsers:['20002'],images:true}),bytes=await gif();
+ fs.mkdirSync(f.root+'/config');fs.writeFileSync(f.root+'/config/local.json',JSON.stringify(f.cfg()));fs.writeFileSync(f.root+'/runtime/codex-home/auth.json','{}');
+ let calls=0;const options={frame_count:2,frame_duration_ms:200},plan=validateImagePlan({subject:'一只小鱼',scene:'轻轻游动',style:'插画',composition:'居中',lighting:'柔光',palette:'蓝色',details:'自然循环',gif:options});
+ const runner={async generateImage(cwd:string,_prompt:string,_signal:AbortSignal,_primary?:string,_refs:string[]=[],nativeGif?:unknown){calls++;assert.deepEqual(nativeGif,options);const dir=makeDir(f.root,'runtime/codex-home/generated_images/'+path.basename(cwd));fs.writeFileSync(dir+'/native.gif',bytes);return {text:'',images:[{id:'x',type:'imageGeneration' as const,status:'completed',savedPath:dir+'/native.gif'}]};}};
+ const quota=new CodexQuotaMonitor(f.store,true,{read:async()=>{},close:async()=>{}}),broker=await startQQImageBroker(f.root,f.store,quota,false,runner),client=new QQImageClient(f.root),m=message('你自由设计',{group:'private:20002',user:'20002'});
+ try{
+  assert.equal(executionFeatures(true).image_generation_animation,true);assert.equal(executionFeatures(false).image_generation_animation,false);assert.equal(executionFeatures(true).shell_tool,false);
+  const result=await client.generate(m,plan,1000);assert.equal(result.format,'gif');assert.equal(result.animated,true);assert.equal(result.frames,2);assert.deepEqual(fs.readFileSync(client.verifiedImage(result.imageId,result.manifest,10485760)),bytes);assert.equal(f.ledger.value('image'),1);
+  await client.generate(m,plan,1000);assert.equal(calls,1);assert.equal(f.ledger.value('image'),1);
+  for(const bad of [{frame_count:1},{frame_duration_ms:10},{frame_count:Infinity},{path:'/etc/passwd'}])await assert.rejects(client.generate({...m,id:'invalid-'+JSON.stringify(bad)},{...plan,gif:bad} as any,1000),/INVALID_GIF_OPTIONS/);
+ }finally{await broker.close();await quota.close();f.cleanup();}
+});
+test('a static provider result cannot satisfy a native GIF request and is not automatically regenerated',async()=>{
+ const {runCodexImage}=await import('../src/image/codex-smoke.js'),{MockImageProvider}=await import('../src/image/provider.js');const f=fixture();let calls=0;
+ try{
+  fs.writeFileSync(f.root+'/runtime/codex-home/auth.json','{}');
+  const runner={async generateImage(cwd:string){calls++;const dir=makeDir(f.root,'runtime/codex-home/generated_images/'+path.basename(cwd));await new MockImageProvider().generate('',dir);return {text:'',images:[{id:'x',type:'imageGeneration' as const,status:'completed',savedPath:dir+'/mock.png'}]};}};
+  const result=await runCodexImage(f.root,'native GIF',{cfg:f.cfg(),ledger:f.ledger,group:'g',signal:new AbortController().signal,runner,gif:{}});
+  assert.equal(result.ok,false);assert.equal(result.error,'CODEX_NATIVE_GIF_NOT_RETURNED');assert.equal(result.actual?.format,'png');assert.ok(fs.existsSync(f.root+'/runtime/outputs/'+result.id+'/image.png'));assert.equal(calls,1);assert.equal(f.ledger.value('image'),1);
+ }finally{f.cleanup();}
+});

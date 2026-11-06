@@ -1,3 +1,4 @@
+import {gifParameters} from '../image/options.js';
 import type { ModelTool } from '../types.js';
 import { imageFields } from '../web/images.js';
 import { knowledgeUpdateParameters } from '../memory/knowledge.js';
@@ -10,7 +11,7 @@ export function qqChatTools(profile:boolean,image:boolean,qzone=false):ModelTool
     ...(profile?[{type:'function' as const,function:{name:'get_person',description:'查看对方 QQ 头像和资料。',parameters:{type:'object',properties:{view:{type:'string',enum:['avatar','profile']},remark},required:['view'],additionalProperties:false}}}]:[]),
     ...(qzone?[{type:'function' as const,function:{name:'get_qzone',description:'看指定账号的QQ空间说说。target=self是你（肥鱼）自己的空间，speaker是当前说话人，其他人填QQ号；1最新、2上一条。结果和附件标明所属账号。',parameters:{type:'object',properties:{target:{type:'string',description:'self / speaker / 明确的QQ号'},index:{type:'integer',minimum:1,maximum:10000},count:{type:'integer',minimum:1,maximum:10},remark},required:['target','index','count'],additionalProperties:false}}}]:[]),
     ...(image?[{type:'function' as const,function:{name:'generate_image',description:'请GPT小姐画图，referenceIds会附上原图；画面和参考由你选；成图存入图库并返回catalogId，还没发送。随后用send_image先发图再回复。format/animated是实际格式和动画状态。',parameters:{type:'object',
-      properties:{remark,referenceIds:{type:'array',items:{type:'string'},maxItems:3,description:'图库或recentImages的ID，最多3张；本人设定图为character，可与收到的图片一起附上。'},...Object.fromEntries(Object.entries(imageFields).map(([key,label])=>[key,{type:'string',description:label,maxLength:300}]))},
+      properties:{remark,gif:gifParameters,referenceIds:{type:'array',items:{type:'string'},maxItems:3,description:'图库或recentImages的ID，最多3张；本人设定图为character，可与收到的图片一起附上。'},...Object.fromEntries(Object.entries(imageFields).map(([key,label])=>[key,{type:'string',description:label,maxLength:300}]))},
       required:Object.keys(imageFields),additionalProperties:false}}}]:[])
   ];
 }

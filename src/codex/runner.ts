@@ -1,3 +1,4 @@
+import {validateGif,type GifOptions} from '../image/options.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { safePath } from '../paths.js';
@@ -20,15 +21,17 @@ export class AppServerRunner implements TaskRunner {
     if(process.env.FISH_CODEX_IMAGE_ONLY==='1')throw new FishError('CODEX_IMAGE_ONLY');
     return (await this.execute(cwd,brief,signal,false)).text;
   }
-  async generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string,additionalReferences:string[]=[]):Promise<CodexRunResult>{
-    return this.execute(cwd,prompt,signal,true,referencePath,additionalReferences);
+  async generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string,additionalReferences:string[]=[],gif?:GifOptions):Promise<CodexRunResult>{
+    return this.execute(cwd,prompt,signal,true,referencePath,additionalReferences,gif);
   }
-  private async execute(cwd:string,brief:string,signal:AbortSignal,imageGeneration:boolean,referencePath?:string,additionalReferences:string[]=[]):Promise<CodexRunResult>{
+  private async execute(cwd:string,brief:string,signal:AbortSignal,imageGeneration:boolean,referencePath?:string,additionalReferences:string[]=[],gif?:GifOptions):Promise<CodexRunResult>{
     if(!['linux','win32'].includes(process.platform))throw new FishError('CODEX_PLATFORM_UNSUPPORTED');
+    if(gif!==undefined)gif=validateGif(gif);
     cwd=taskDirectory(this.root,cwd);
     const diagnostic=new CodexDiagnostics(this.root,path.basename(cwd),brief,imageGeneration,referencePath);
+    diagnostic.record.request.gif=gif;
     diagnostic.record.request.referencePaths=[...(referencePath?[referencePath]:[]),...additionalReferences];
-    let processRpc:RpcProcess|undefined,final='',fallback='',failureCode:string|undefined;
+    let processRpc:RpcProcess|undefined,final='',fallback='',failureCode:string|undefined,nativeGifDenied=false,stderrTail='';
     try{
     if(referencePath){
       if(referencePath!==safePath(cwd,'character-reference.png'))throw new FishError('CODEX_IMAGE_REFERENCE_INVALID');
@@ -47,7 +50,7 @@ export class AppServerRunner implements TaskRunner {
     rpc.on('notice',(method:string,p:any)=>diagnostic.notice(method,p));
     rpc.on('serverRequest',p=>diagnostic.event('server-request',p));
     rpc.on('rpcError',p=>diagnostic.event('rpc-error',p));
-    rpc.on('stderr',text=>diagnostic.stderr(text));
+    rpc.on('stderr',text=>{diagnostic.stderr(text);stderrTail=(stderrTail+text).slice(-8192);if(/image generation failed: http 400.*GIF output is not enabled for this request\./.test(stderrTail))nativeGifDenied=true;});
       diagnostic.event('app-server-started');
       await initialize(rpc,cwd);
       const account=await rpc.call('account/read',{refreshToken:false});
@@ -93,10 +96,12 @@ export class AppServerRunner implements TaskRunner {
       diagnostic.event('turn-requested',{referenceAttached:!!referencePath||!!additionalReferences.length,referenceCount:Number(!!referencePath)+additionalReferences.length});
       await rpc.call('turn/start',{threadId:thread.id,cwd,approvalPolicy:'never',permissions:PERMISSION_PROFILE,
         input:[{type:'text',text:imageGeneration?
-          'Use your built-in image generation tool to generate exactly one image for this prompt, PNG or animated GIF as requested. Do not call any separate Image API or create a replacement with code. No retries.\n'+brief:
+          'Use your built-in image generation tool to generate exactly one image for this prompt, PNG or animated GIF as requested. Do not call any separate Image API or create a replacement with code. No retries.\n'+(gif!==undefined?'Use the native image_gen.imagegen gif argument '+JSON.stringify(gif)+'. Return native GIF, not a static sprite sheet.\n':'')+brief:
           '只处理以下有限任务。仅在当前目录创建产物；不访问私人文件、凭据、网络或其他项目。\n'+brief},
           ...[...(referencePath?[referencePath]:[]),...additionalReferences].map(path=>({type:'localImage',path}))]});
-      return await done;
+      const result=await done;
+      if(nativeGifDenied)throw new FishError('CODEX_NATIVE_GIF_NOT_ENABLED');
+      return result;
     }catch(e){failureCode=codeOf(e);throw e;}
     finally{try{await processRpc?.stop();}catch(e){failureCode=codeOf(e);throw e;}finally{diagnostic.finish(final||fallback,failureCode);}}
   }

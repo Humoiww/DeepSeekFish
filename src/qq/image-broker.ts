@@ -70,7 +70,7 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
           const character=selected.some(i=>i.id==='character');
           // QQ's model already chose the scene and references. Selecting its
           // own reference must not replace another subject with Whale-chan.
-          const result=await runCodexImage(root,prompt,{cfg:c,ledger,group:body.conversation,signal:controller.signal,mock,character:false,references:selected,runner});
+          const result=await runCodexImage(root,prompt,{cfg:c,ledger,group:body.conversation,signal:controller.signal,mock,character:false,references:selected,runner,gif:plan.gif});
           if(result.error==='CODEX_RATE_LIMITED')quota.limited(new CodexRateLimitError(result.retryAt));
           await quota.afterImage(result.id,before);
           if(!result.ok||result.manifest?.length!==1)throw new FishError(result.error??'CODEX_IMAGE_GENERATION_FAILED');

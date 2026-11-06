@@ -1,3 +1,4 @@
+import {validateGif,type GifOptions} from './options.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -8,7 +9,7 @@ import { Store } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
 import { AppServerRunner, type CodexImageItem,type CodexRunResult } from '../codex/runner.js';
 import { collectArtifacts, type Artifact } from '../codex/artifacts.js';
-import {verifyGeneratedImage} from './generated.js';
+import {verifyGeneratedImage,generatedInfo} from './generated.js';
 import { verifyPng,MockImageProvider } from './provider.js';
 import { prepareCharacterPortrait,verifyCharacterReference,type CharacterReference } from './character-reference.js';
 import { CodexRateLimitError } from '../codex/rate-limit.js';
@@ -41,7 +42,7 @@ export function captureCodexImage(root:string,cwd:string,images:CodexImageItem[]
   }catch(e){if(created&&target)fs.rmSync(target,{force:true});throw e;}
 }
 
-export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server'|'mock';error?:string;retryAt?:number;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number;diagnostic?:CodexRecord}
+export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server'|'mock';error?:string;retryAt?:number;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number;diagnostic?:CodexRecord;actual?:ReturnType<typeof generatedInfo>;requestedGif?:GifOptions}
 export function publishCodexImage(root:string,id:string,maxBytes:number):Artifact[]{
   if(!/^[a-z0-9-]{1,64}$/.test(id))throw new FishError('INVALID_TASK_ID');
   const cwd=safePath(root,'runtime/workspace/'+id);
@@ -53,8 +54,8 @@ export function publishCodexImage(root:string,id:string,maxBytes:number):Artifac
   // whole file set before publishing. The native image consumes the only file allowance.
   return collectArtifacts(root,id,1,maxBytes);
 }
-export interface ImageRunner {generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string,additionalReferences?:string[]):Promise<CodexRunResult>}
-export interface ImageJobOptions {cfg:Config;ledger:Ledger;group:string;signal:AbortSignal;mock?:boolean;character?:boolean;references?:SelectedReference[];runner?:ImageRunner}
+export interface ImageRunner {generateImage(cwd:string,prompt:string,signal:AbortSignal,referencePath?:string,additionalReferences?:string[],gif?:GifOptions):Promise<CodexRunResult>}
+export interface ImageJobOptions {cfg:Config;ledger:Ledger;group:string;signal:AbortSignal;mock?:boolean;character?:boolean;references?:SelectedReference[];runner?:ImageRunner;gif?:GifOptions}
 
 /** Cheap preflight, repeated atomically at dispatch. Does not enable any global switch. */
 export function checkImageCapacity(root:string,cfg:Config,ledger:Ledger,mock=false):void{
@@ -75,6 +76,7 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
   const signal=AbortSignal.any([options.signal,AbortSignal.timeout(cfg.codexTimeoutMs)]);
   try{
     signal.throwIfAborted();checkImageCapacity(root,cfg,ledger,mock);
+    if(options.gif!==undefined)report.requestedGif=validateGif(options.gif);
     const cwd=makeDir(root,'runtime/workspace/'+id);
     const prepared=prepareCharacterPortrait(root,cwd,prompt,options.character);reference=prepared.reference;
     selected=stageReferences(root,cwd,options.references??[]);
@@ -84,9 +86,9 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
       await new MockImageProvider().generate('offline fixture only',cwd);
       fs.renameSync(safePath(cwd,'mock.png'),safePath(cwd,'image.png'));
     }else{
-      const result=await (options.runner??new AppServerRunner(root)).generateImage(cwd,prepared.prompt+selectedPrompt,signal,reference?.path,selected.map(i=>i.path));
+      const result=await (options.runner??new AppServerRunner(root)).generateImage(cwd,prepared.prompt+selectedPrompt,signal,reference?.path,selected.map(i=>i.path),report.requestedGif);
       signal.throwIfAborted();report.nativeImageCompletions=result.images.length;
-      captureCodexImage(root,cwd,result.images,cfg.maxArtifactBytes);
+      const file=captureCodexImage(root,cwd,result.images,cfg.maxArtifactBytes);report.actual=generatedInfo(file);
       if(reference)verifyCharacterReference(result.images,reference);
       verifySelectedReferences(result.images,selected);
     }
@@ -94,7 +96,9 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
     if(reference){fs.rmSync(reference.path,{force:true});reference=undefined;}
     for(const ref of selected)fs.rmSync(ref.path,{force:true});selected=[];
     report.manifest=publishCodexImage(root,id,cfg.maxArtifactBytes);
-    report.outputDir=safePath(root,'runtime/outputs/'+id);report.ok=true;
+    report.outputDir=safePath(root,'runtime/outputs/'+id);
+    if(report.requestedGif&&(!report.actual?.animated||report.actual.format!=='gif'))throw new FishError('CODEX_NATIVE_GIF_NOT_RETURNED');
+    report.ok=true;
   }catch(e){
     stopUnconfirmed=codeOf(e)==='CODEX_PROCESS_NOT_TERMINATED';
     report.error=signal.aborted?'CODEX_IMAGE_CANCELLED_OR_TIMED_OUT':codeOf(e);
@@ -109,7 +113,7 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
     }
     report.elapsedMs=Date.now()-started;
     const diagnostic=readCodexRecord(root,id);
-    if(diagnostic){diagnostic.delivery={ok:report.ok,error:report.error,nativeImageCompletions:report.nativeImageCompletions};saveCodexRecord(root,diagnostic);report.diagnostic=diagnostic;}
+    if(diagnostic){report.nativeImageCompletions??=diagnostic.images.length;diagnostic.delivery={ok:report.ok,error:report.error,nativeImageCompletions:report.nativeImageCompletions};saveCodexRecord(root,diagnostic);report.diagnostic=diagnostic;}
   }
   return report;
 }

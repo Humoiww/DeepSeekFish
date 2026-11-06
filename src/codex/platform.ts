@@ -8,7 +8,7 @@ export const PERMISSION_PROFILE='deepseekfish-restricted-v1';
 export const disabledFeatures={multi_agent:false,apps:false,hooks:false,image_generation:false,plugins:false,remote_plugin:false,
   computer_use:false,browser_use:false,skill_mcp_dependency_install:false,workspace_dependencies:false,use_legacy_landlock:false};
 export function executionFeatures(imageGeneration=false):Record<string,boolean>{
-  return {...disabledFeatures,image_generation:imageGeneration,...(imageGeneration?{shell_tool:false}: {})};
+  return {...disabledFeatures,image_generation:imageGeneration,image_generation_animation:imageGeneration,...(imageGeneration?{shell_tool:false}: {})};
 }
 export function childEnvironment(root:string):NodeJS.ProcessEnv {
   const env:NodeJS.ProcessEnv={};
