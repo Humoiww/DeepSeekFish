@@ -33,9 +33,11 @@ export class QzonePublisher {
   }
   private headers(cookie:string){return {cookie,referer:'https://user.qzone.qq.com/'+this.self,origin:'https://user.qzone.qq.com','user-agent':'Mozilla/5.0','content-type':'application/x-www-form-urlencoded;charset=UTF-8'};}
   async upload(bytes:Buffer):Promise<UploadedPhoto>{
-    if(bytes.length>10485760||imageMime(bytes)!=='image/png')throw new FishError('QZONE_IMAGE_INVALID');
+    if(bytes.length>10485760)throw new FishError('QZONE_IMAGE_INVALID');
+    const mime=imageMime(bytes),extension=({'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp'} as Record<string,string>)[mime];
+    if(!extension)throw new FishError('QZONE_IMAGE_INVALID');
     const a=await this.auth(),url=UPLOAD+'?g_tk='+a.bkn;
-    const body=new URLSearchParams({filename:'image.png',uin:this.self,skey:a.parts.skey??'',zzpaneluin:this.self,zzpanelkey:'',p_uin:this.self,p_skey:a.parts.p_skey,
+    const body=new URLSearchParams({filename:'image.'+extension,uin:this.self,skey:a.parts.skey??'',zzpaneluin:this.self,zzpanelkey:'',p_uin:this.self,p_skey:a.parts.p_skey,
       qzonetoken:'',uploadtype:'1',albumtype:'7',exttype:'0',refer:'shuoshuo',output_type:'jsonhtml',charset:'utf-8',output_charset:'utf-8',
       upload_hd:'1',hd_width:'2048',hd_height:'10000',hd_quality:'96',base64:'1',jsonhtml_callback:'callback',picfile:bytes.toString('base64'),url,qzreferrer:'https://user.qzone.qq.com/'+this.self});
     const response=await this.http(url,{method:'POST',redirect:'error',headers:this.headers(a.cookies),body,signal:AbortSignal.timeout(60000)});

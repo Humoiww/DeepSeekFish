@@ -28,7 +28,7 @@ export function dialogueMessages(dialogue:Message[],batch:Message[]):ChatMessage
 }
 
 export const contextTools:ModelTool[]=[{type:'function',function:{name:'read_tool_result',description:'取回本轮工具资料；网页默认只读正文。section可选text/images/links/posts/raw，offset按回执续读；数组按条、文字按字符。不重新联网。',parameters:{type:'object',properties:{resultId:{type:'string'},section:{type:'string',enum:['text','images','links','posts','raw']},offset:{type:'integer',minimum:0}},required:['resultId'],additionalProperties:false}}}];
-const RECEIPTS=new Set(['generate_image','send_image','send_meme','collect_meme','remember_images','reply']);
+const RECEIPTS=new Set(['generate_image','send_image','send_file','send_meme','collect_meme','remember_images','reply','publish_qzone','draft_daily_post']);
 const WEB_TEXT_TOKENS=4000;
 type Result={message:ChatMessage;name:string;raw:string;data:any;round:number;body?:string};
 function resultText(result:Result,text:string){
@@ -52,7 +52,7 @@ function clipTokens(text:string,limit:number){
 }
 function webView(id:string,r:Result,body:string,older=false){
   const d=r.data,out:Record<string,unknown>={resultId:id};
-  for(const key of ['url','source','sourceUrl','provider','cached','commentsUrl','totalPosts','postsTruncated','imagesTruncated','title','status','coverage','forum','thread','page','totalPages','totalReported','returned','fetchedAt','latestVerified','notice','unavailable','nextPage','textOffset','nextTextOffset','offset','nextOffset','totalCharacters','truncated','totalImages','totalLinks'])if(d[key]!==undefined)out[key]=d[key];
+  for(const key of ['url','source','sourceUrl','provider','cached','billing','commentsUrl','totalPosts','postsTruncated','imagesTruncated','title','status','coverage','forum','thread','page','totalPages','totalReported','returned','fetchedAt','latestVerified','notice','unavailable','nextPage','textOffset','nextTextOffset','offset','nextOffset','totalCharacters','truncated','totalImages','totalLinks'])if(d[key]!==undefined)out[key]=d[key];
   out[typeof d.text==='string'?'text':'content']=body;
   if(body.length<r.body!.length)out.retainedText={characters:body.length,totalCharacters:r.body!.length,readWith:'read_tool_result',section:'text',offset:body.length};
   // Do not pay for all signed image URLs and repeated per-floor metadata on

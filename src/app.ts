@@ -92,6 +92,6 @@ export function createApp(root:string,mock:boolean,override:Partial<Config>={},d
     groups:cfg().groups.map(group=>({group,ordinaryMessages:store.getMeta('qqOrdinary:'+group)?'observed':'unverified; mention-only capability assumed'})),
     groupCount:cfg().groups.length,tasks:tasks.list().map(t=>({id:t.id,group:t.grp,state:t.state,created:t.created,result:t.result})),
     recent:store.db.prepare('SELECT at,kind,grp,detail FROM audit ORDER BY id DESC LIMIT 30').all()});
-  return {root,store,ledger,model,tasks,bot,transport,token,cfg,set,status,mock,exploration,explorationState};
+  return {root,store,ledger,model,tasks,bot,transport,token,cfg,set,status,mock,exploration,explorationState,search};
 }
 export type App=ReturnType<typeof createApp>;

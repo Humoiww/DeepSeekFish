@@ -65,7 +65,7 @@ async function main():Promise<void>{
       // This short-lived worker only runs the owner's schedule, never receives QQ events.
       const qq=new OneBotTransport(root,app.cfg().onebotUrl,onebotCredential(root),app.store,async()=>{},()=>false);
       try{
-        const {self}=await qq.inspect(),daily=new DailyQzone(root,app.store,app.cfg,app.model,new QzonePublisher(qq,self));
+        const {self}=await qq.inspect(),daily=new DailyQzone(root,app.store,app.cfg,app.model,new QzonePublisher(qq,self),undefined,Date.now,{search:app.search});
         print(action==='preview'?await daily.preview():await daily.run(action==='prepare'));
       }finally{qq.stop();}
     }finally{await app.bot.stop();app.store.close();}
