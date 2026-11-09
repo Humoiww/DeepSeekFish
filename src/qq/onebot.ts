@@ -253,12 +253,8 @@ export class OneBotTransport implements Transport {
   }
 }
 
-/** Keep the original artifact; encode only large static QQ delivery copies. */
+/** Original catalog bytes go straight to QQ. Native image transforms here
+ * could stall the whole chat queue under the service's memory.high limit. */
 export async function deliveryImage(original:Buffer):Promise<Buffer>{
-  if(original.length<=262144)return original;
-  const {default:sharp}=await import('sharp');
-  const meta=await sharp(original,{limitInputPixels:24000000}).metadata();
-  if((meta.pages??1)>1)return original;
-  const copy=await sharp(original,{limitInputPixels:24000000}).rotate().resize({width:1536,height:1536,fit:'inside',withoutEnlargement:true}).flatten({background:'#ffffff'}).jpeg({quality:88}).timeout({seconds:10}).toBuffer();
-  return copy.length<original.length?copy:original;
+  return original;
 }

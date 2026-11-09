@@ -6,32 +6,15 @@ import { FishError,codeOf,type Message,type ChatPart,type ModelTool } from '../t
 import { imageMime } from '../memory/people.js';
 import { dayStart } from '../memory/journal.js';
 import { MAX_IMAGE_BYTES } from '../image/limits.js';
+import {decodeMedia} from './media-decoder.js';
+export {decodeMedia} from './media-decoder.js';
 
-// Load the native decoder only in the QQ media path; WebUI/Codex do not need
-// additional native executable mappings just because they import the CLI.
-let decoder:Promise<(typeof import('sharp'))['default']>|undefined;
-function imageDecoder(){return decoder??=import('sharp').then(({default:sharp})=>{sharp.concurrency(1);sharp.cache({memory:16,files:0,items:20});return sharp;});}
-const MAX_BYTES=MAX_IMAGE_BYTES,MAX_PIXELS=24000000;
-const options={limitInputPixels:MAX_PIXELS,failOn:'warning' as const};
+const MAX_BYTES=MAX_IMAGE_BYTES;
 const CDN=new Set(['multimedia.nt.qq.com.cn','multimedia.nt.qq.com','gchat.qpic.cn','c2cpicdw.qpic.cn','gchat.qlogo.cn']);
 export function qqImageUrl(value:string):URL{
   let url:URL;try{url=new URL(value);}catch{throw new FishError('QQ_MEDIA_URL_DENIED');}
   if(value.length>4096||!['http:','https:'].includes(url.protocol)||!CDN.has(url.hostname)||url.username||url.password||url.port||url.hash)throw new FishError('QQ_MEDIA_URL_DENIED');
   url.protocol='https:';return url;
-}
-export async function decodeMedia(bytes:Buffer){
-  if(bytes.length>MAX_BYTES)throw new FishError('QQ_MEDIA_TOO_LARGE');
-  const sharp=await imageDecoder();
-  const mime=imageMime(bytes),meta=await sharp(bytes,options).metadata();
-  if(!meta.width||!meta.height||meta.width*(meta.pageHeight??meta.height)>MAX_PIXELS)throw new FishError('QQ_MEDIA_PIXEL_LIMIT');
-  const pages=meta.pages??1;if(pages>500)throw new FishError('QQ_MEDIA_FRAME_LIMIT');
-  const count=Math.min(4,pages),indices=Array.from({length:count},(_,i)=>count===1?0:Math.round(i*(pages-1)/(count-1)));
-  const frames:{index:number;atMs:number;png:Buffer}[]=[];
-  for(const index of indices){
-    const png=await sharp(bytes,{...options,page:index,pages:1}).rotate().resize({width:1024,height:1024,fit:'inside',withoutEnlargement:true}).png().timeout({seconds:5}).toBuffer();
-    frames.push({index,atMs:(meta.delay??[]).slice(0,index).reduce((a,b)=>a+b,0),png});
-  }
-  return {mime,pages,width:meta.width,height:meta.pageHeight??meta.height,durationMs:(meta.delay??[]).reduce((a,b)=>a+b,0),frames};
 }
 interface MediaRow {id:string;conversation:string;sender:string;path:string;bytes:number;meta:string;observed:number;meme:number;description:string;tags:string;last_sent:number}
 export interface ReceivedMedia {messageId:string;id?:string;error?:string;position:number;stickerHint?:boolean}
