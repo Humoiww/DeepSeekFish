@@ -70,6 +70,9 @@ const server=createServer(async(req,res)=>{
       else if(action==='status')value=tieba.status();
       else if(action==='start')value=await tieba.start();
       else if(action==='check')value=await tieba.check();
+      else if(action==='publication-start')value=await tieba.startPublication();
+      else if(action==='publication-submit')value=await tieba.submitPublication();
+      else if(action==='publication-check')value=await tieba.checkPublication();
       else if(action==='logout')value=await tieba.logout();
       else if(action==='close'){await tieba.close();value=tieba.status();}
       else if(action==='frame')value={png:(await tieba.frame()).toString('base64')};

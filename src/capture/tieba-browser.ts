@@ -13,11 +13,12 @@ import {tiebaPage} from '../search/tieba.js';
 import {publicAddress,type PublicPoster} from '../search/public-web.js';
 import {replyRequest,replyPage} from '../tieba/replies.js';
 import {sendAppReply} from '../tieba/app-post.js';
+import {WebPostGate,webPostResponse,webPostResult,type WebOutcome} from '../tieba/web-post.js';
 
 const HOME='https://tieba.baidu.com/';
 export const LOGIN='https://passport.baidu.com/v2/?login&tpl=tb&u='+encodeURIComponent(HOME);
 export function baiduResource(raw:string){
- try{const u=new URL(raw);return u.protocol==='about:'&&u.href==='about:blank'||['data:','blob:'].includes(u.protocol)||u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&(['ppui-static-pc.cdn.bcebos.com','hercules.cdn.bcebos.com'].includes(u.hostname)||['baidu.com','bdstatic.com','bdimg.com'].some(d=>u.hostname===d||u.hostname.endsWith('.'+d)));}catch{return false;}
+ try{const u=new URL(raw);return u.protocol==='about:'&&u.href==='about:blank'||['data:','blob:'].includes(u.protocol)||u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&(['ppui-static-pc.cdn.bcebos.com','hercules.cdn.bcebos.com','banti-static.cdn.bcebos.com','tieba-ares.cdn.bcebos.com'].includes(u.hostname)||['baidu.com','bdstatic.com','bdimg.com'].some(d=>u.hostname===d||u.hostname.endsWith('.'+d)));}catch{return false;}
 }
 export function identityData(value:any):TiebaIdentity|null{
  if(!value||typeof value!=='object')throw new FishError('TIEBA_IDENTITY_FORMAT_CHANGED');
@@ -43,10 +44,23 @@ const sleep=(ms:number)=>new Promise<void>(r=>setTimeout(r,ms));
  * its cookies, and only the fixed read API can use them. */
 export class TiebaBrowser implements AccountBrowser {
  private pipe:Pipe;private pages=new Map<string,Promise<string>>();private sessions:string[]=[];private closed=false;private blockedOrigins=new Set<string>();private deadline:NodeJS.Timeout;
+ private webGate?:WebPostGate;private webRequests=new Map<string,{session:string;status:number}>();private onWebOutcome?:(outcome:WebOutcome)=>void;
  private constructor(private child:ChildProcess,private profile:string){
-  this.pipe=new Pipe(child,baiduResource);
+  this.pipe=new Pipe(child,(url,params)=>{
+   if(!baiduResource(url))return false;
+   const u=new URL(url);
+   if(params?.request?.method==='POST'&&u.hostname==='tieba.baidu.com'&&(/\/f\/commit\//.test(u.pathname)||/^\/c\/c\/(post|thread)\/add/.test(u.pathname))){
+    if(!this.webGate?.allow(params))return false;
+    if(params.networkId)this.webRequests.set(params.networkId,{session:params.sessionId??this.sessions.at(-1)!,status:0});return true;
+   }return true;
+  });
   this.deadline=setTimeout(()=>{void this.close();},15*60000);this.deadline.unref();
   this.pipe.onEvent=e=>{
+   if(e.method==='Fetch.requestPaused')e.params.sessionId=e.sessionId;
+   const pending=this.webRequests.get(e.params?.requestId);
+   if(pending&&e.method==='Network.responseReceived')pending.status=e.params.response.status;
+   if(pending&&e.method==='Network.loadingFinished')void this.webResponse(e.params.requestId,pending);
+   if(pending&&e.method==='Network.loadingFailed'){this.webRequests.delete(e.params.requestId);this.webReceived({error:'TIEBA_PUBLICATION_UNCONFIRMED',receipt:{transport:'official_web',responseKind:'network_error'}});}
    if(e.method==='Fetch.requestPaused'&&!baiduResource(e.params.request.url)&&this.blockedOrigins.size<20){try{this.blockedOrigins.add(new URL(e.params.request.url).origin);}catch{}}
    if(e.method==='Target.attachedToTarget'){
     const p=e.params;
@@ -82,11 +96,49 @@ export class TiebaBrowser implements AccountBrowser {
  async login(){await this.navigate(LOGIN);for(let i=0;i<15;i++){const ready=await this.evaluate(`!!document.querySelector('img[src*=qrcode],.tang-pass-qrcode-img,.qrcode')||Array.from(document.querySelectorAll('input')).some(e=>e.offsetWidth>0&&e.offsetHeight>0&&['text','password','tel'].includes(e.type))`);if(ready)break;await sleep(300);}}
  async loginInfo(){const info=await this.evaluate(`(()=>{const t=document.body?.innerText||'';return {bodyCharacters:t.length,inputCount:document.querySelectorAll('input').length,frameCount:document.querySelectorAll('iframe').length,title:document.title.slice(0,120),origin:location.origin+location.pathname,qrVisible:!!document.querySelector('img[src*=qrcode],canvas,.tang-pass-qrcode-img,.qrcode'),challenge:/验证码|安全验证|安全检测/.test(t),blocked:/403 Forbidden|Access Denied|ERR_|页面不存在|无法访问此网站|Bad Gateway/.test(t)};})()`);return {...info,blockedOrigins:[...this.blockedOrigins]};}
  private async evaluate(expression:string,session?:string){const r=await this.pipe.call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},session??await this.session());if(r.exceptionDetails)throw new FishError('TIEBA_PAGE_REQUEST_FAILED');return r.result?.value;}
+ private webReceived(outcome:WebOutcome){const safe=this.webGate?.received(outcome);if(safe)this.onWebOutcome?.(safe);}
+ private async webResponse(id:string,pending:{session:string;status:number}){
+  this.webRequests.delete(id);
+  try{const r=await this.pipe.call('Network.getResponseBody',{requestId:id},pending.session),body=Buffer.from(r.body,r.base64Encoded?'base64':'utf8');if(body.length>2097152)throw new FishError('TIEBA_READ_LIMIT');this.webReceived(webPostResponse(body,pending.status,{bduss:await this.bduss()??'',tbs:''}));}
+  catch{this.webReceived({error:'TIEBA_PUBLICATION_UNCONFIRMED',receipt:{transport:'official_web',responseKind:'unavailable'}});}
+ }
+ private async clickElement(expression:string){
+  const point=await this.evaluate(`(()=>{const e=${expression};if(!e)return null;e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return r.width&&r.height?{x:r.x+r.width/2,y:r.y+r.height/2}:null;})()`);
+  if(!point)throw new FishError('TIEBA_WEB_COMPOSER_CHANGED');const session=await this.session();
+  for(const type of ['mouseMoved','mousePressed','mouseReleased'])await this.pipe.call('Input.dispatchMouseEvent',{type,...point,button:type==='mouseMoved'?'none':'left',clickCount:1},session);
+ }
+ /** Prepare only. Submission remains disarmed until the caller has persisted
+  * the outbox intent and explicitly requests the one normal button click. */
+ async prepareWebPost(request:ReturnType<typeof postingRequest>){
+  if(request.action!=='reply')throw new FishError('TIEBA_WEB_ACTION_NOT_SUPPORTED');
+  this.webGate=new WebPostGate(request,()=>{});this.onWebOutcome=undefined;
+  await this.navigate('https://tieba.baidu.com/p/'+request.fields.tid);
+  let ready=false;for(let i=0;i<24;i++){ready=await this.evaluate(`location.pathname==='/p/'+${JSON.stringify(request.fields.tid)}&&!!document.querySelector('.pc-pb-reply-box .reply-input')`);if(ready)break;await sleep(250);}
+  if(!ready)throw new FishError('TIEBA_WEB_COMPOSER_CHANGED');
+  await this.clickElement(`document.querySelector('.pc-pb-reply-box .reply-input')`);
+  for(let i=0;i<12;i++){if(await this.evaluate(`!!document.querySelector('#tb-editor-pb-content .ql-editor[contenteditable=true]')`))break;await sleep(200);}
+  await this.clickElement(`document.querySelector('#tb-editor-pb-content .ql-editor[contenteditable=true]')`);
+  const session=await this.session();
+  await this.pipe.call('Input.dispatchKeyEvent',{type:'keyDown',key:'a',modifiers:2,windowsVirtualKeyCode:65},session);await this.pipe.call('Input.dispatchKeyEvent',{type:'keyUp',key:'a',modifiers:2,windowsVirtualKeyCode:65},session);
+  await this.pipe.call('Input.insertText',{text:request.fields.content},session);
+  const matches=await this.evaluate(`(()=>{const e=document.querySelector('#tb-editor-pb-content .ql-editor');return (e?.innerText||'').replace(/\\s+/g,'')===${JSON.stringify(request.fields.content.replace(/\s+/g,''))};})()`);
+  if(!matches)throw new FishError('TIEBA_WEB_CONTENT_NOT_VERIFIED');
+  return {prepared:true,transport:'official_web',action:request.action,threadId:request.fields.tid,ready:!this.webGate.outcome};
+ }
+ async submitWebPost(beforeWrite:()=>void,onOutcome:(outcome:WebOutcome)=>void){
+  if(!this.webGate||this.webGate.writes)throw new FishError('TIEBA_WEB_SUBMISSION_ALREADY_STARTED');
+  this.webGate=new WebPostGate(this.webGate.plan,beforeWrite);this.onWebOutcome=onOutcome;this.webGate.armed=true;
+  await this.clickElement(`document.querySelector('.publish-btn:not([disabled])')`);
+  for(let i=0;i<80;i++){if(this.webGate.outcome)return webPostResult(this.webGate.outcome,this.webGate.plan.fields.tid);await sleep(250);}
+  this.webGate.armed=false;throw new FishError('TIEBA_PUBLICATION_UNCONFIRMED');
+ }
+ webPublication(){return this.webGate?{writes:this.webGate.writes,outcome:this.webGate.outcome??null}:null;}
  async identity(){
   const poster=await this.accountPoster();return poster?verifyIdentity(poster):null;
  }
  async frame(){const r=await this.pipe.call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},await this.session());if(typeof r.data!=='string'||r.data.length>8000000)throw new FishError('TIEBA_FRAME_INVALID');return Buffer.from(r.data,'base64');}
  async input(v:LoginInput){
+  if(this.webGate)this.webGate.humanAt=Date.now();
   const s=await this.session(),send=(params:Record<string,unknown>)=>this.pipe.call('Input.dispatchMouseEvent',params,s);
   if(v.kind==='text')await this.pipe.call('Input.insertText',{text:v.text},s);
   else if(v.kind==='key'){

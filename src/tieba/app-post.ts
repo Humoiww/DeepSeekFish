@@ -35,7 +35,7 @@ export class AppPostFailure extends FishError {
 const challenge=(s:string)=>/验证码|安全验证|安全检测|captcha|vcode/i.test(s);
 /** Only a bounded platform error field, never the response body or a
  * credential-bearing challenge URL. Scrub the actual injected credentials. */
-function platformMessage(value:unknown,auth:{bduss:string;tbs:string}){
+export function platformMessage(value:unknown,auth:{bduss:string;tbs:string}){
  let text=typeof value==='string'?value:'';
  for(const secret of [auth.bduss,auth.tbs])if(secret)text=text.split(secret).join('[凭据省略]');
  return text.replace(/https?:\/\/[^\s<>"']+/gi,'[验证链接省略]')

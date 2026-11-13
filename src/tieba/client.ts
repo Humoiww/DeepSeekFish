@@ -19,6 +19,7 @@ export class TiebaAccountClient {
  constructor(private rpc:TiebaRpc=tiebaRpc()){}
  async status():Promise<SessionStatus>{try{return await this.rpc('status');}catch{ return {state:'check_failed',browserRunning:false,profileSaved:false,identity:null,lastIdentity:null,verifiedAt:null,lastError:{code:'TIEBA_WORKER_UNAVAILABLE',stage:'status',at:Date.now()},waitingUntil:null,verificationRequired:true};}}
  start(){return this.rpc('start');}check(){return this.rpc('check');}logout(){return this.rpc('logout');}close(){return this.rpc('close');}
+ startPublication(){return this.rpc('publication-start');}submitPublication(){return this.rpc('publication-submit');}checkPublication(){return this.rpc('publication-check');}
  input(value:LoginInput){return this.rpc('input',value);}
  async frame(){const r=await this.rpc('frame');if(typeof r.png!=='string'||r.png.length>8000000)throw new FishError('TIEBA_FRAME_INVALID');return Buffer.from(r.png,'base64');}
  read(url:string){return this.rpc('read',{url});}

@@ -1,6 +1,6 @@
 'use strict';
 (()=>{
- const dialog=$('tieba-dialog'),screen=$('tieba-frame');let frameUrl,working=false,drag,frameSerial=0;
+ const dialog=$('tieba-dialog'),screen=$('tieba-frame');let frameUrl,working=false,drag,frameSerial=0,screenMode='login';
  const labels={unconfigured:'未配置账号环境',needs_check:'已保存浏览器资料，等待实际验证',waiting_login:'等待你手动登录',logged_in:'已登录（服务端已确认身份）',expired:'登录已失效，需要重新登录',check_failed:'最近一次检查失败；未据此判定会话失效'};
  function render(s){
   const lines=[labels[s.state]||s.state];
@@ -12,7 +12,17 @@
   if(s.lastError)lines.push('最近错误：'+s.lastError.code+' · '+s.lastError.stage);
   if(s.publication?.needsHuman)lines.push('发言已暂停：贴吧要求人工安全验证（'+s.publication.error+'）。已登录不代表发言验证已通过。'+(s.publication.detectedAt?'\n触发时间：'+new Date(s.publication.detectedAt).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong'}):''));
   $('tieba-status').textContent=lines.join('\n');$('tieba-status').style.whiteSpace='pre-wrap';
-  $('tieba-login').hidden=!(s.browserRunning&&s.state==='waiting_login');
+  screenMode=s.interaction==='publication'?'publication':'login';
+  $('tieba-login').hidden=!(s.browserRunning&&(s.state==='waiting_login'||s.interaction==='publication'));
+  $('tieba-start').disabled=s.interaction==='publication';$('tieba-check').disabled=s.interaction==='publication';
+  const w=s.publicationWork,stage=w?.stage,stageLabels={prepared:'原回复已填入官网，尚未提交',started:'提交已开始，等待真实回执',challenge:'官网要求验证，请在下方画面手动完成',accepted:'已获得回执，等待公开确认',confirmed:'已从公开视角确认，自动回帖已恢复',rejected:'官网明确拒绝；未自动重发',unknown:'回执不确定，仅可检查结果，不自动重发'};
+  $('tieba-publication').hidden=!(s.publication?.needsHuman||w);
+  $('tieba-publication-state').textContent=(stageLabels[stage]||'发言被安全验证暂停。打开官网处理，不需要退出账号。')+(w?.result?.receipt?.errorMessage?'\n平台提示：'+w.result.receipt.errorMessage:'');
+  $('tieba-publication-preview').textContent=w?'帖子 '+w.input.threadId+'\n'+w.input.content:'';
+  $('tieba-publication-submit').hidden=stage!=='prepared'||s.interaction!=='publication';
+  $('tieba-publication-check').hidden=!w||stage==='prepared';
+  $('tieba-publication-start').disabled=!!w&&['started','accepted','unknown'].includes(stage);
+  $('tieba-publication-start').hidden=stage==='confirmed';
  }
  async function status(){const s=await api('tieba');render(s);return s;}
  async function frame(){
@@ -25,16 +35,17 @@
   try{await preview.decode();}catch{URL.revokeObjectURL(next);$('tieba-frame-state').textContent='登录画面无法显示，请刷新页面。';throw Error('TIEBA_FRAME_DECODE_FAILED');}
   if(serial!==frameSerial||!dialog.open){URL.revokeObjectURL(next);return;}
   screen.src=next;screen.hidden=false;frameUrl=next;
-  $('tieba-frame-state').textContent='扫码或点击画面登录；画面没有变化时点「刷新画面」。';
+  $('tieba-frame-state').textContent=screenMode==='publication'?'这是 VPS 上同一账号的官网发言页面。先用上方按钮提交，再在画面中手动完成官方验证。':'扫码或点击画面登录；画面没有变化时点「刷新画面」。';
   if(previous)URL.revokeObjectURL(previous);
  }
  async function task(work){if(working)return;working=true;$('tieba-error').textContent='';try{await work();}catch(e){$('tieba-error').textContent='操作未完成：'+e.message;await status().catch(()=>{});}finally{working=false;}}
- const input=v=>task(async()=>{await api('tieba/input',v);await frame();});
- $('tieba-button').onclick=()=>{closeDrawers(false);dialog.showModal();void task(async()=>{const s=await status();if(s.browserRunning&&s.state==='waiting_login')await frame();});};
+ const input=v=>task(async()=>{render(await api('tieba/input',v));await frame();});
+ $('tieba-button').onclick=()=>{closeDrawers(false);dialog.showModal();void task(async()=>{const s=await status();if(s.browserRunning&&(s.state==='waiting_login'||s.interaction==='publication'))await frame();});};
  $('tieba-start').onclick=()=>task(async()=>{render(await api('tieba/start',{}));await frame();});
  $('tieba-account-refresh').onclick=()=>task(async()=>{const a=await api('tieba/account',{});$('tieba-following').textContent=a.account.name+' · UID '+a.account.id+'\n'+a.following.map(f=>f.name+'吧 · '+f.id).join('\n');$('tieba-posting-policy').textContent=(a.posting.needsHuman?'发言已暂停：贴吧要求人工安全验证。已登录不代表发言验证已通过。\n':'')+(a.posting.mode==='preview'?'预演模式：只保存，不真实发布；仅已关注的贴吧允许准备发言。':a.posting.mode==='live'?'仅已关注的贴吧允许真实发言；其他贴吧只读。':'发言配置不可读，当前不能发帖。');});
  $('tieba-actions-refresh').onclick=()=>task(async()=>{$('tieba-actions').textContent=JSON.stringify(await api('tieba/actions'),null,2);});
  $('tieba-check').onclick=()=>task(async()=>{const s=await api('tieba/check',{});render(s);if(s.browserRunning&&s.state==='waiting_login')await frame();});
+ for(const [id,action] of [['start','publication-start'],['submit','publication-submit'],['check','publication-check']])$('tieba-publication-'+id).onclick=()=>task(async()=>{const s=await api('tieba/'+action,{});render(s);if(s.browserRunning&&s.interaction==='publication')await frame();});
  $('tieba-status-refresh').onclick=()=>task(status);$('tieba-frame-refresh').onclick=()=>task(frame);
  $('tieba-logout').onclick=()=>task(async()=>{render(await api('tieba/logout',{}));screen.removeAttribute('src');if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=undefined;}});
  $('tieba-dismiss').onclick=()=>dialog.close();dialog.addEventListener('close',()=>{frameSerial++;screen.hidden=true;if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=undefined;}screen.removeAttribute('src');$('tieba-text').value='';void api('tieba/close',{}).catch(()=>{});});

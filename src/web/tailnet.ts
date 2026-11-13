@@ -1,7 +1,7 @@
 import { createServer, request, type IncomingMessage } from 'node:http';
 
 const reads=new Set(['/','/web.css','/web.js','/activity.js','/exploration.js','/api/exploration','/api/exploration/journal','/tieba.js','/api/tieba','/api/tieba/frame','/api/tieba/actions','/fish.svg','/api/status','/api/sessions','/api/session','/api/file','/api/image','/api/qq','/api/persona','/api/prompts','/api/activity','/api/activity/detail','/api/activity/image']);
-const writes=new Set(['/api/tieba/account','/api/tieba/start','/api/tieba/check','/api/tieba/logout','/api/tieba/close','/api/tieba/input','/api/tieba/read','/api/bootstrap','/api/sessions','/api/chat','/api/settings','/api/codex-quota/refresh','/api/images/reset','/api/tokens/reset','/api/costs/reset','/api/cancel','/api/qq','/api/persona','/api/exploration/settings','/api/exploration/run','/api/exploration/cancel']);
+const writes=new Set(['/api/tieba/account','/api/tieba/start','/api/tieba/check','/api/tieba/publication-start','/api/tieba/publication-submit','/api/tieba/publication-check','/api/tieba/logout','/api/tieba/close','/api/tieba/input','/api/tieba/read','/api/bootstrap','/api/sessions','/api/chat','/api/settings','/api/codex-quota/refresh','/api/images/reset','/api/tokens/reset','/api/costs/reset','/api/cancel','/api/qq','/api/persona','/api/exploration/settings','/api/exploration/run','/api/exploration/cancel']);
 
 export type TailnetAccess={owner:(address:string,port:number)=>Promise<boolean>;token:string};
 /** Fixed-target gateway. Owner devices use Tailscale identity, with the local

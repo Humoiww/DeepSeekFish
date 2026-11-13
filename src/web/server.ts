@@ -76,6 +76,9 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
             if(action==='account')value=await app.tieba.account();
             else if(action==='start')value=await app.tieba.start();
             else if(action==='check')value=await app.tieba.check();
+            else if(action==='publication-start')value=await app.tieba.startPublication();
+            else if(action==='publication-submit')value=await app.tieba.submitPublication();
+            else if(action==='publication-check')value=await app.tieba.checkPublication();
             else if(action==='logout')value=await app.tieba.logout();
             else if(action==='close')value=await app.tieba.close();
             else if(action==='input')value=await app.tieba.input(b);
