@@ -88,6 +88,7 @@ export class ExplorationTools{
   const out=(result:any,parts?:ChatPart[])=>({result,parts});
   if(name==='get_tieba_account')return out(await new TiebaAccountClient().account());
   if(name==='get_tieba_replies')return out(await new TiebaAccountClient().replies(args.page??1));
+  if(name==='check_tieba_publication')return out(await new TiebaAccountClient().verify(args.requestId));
   if(name==='publish_tieba')return out(await new TiebaAccountClient().publish(args,'explore:'+this.run.id+':'+callId));
   if(name==='finish_exploration'){if(args.note!==undefined&&(typeof args.note!=='string'||args.note.length>4000))throw new FishError('INVALID_TOOL_ARGS');return {result:{finished:true,note:args.note??''},finish:true};}
   if(name==='read_curiosity')return out(s.state.journal(args));

@@ -4,7 +4,7 @@ import { FishError, codeOf } from '../types.js';
 import { publicUrl } from './provider.js';
 
 const api='https://tiebac.baidu.com',web='https://tieba.baidu.com';
-type Target={kind:'forum'|'thread'|'comments';page:number;forum?:string;tid?:string;pid?:string};
+type Target={kind:'forum'|'thread'|'comments';page:number;forum?:string;tid?:string;pid?:string;postId?:string};
 const array=(v:any):any[]=>Array.isArray(v)?v:[];
 const str=(v:unknown)=>typeof v==='string'||typeof v==='number'?String(v):'';
 const id=(v:unknown)=>/^[1-9]\d{0,19}$/.test(str(v))?str(v):'';
@@ -30,6 +30,7 @@ export function tiebaTarget(u:URL):Target|undefined{
     if(match||path==='/c/f/pb/page'||path==='/mo/q/m'&&q.has('kz')){
       result={kind:'thread',tid:id(match?.[1]??q.get('kz')),page:Number(pn)};
       if(!result.tid)throw new FishError('TIEBA_THREAD_ID_REQUIRED');
+      if(q.has('pid')){result.postId=id(q.get('pid'));if(!result.postId)throw new FishError('TIEBA_POST_ID_REQUIRED');}
     }
   }
   if(result&&(!Number.isSafeInteger(result.page)||result.page<1||result.page>10000))throw new FishError('TIEBA_PAGE_INVALID');
@@ -38,14 +39,14 @@ export function tiebaTarget(u:URL):Target|undefined{
 function pageUrl(t:Target,page=t.page){
   const u=new URL(t.kind==='forum'?'/f':t.kind==='thread'?'/p/'+t.tid:'/p/comment',web);
   if(t.kind==='forum'){u.searchParams.set('kw',t.forum!);u.searchParams.set('pn',String((page-1)*50));}
-  else{u.searchParams.set('pn',String(page));if(t.kind==='comments'){u.searchParams.set('tid',t.tid!);u.searchParams.set('pid',t.pid!);}}
+  else{u.searchParams.set('pn',String(page));if(t.kind==='comments'){u.searchParams.set('tid',t.tid!);u.searchParams.set('pid',t.pid!);}else if(t.postId)u.searchParams.set('pid',t.postId);}
   return u.href;
 }
 /** Public mobile read endpoints use signed form fields. No account credentials. */
 function request(t:Target){
   const fields:Record<string,string>={_client_type:'2',_client_version:'12.64.1.1',pn:String(t.page),rn:'10'};
   if(t.kind==='forum')Object.assign(fields,{kw:t.forum,sort_type:'1'});
-  else Object.assign(fields,{kz:t.tid,...(t.kind==='comments'?{pid:t.pid}:{with_floor:'1',floor_rn:'3'})});
+  else Object.assign(fields,{kz:t.tid,...(t.kind==='comments'?{pid:t.pid}:{with_floor:'1',floor_rn:'3',...(t.postId?{pid:t.postId}:{})})});
   const body=new URLSearchParams(fields);
   body.set('sign',createHash('md5').update(Object.keys(fields).sort().map(k=>k+'='+fields[k]).join('')+'tiebaclient!!!').digest('hex'));
   return {url:api+(t.kind==='forum'?'/c/f/frs/page':t.kind==='thread'?'/c/f/pb/page':'/c/f/pb/floor'),body};
@@ -84,7 +85,9 @@ export async function tiebaPage(raw:string,poster:PublicPoster,signal?:AbortSign
     const source=t.kind==='forum'?data.thread_list:t.kind==='thread'?data.post_list:data.subpost_list;
     if(source!=null&&!Array.isArray(source))throw new FishError('TIEBA_LIST_INVALID');
     // Empty lists are valid, but a missing list without an explicit empty page is not.
-    if(source==null&&Number(data.page?.total_count??data.page?.total_num??-1)!==0)throw new FishError('TIEBA_LIST_MISSING');
+    const missingComments=t.kind==='comments'&&source==null&&Number(data.subpost_num??data.page?.total_count??-1)>0;
+    if(source==null&&t.kind!=='comments'&&Number(data.page?.total_count??data.page?.total_num??-1)!==0)throw new FishError('TIEBA_LIST_MISSING');
+    if(source==null&&t.kind==='comments'&&data.subpost_num==null&&data.page?.total_count==null)throw new FishError('TIEBA_LIST_MISSING');
     const users=new Map(array(data.user_list).map(u=>[id(u.id),u]));
     const images:{url:string;label:string;kind:string}[]=[],links:{url:string;label:string}[]=[],text:string[]=[],posts:any[]=[];
     const thread=t.kind==='forum'?null:{id:t.tid!,title:str(data.thread.title).slice(0,300),author:author(data.thread.author),replyCount:Number(data.thread.reply_num)||0};
@@ -108,15 +111,16 @@ export async function tiebaPage(raw:string,poster:PublicPoster,signal?:AbortSign
       text.push((isForum?(item.pinned?'[置顶] ':'')+item.title:'['+(t.kind==='comments'?'楼中楼':row.floor+'楼')+']')+' id='+rowId+' | '+(who.name??'未知作者')+' | '+(publishedAt??'时间未提供')+'\n'+(isForum?body.text.slice(0,400):body.text));
     }
     const p=data.page??{},current=Number(p.current_page)||t.page;
-    if(current!==t.page)throw new FishError('TIEBA_PAGE_MISMATCH');
+    if(current!==t.page&&!t.postId)throw new FishError('TIEBA_PAGE_MISMATCH');
     const totalPages=Number(p.total_page)||null,hasMore=p.has_more==null?!!totalPages&&current<totalPages:Number(p.has_more)>0;
     const nextPage=hasMore?pageUrl(t,current+1):null;
     if(nextPage)links.push({url:nextPage,label:'下一页'});
-    return {...base,title:forum.name+'吧'+(thread?' · '+thread.title:''),status:posts.length?'content':'empty',
+    return {...base,title:forum.name+'吧'+(thread?' · '+thread.title:''),status:missingComments?'partial':posts.length?'content':'empty',
       coverage:t.kind==='forum'?'forum_thread_previews':t.kind==='thread'?'thread_floors':'floor_comments',
-      forum,thread,page:current,totalPages,totalReported:Number(p.total_count??p.total_num??data.subpost_num)||0,returned:posts.length,
+      forum,thread,page:current,totalPages,totalReported:Number(t.kind==='comments'?data.subpost_num??p.total_count:p.total_count??p.total_num)||0,returned:posts.length,
+      platformNotice:str(data.partial_visible_toast).slice(0,300)||null,
       notice:t.kind==='forum'?'按发帖时间请求，置顶单独标记。列表是摘要，点帖子读取正文；仅当前页，nextPage 继续。':'正文在 text，posts 为作者/楼层/时间索引；textOffset 续读正文，nextPage 翻页，commentsUrl 读楼中楼。仅接口公开返回的内容，删除或隐藏回复可能缺失。',
-      unavailable:[] as {url:string;error:string}[],posts,text:text.join('\n\n').slice(0,200000),images,links,nextPage};
+      unavailable:missingComments?[{url:r.url,error:'TIEBA_COMMENTS_NOT_RETURNED'}]:[] as {url:string;error:string}[],posts,text:text.join('\n\n').slice(0,200000),images,links,nextPage};
   }catch(e){
     if(signal?.aborted)throw e;
     return {...base,status:'unavailable',coverage:'none',notice:'贴吧未返回可读内容；错误见 unavailable，不能当成已读帖子。',

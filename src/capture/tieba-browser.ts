@@ -139,7 +139,11 @@ export class TiebaBrowser implements AccountBrowser {
   if(!['0',0].includes(d?.error_code))throw new FishError('TIEBA_PUBLICATION_REJECTED');
   const thread=request.url.endsWith('/thread/add'),id=String(thread?(d.thread?.id??d.thread_id??d.tid??d.data?.tid??d.data?.thread_id??d.thread_info?.thread_id??''):(d.post?.id??d.post_id??d.pid??d.data?.pid??d.data?.post_id??''));
   if(!/^[1-9]\d{0,19}$/.test(id))throw new FishError('TIEBA_PUBLICATION_UNCONFIRMED');
-  return {id,url:'https://tieba.baidu.com/p/'+(thread?id:request.fields.tid)+(thread?'':'?pid='+id+'#'+id)};
+  const receipt:Record<string,unknown>={errorCode:d.error_code};
+  for(const k of ['is_audit','audit_status','is_post_visible','need_vcode','is_posted']){
+   const v=d[k]??d.post?.[k]??d.thread?.[k];if(typeof v==='boolean'||typeof v==='number'||typeof v==='string'&&/^[0-9_-]{1,24}$/.test(v))receipt[k]=v;
+  }
+  return {id,url:'https://tieba.baidu.com/p/'+(thread?id:request.fields.tid)+(thread?'':'?pid='+id+'#'+id),receipt};
  }
  async read(url:string){
   const poster=await this.accountPoster();if(!poster)throw new FishError('TIEBA_LOGIN_REQUIRED');

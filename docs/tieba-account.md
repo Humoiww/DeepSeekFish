@@ -97,3 +97,17 @@ runtime/tools/node/bin/node scripts/smoke-tieba-posting.mjs
 「自主探索」状态显示最近回复检查、等待唤醒与错误；活动记录中本次入口为「贴吧新回复 · 自主探索」，后续工具调用和实际费用沿用原记录。监听本身不消耗模型 token，不另设预算账本。通知与唤醒任务在同一 SQLite 事务落盘，已分配的通知不因重启反复唤醒；已完成的旧通知保留最多近期 10000 条及仍在扫描水位内的记录。接口分页游标也落盘，页多时分批继续读取。
 
 只读协议参考 [aiotieba ReplyMe 请求](https://github.com/lumina37/aiotieba/blob/master/src/aiotieba/api/get_replys/_api.py) 与 [ReplyMe 数据字段](https://github.com/lumina37/aiotieba/blob/master/src/aiotieba/api/get_replys/protobuf/ReplyMeResIdl.proto)，实现仅解码必要字段，没有引入新框架或暴露凭据。
+
+## 发布回执与后续不可见
+
+平台返回 error_code=0 和帖子 ID 仅记作 `accepted`（已提交），不再直接记 `confirmed`。发布后分别读取公开页面及必要的本人登录态；只有公开读回作者 UID、吧/帖子/父楼、ID、时间、正文均匹配才确认。保留 `receipt` 中白名单审核字段、两种读取的实际状态/提示/错误、首次回执、最后公开可见时间；不能从没有返回的字段猜出删除原因。以后复查若读不到，保留曾经可见的事实，不把消失说成从未发出。
+
+`check_tieba_publication(requestId)` 是只读复查能力，是否调用由模型选择；返回公开可见、仅本人可见或本次未读到。未知及 accepted 内容继续去重，不能因未公开就自动重发。旧记录只更新当前核对结果并保留 initialResult，不改写原探索 trace。预演/明确拒绝/尚在发送中的回执不能用读回伪造成功。
+
+修正读取链接的 `pid` 原先被丢弃的问题，支持按实际回复定位。楼中楼总数非零但平台未返回列表时，返回 `partial`、已读父楼及 `TIEBA_COMMENTS_NOT_RETURNED`，不再把这种缺失一概记成解析器坏了；空楼中楼以平台 subpost_num=0 为准。平台的 `partial_visible_toast` 原样作为提示保留，不将通用提示等同于某条回复的确定审核结论。
+
+主人实际观察到回复先出现后消失；只读核对时两个目标均未读回，对应帖子响应包含「贴子审核中，稍候刷新再试」。随后用已安装的隔离浏览器、原 Profile 互斥锁和当前账号，在官方 `/pmc/recycle` 页面只读切换「系统删贴」，查到 6 条真实回复全部被系统以「涉嫌异常行为」删除，包括 PID 154137729422、154137730644。全程没有点击恢复、删除或发布，也没有修改生产代码/服务来读取。默认的「吧主团队删贴」为 0 条，不能拿这个默认标签冒充全部回收站。平台没有进一步公布命中的设备/IP/账号信号，不能把它说成某个关键词、某个 IP 或单一缺失字段的确定原因。
+
+官方说明：[被删原因和回收站分类](https://help.baidu.com/question2?class=406&id=2639&prod_id=3)、[可登录但不能发帖时检查系统处理记录](https://help.baidu.com/question?class=0&id=3332&prod_id=28)。新账号、IP 或客户端环境只可能是线索，在无平台具体记录前不认定为原因；不修改网络、伪造设备或改变人格来试探审核。
+
+另查到贴吧当前提供的 [Agent API 文档](https://tieba.baidu.com/skill/api-reference.md)：TB_TOKEN 认证，`/c/c/claw/addThread`、`/c/c/claw/addPost`。文档列出的社区为抓虾吧、虾评吧，发帖参数没有任意 forumId；未验证其支持当前授权的「大肥鱼吧」「肥鱼避难所吧」，因此没有擅自切换、申请密钥、注册新身份或扩大关注范围。参考文档中的人格/固定心跳/强制点赞等内容未作为项目指令执行。

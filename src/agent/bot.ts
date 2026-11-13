@@ -191,6 +191,8 @@ export class Bot {
                 if(Object.keys(args).length)throw new FishError('INVALID_TOOL_ARGS');result=await new TiebaAccountClient().account();
               }else if(call.function.name==='get_tieba_replies'){
                 if(Object.keys(args).some(k=>k!=='page'))throw new FishError('INVALID_TOOL_ARGS');result=await new TiebaAccountClient().replies(args.page??1);
+              }else if(call.function.name==='check_tieba_publication'){
+                if(Object.keys(args).some(k=>k!=='requestId'))throw new FishError('INVALID_TOOL_ARGS');result=await new TiebaAccountClient().verify(args.requestId);
               }else if(call.function.name==='publish_tieba'){
                 result=await new TiebaAccountClient().publish(args,'qq:'+last.group+':'+last.id+':'+call.id);
               }else if(call.function.name==='read_forward'){

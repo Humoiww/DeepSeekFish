@@ -24,5 +24,6 @@ export class TiebaAccountClient {
  read(url:string){return this.rpc('read',{url});}
  account(){return this.rpc('account');}publish(input:PublishInput,requestId:string){return this.rpc('publish',{input,requestId});}history(){return this.rpc('history');}
  replies(page=1){return this.rpc('replies',{page});}
+ verify(requestId:string){return this.rpc('verify',{requestId});}
 }
 export const tiebaAccountRead=(url:string)=>new TiebaAccountClient().read(url);
