@@ -25,7 +25,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         res.statusCode=403;throw new FishError('LOCAL_ONLY');
       }
       const url=new URL(req.url??'/',origin);
-      const assets:Record<string,[string,string]>={'/':['index.html','text/html'],'/web.css':['web.css','text/css'],'/web.js':['web.js','text/javascript'],'/activity.js':['activity.js','text/javascript'],'/exploration.js':['exploration.js','text/javascript'],'/fish.svg':['fish.svg','image/svg+xml']};
+      const assets:Record<string,[string,string]>={'/':['index.html','text/html'],'/web.css':['web.css','text/css'],'/web.js':['web.js','text/javascript'],'/activity.js':['activity.js','text/javascript'],'/exploration.js':['exploration.js','text/javascript'],'/tieba.js':['tieba.js','text/javascript'],'/fish.svg':['fish.svg','image/svg+xml']};
       if(req.method==='GET'&&assets[url.pathname]){
         const [name,type]=assets[url.pathname];res.setHeader('Content-Type',type+'; charset=utf-8');
         res.end(fs.readFileSync(safePath(app.root,'src/web/public/'+name)));return;
@@ -38,7 +38,12 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       }
       if(!equal(req.headers.authorization??'','Bearer '+app.token)){res.statusCode=401;throw new FishError('LOCAL_AUTH_REQUIRED');}
       let value:unknown;
-      if(req.method==='GET'&&url.pathname==='/api/status')value=app.status();
+      if(req.method==='GET'&&url.pathname==='/api/tieba')value=await app.tieba.status();
+      else if(req.method==='GET'&&url.pathname==='/api/tieba/actions')value=await app.tieba.history();
+      else if(req.method==='GET'&&url.pathname==='/api/tieba/frame'){
+        res.setHeader('Content-Type','image/png');res.end(await app.tieba.frame());return;
+      }
+      else if(req.method==='GET'&&url.pathname==='/api/status')value=app.status();
       else if(req.method==='GET'&&url.pathname==='/api/exploration')value=app.exploration.status();
       else if(req.method==='GET'&&url.pathname==='/api/exploration/journal')value=app.exploration.journal({...Object.fromEntries(url.searchParams),offset:Number(url.searchParams.get('offset')??0),removed:url.searchParams.get('removed')==='true'});
       else if(req.method==='GET'&&url.pathname==='/api/activity')value=await app.activity(url.searchParams);
@@ -64,7 +69,22 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         res.setHeader('Content-Security-Policy',"default-src 'none'; sandbox");res.end(content);return;
       }else if(req.method==='POST'){
         const b=await body(req);
-        if(url.pathname==='/api/sessions')value=app.createSession();
+        if(url.pathname.startsWith('/api/tieba/')){
+          const action=url.pathname.slice(11);
+          try{
+            if(!['input','read'].includes(action)&&Object.keys(b).length)throw new FishError('TIEBA_INPUT_INVALID');
+            if(action==='account')value=await app.tieba.account();
+            else if(action==='start')value=await app.tieba.start();
+            else if(action==='check')value=await app.tieba.check();
+            else if(action==='logout')value=await app.tieba.logout();
+            else if(action==='close')value=await app.tieba.close();
+            else if(action==='input')value=await app.tieba.input(b);
+            else if(action==='read')value=await app.tiebaRead(b);
+            else throw new FishError('TIEBA_ACTION_DENIED');
+            if(!['input'].includes(action))app.tiebaAudit(action,value);
+          }catch(e){if(action!=='input')app.tiebaAudit(action,{error:codeOf(e)});throw e;}
+        }
+        else if(url.pathname==='/api/sessions')value=app.createSession();
         else if(url.pathname==='/api/open'){
           bootstrap=randomBytes(32).toString('hex');expires=Date.now()+300000;
           value={launchUrl:origin+'/#bootstrap='+bootstrap,mock:app.mock};

@@ -22,6 +22,8 @@ import { MemoryJournal,dayStart,recallTools } from '../memory/journal.js';
 import { recentDialogue,dialogueMessages,dialogueTime,TurnContext,contextTools,contextMetrics } from './context.js';
 import { PersonMemory } from '../memory/people.js';
 import { qqResources,qqImageActivity } from '../qq/resources.js';
+import {tiebaTools} from '../tieba/posting.js';
+import {TiebaAccountClient} from '../tieba/client.js';
 import { qqChatTools,imageLibraryTools,fileTools } from '../qq/chat-tools.js';
 import { QQImageClient } from '../qq/image-client.js';
 import { validateImagePlan } from '../web/images.js';
@@ -120,7 +122,7 @@ export class Bot {
         const current=messages.at(-1)!;
         messages[messages.length-1]=turnContext.images({...current,content:[{type:'text',text:String(current.content)},...this.media!.parts(last.group,incoming)]},-1);
       }
-      const tools=[...recallTools,...contextTools,...knowledgeTools,...(this.forwards?forwardTools:[]),...(c.search?[...webTools,...browseTools.filter(t=>t.function.name==='browse_page'||this.media)]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.imageClient&&this.transport.attachment?fileTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
+      const tools=[...recallTools,...contextTools,...knowledgeTools,...(this.forwards?forwardTools:[]),...(c.search?[...tiebaTools,...webTools,...browseTools.filter(t=>t.function.name==='browse_page'||this.media)]:[]),...qqChatTools(!!this.people,!!this.imageClient&&c.images,!!this.qzone),...(this.imageClient?imageLibraryTools():[]),...(this.imageClient&&this.transport.attachment?fileTools():[]),...(this.media&&this.transport.meme?mediaTools(mediaIds):[])];
       const used=new Set<string>(),trace:any[]=[];let calls=0,imageRequested=false,memeSent=false;
       let imageOutcome:Record<string,unknown>|undefined;const memeResults=new Map<string,Record<string,unknown>>();
       const visibleImages=new Set(mediaIds);
@@ -185,6 +187,10 @@ export class Bot {
                 // sending, so it can shorten/retry or reply without an edit.
                 if(memory&&!memory.ok)result={sent:false,memory};
                 else{if(args.text.trim())await this.send(last,args.text);result={sent:!!args.text.trim(),...(memory?{memory}:{})};finished=true;}
+              }else if(call.function.name==='get_tieba_account'){
+                if(Object.keys(args).length)throw new FishError('INVALID_TOOL_ARGS');result=await new TiebaAccountClient().account();
+              }else if(call.function.name==='publish_tieba'){
+                result=await new TiebaAccountClient().publish(args,'qq:'+last.group+':'+last.id+':'+call.id);
               }else if(call.function.name==='read_forward'){
                 if(!this.forwards)throw new FishError('QQ_FORWARD_UNAVAILABLE');
                 const read=await this.forwards.read(last.group,args,this.controller.signal);

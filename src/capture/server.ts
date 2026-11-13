@@ -3,35 +3,19 @@ import path from 'node:path';
 import { createServer } from 'node:http';
 import { spawn,type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { StringDecoder } from 'node:string_decoder';
+import {Pipe} from './cdp.js';
+import {TiebaSessionManager} from '../tieba/session.js';
+import {TiebaBrowser} from './tieba-browser.js';
 
 const base='/srv/deepseekfish/capture',browser=base+'/browser/chrome-headless-shell';
 const allowed=(raw:string)=>{try{const u=new URL(raw);return ['about:','data:','blob:'].includes(u.protocol)||u.protocol==='https:'&&(u.hostname==='aegis.cdn-go.cn'||['qq.com','qpic.cn','qlogo.cn','gtimg.cn','gtimg.com','idqqimg.com','tencent.com'].some(d=>u.hostname===d||u.hostname.endsWith('.'+d)));}catch{return false;}};
-class Pipe {
-  onEvent?:(event:any)=>void;
-  private seq=0;private buffer='';private pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>();
-  constructor(private child:ChildProcess){
-    const decoder=new StringDecoder('utf8');
-    (child.stdio[4] as NodeJS.ReadableStream).on('data',(bytes:Buffer)=>{
-      this.buffer+=decoder.write(bytes);if(this.buffer.length>24000000){child.kill('SIGKILL');return;}
-      for(let i;(i=this.buffer.indexOf('\0'))>=0;){const line=this.buffer.slice(0,i);this.buffer=this.buffer.slice(i+1);let p:any;try{p=JSON.parse(line);}catch{continue;}
-        if(p.id){const pending=this.pending.get(p.id);if(pending){this.pending.delete(p.id);p.error?pending.reject(Error('CAPTURE_PROTOCOL_FAILED')):pending.resolve(p.result);}}
-        else {this.onEvent?.(p);if(p.method==='Fetch.requestPaused')void this.call(allowed(p.params.request.url)?'Fetch.continueRequest':'Fetch.failRequest',allowed(p.params.request.url)?{requestId:p.params.requestId}:{requestId:p.params.requestId,errorReason:'BlockedByClient'},p.sessionId).catch(()=>{});}
-      }
-    });
-    child.on('exit',()=>{for(const p of this.pending.values())p.reject(Error('CAPTURE_BROWSER_EXIT'));this.pending.clear();});
-  }
-  call(method:string,params:Record<string,unknown>={},sessionId?:string):Promise<any>{
-    const id=++this.seq;return new Promise((resolve,reject)=>{this.pending.set(id,{resolve,reject});(this.child.stdio[3] as NodeJS.WritableStream).write(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})})+'\0');});
-  }
-}
 async function capture(uin:string,cookie:string,postId?:string){
   const dir=fs.mkdtempSync(base+'/state/job-');let child:ChildProcess|undefined,timer:NodeJS.Timeout|undefined;
   try{
     child=spawn(browser,['--headless','--disable-gpu','--disable-background-networking','--disable-component-update','--no-first-run','--disable-sync','--password-store=basic','--remote-debugging-pipe','--user-data-dir='+dir,'about:blank'],{stdio:['ignore','ignore','pipe','pipe','pipe'],detached:true,env:{PATH:'/usr/bin:/bin',HOME:base+'/state',TMPDIR:'/tmp',LANG:'C.UTF-8'}});
     child.on('error',()=>{});(child.stderr as NodeJS.ReadableStream).on('data',()=>{});
     timer=setTimeout(()=>{try{process.kill(-child!.pid!,'SIGKILL');}catch{}},22000);
-    const rpc=new Pipe(child),failed:string[]=[],blocked:string[]=[];
+    const rpc=new Pipe(child,allowed),failed:string[]=[],blocked:string[]=[];
     rpc.onEvent=p=>{if(p.method==='Network.loadingFailed'&&failed.length<20)failed.push(p.params.errorText);if(p.method==='Fetch.requestPaused'&&!allowed(p.params.request.url)&&blocked.length<20){try{const u=new URL(p.params.request.url);blocked.push(u.origin+u.pathname);}catch{}}};
     const {targetId}=await rpc.call('Target.createTarget',{url:'about:blank'}),{sessionId}=await rpc.call('Target.attachToTarget',{targetId,flatten:true});
     await rpc.call('Page.enable',{},sessionId);await rpc.call('Network.enable',{},sessionId);
@@ -63,16 +47,38 @@ async function capture(uin:string,cookie:string,postId?:string){
   }
 }
 if(process.env.LISTEN_PID!==String(process.pid)||process.env.LISTEN_FDS!=='1')throw Error('CAPTURE_SOCKET_REQUIRED');
+const tieba=new TiebaSessionManager('/srv/deepseekfish/app/runtime/tieba-account',profile=>TiebaBrowser.open(profile));
+process.on('SIGTERM',()=>{void tieba.close(true).finally(()=>process.exit(0));setTimeout(()=>process.exit(1),4000).unref();});
 let busy=false;
 const server=createServer(async(req,res)=>{
   res.setHeader('Content-Type','application/json');res.setHeader('Cache-Control','no-store');
   try{
-    if(req.method!=='POST'||req.url!=='/capture'){res.writeHead(404);res.end('{}');return;}
-    if(busy){res.writeHead(429);res.end('{"error":"CAPTURE_BUSY"}');return;}
+    if(req.method!=='POST'||req.url!=='/capture'&&!req.url?.startsWith('/tieba/')){res.writeHead(404);res.end('{}');return;}
+    if(busy&&req.url==='/capture'){res.writeHead(429);res.end('{"error":"CAPTURE_BUSY"}');return;}
     let body='';for await(const b of req){body+=b;if(Buffer.byteLength(body)>16384)throw Error('CAPTURE_INPUT_LIMIT');}
-    const input=JSON.parse(body);if(!/^[1-9]\d{4,19}$/.test(input.uin)||typeof input.cookie!=='string'||input.cookie.length>12000||/[\r\n\0]/.test(input.cookie))throw Error('CAPTURE_INPUT_INVALID');
+    const input=JSON.parse(body);
+    if(req.url?.startsWith('/tieba/')){
+      let value:unknown;
+      const action=req.url.slice(7);
+      if(!input||Array.isArray(input)||typeof input!=='object')throw Error('TIEBA_INPUT_INVALID');
+      if(!['input','read','publish'].includes(action)&&Object.keys(input).length)throw Error('TIEBA_INPUT_INVALID');
+      if(action==='account')value=await tieba.account();
+      else if(action==='history')value=tieba.postingHistory();
+      else if(action==='publish'){if(Object.keys(input).some(k=>!['input','requestId'].includes(k)))throw Error('TIEBA_INPUT_INVALID');value=await tieba.publish(input.input,input.requestId);}
+      else if(action==='status')value=tieba.status();
+      else if(action==='start')value=await tieba.start();
+      else if(action==='check')value=await tieba.check();
+      else if(action==='logout')value=await tieba.logout();
+      else if(action==='close'){await tieba.close();value=tieba.status();}
+      else if(action==='frame')value={png:(await tieba.frame()).toString('base64')};
+      else if(action==='input')value=await tieba.input(input);
+      else if(action==='read'){if(Object.keys(input).some(k=>k!=='url')||typeof input.url!=='string'||input.url.length>4096)throw Error('TIEBA_INPUT_INVALID');value=await tieba.read(input.url);}
+      else throw Error('TIEBA_ACTION_DENIED');
+      res.end(JSON.stringify(value));return;
+    }
+    if(!/^[1-9]\d{4,19}$/.test(input.uin)||typeof input.cookie!=='string'||input.cookie.length>12000||/[\r\n\0]/.test(input.cookie))throw Error('CAPTURE_INPUT_INVALID');
     if(input.postId!==undefined&&(typeof input.postId!=='string'||!/^[a-zA-Z0-9._-]{1,120}$/.test(input.postId)))throw Error('CAPTURE_INPUT_INVALID');
     busy=true;try{res.end(JSON.stringify(await capture(input.uin,input.cookie,input.postId)));}finally{busy=false;}
-  }catch{if(!res.headersSent)res.writeHead(502);res.end('{"error":"CAPTURE_FAILED"}');}
+  }catch(e){if(!res.headersSent)res.writeHead(502);const code=e instanceof Error&&/^TIEBA_[A-Z_0-9]+$/.test(e.message)?e.message:'CAPTURE_FAILED';res.end(JSON.stringify({error:code}));}
 });
 server.requestTimeout=30000;server.headersTimeout=5000;server.listen({fd:3},()=>console.log('Private Qzone screenshot service ready; Chromium sandbox enabled.'));

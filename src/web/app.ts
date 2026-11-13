@@ -29,6 +29,8 @@ import { modelPayload } from '../agent/model.js';
 import {traceModel} from '../agent/model-trace.js';
 import {diagnosticSafe,errorDiagnostic} from '../diagnostics.js';
 import { PROJECT_TIMEZONE } from '../time.js';
+import {TiebaAccountClient} from '../tieba/client.js';
+import {tiebaTarget} from '../search/tieba.js';
 import { dailyStatus } from '../qq/daily-qzone.js';
 import { newsStatus } from '../qq/daily-news.js';
 
@@ -43,7 +45,7 @@ const tools=[tool('list_files','列出当前会话工作区内的文件'),
   ...webTools,...browseTools.filter(t=>t.function.name==='browse_page'),...knowledgeTools,
   tool('queue_codex','提出独立 Codex 任务，只进入待审队列，不能执行或批准任务',{task:{type:'string'}},['task'])];
 
-export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imageRunner?:ImageRunner,quotaReader?:QuotaReader,publicReader:PublicReader=readPublic){
+export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imageRunner?:ImageRunner,quotaReader?:QuotaReader,publicReader:PublicReader=readPublic,tieba=new TiebaAccountClient()){
   prepare(root);loadSecrets(root);
   const store=new Store(root,mock?'webui-mock.sqlite':'webui.sqlite');
   const budgetStore=new Store(root,mock?'webui-mock-budget.sqlite':'fish.sqlite');
@@ -220,7 +222,9 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   async function close(){accepting=false;await qqBroker?.close();for(const c of active.values())c.abort();await tasks.stop();
     while(active.size)await new Promise(resolve=>setTimeout(resolve,10));await quota.close();store.close();budgetStore.close();}
   return {root,mock,token,
-    exploration,
+    exploration,tieba,
+    tiebaRead:async(input:any)=>{if(!input||Object.keys(input).some(k=>!['url','mode'].includes(k))||typeof input.url!=='string'||input.url.length>4096||!['public','account'].includes(input.mode)||!tiebaTarget(new URL(input.url)))throw new FishError('TIEBA_READ_TARGET_DENIED');return input.mode==='account'?tieba.read(input.url):browsePage(input.url,0,undefined,publicReader);},
+    tiebaAudit:(action:string,result:any)=>budgetStore.audit('tieba-account','web',JSON.stringify({action,state:result?.state,error:result?.error??result?.lastError?.code,at:Date.now()})),
     activity:(params:URLSearchParams)=>activity.list(params),activityDetail:(id:unknown)=>activity.detail(id),activityImage:(id:unknown)=>activity.image(id),
     persona:()=>personaSettings(root),savePersona:(input:unknown)=>savePersona(root,input),
     prompts:()=>({systems:promptSystems(root),knowledge:knowledgeSnapshot(root),latest:promptSnapshots(budgetStore)}),

@@ -12,7 +12,7 @@ const timestamp=(v:unknown)=>Number(v)>0&&Number(v)<1e11?new Date(Number(v)*1000
 const author=(v:any)=>({id:id(v?.id)||null,name:str(v?.name_show||v?.name).slice(0,100)||null});
 const safeUrl=(v:unknown)=>{try{const u=new URL(str(v),web);return v&&publicUrl(u.href)?u.href:null;}catch{return null;}};
 
-function target(u:URL):Target|undefined{
+export function tiebaTarget(u:URL):Target|undefined{
   if(!['tieba.baidu.com','www.tieba.baidu.com','m.tieba.baidu.com','c.tieba.baidu.com','tiebac.baidu.com','wapp.baidu.com'].includes(u.hostname))return;
   const q=u.searchParams,path=u.pathname.replace(/\/$/,'')||'/',pn=q.get('pn')??'1';
   let result:Target|undefined;
@@ -70,8 +70,8 @@ function content(parts:any,label:string){
 /** URL-specific transport, not a conversational intent gate. Any public bar
  * can be chosen by the model through the existing browse_page tool. */
 export async function tiebaPage(raw:string,poster:PublicPoster,signal?:AbortSignal){
-  const t=target(new URL(raw));if(!t)return;
-  const r=request(t),base={url:pageUrl(t),sourceUrl:r.url,title:'百度贴吧',fetchedAt:new Date().toISOString(),latestVerified:false};
+  const t=tiebaTarget(new URL(raw));if(!t)return;
+  const r=request(t),base={url:pageUrl(t),sourceUrl:r.url,title:'百度贴吧',fetchedAt:new Date().toISOString(),latestVerified:false,access:{mode:'public'}};
   try{
     const resource=await poster(r.url,r.body,signal);
     let data:any;try{data=JSON.parse(resource.bytes.toString('utf8'));}catch{throw new FishError('TIEBA_RESPONSE_NOT_JSON');}
@@ -101,7 +101,7 @@ export async function tiebaPage(raw:string,poster:PublicPoster,signal?:AbortSign
       const body=content(isForum?(row.first_post_content??row.abstract):row.content,(isForum?'帖子 ':'楼层 ')+rowId);
       const comments=Number(row.sub_post_number)||0;
       const commentsUrl=!isForum&&t.kind==='thread'&&comments>0?pageUrl({kind:'comments',tid:t.tid,pid:rowId,page:1}):null;
-      const item:any={id:rowId,url,author:who,publishedAt,...(isForum?{title:str(row.title).slice(0,300),pinned:Number(row.is_top)>0,replyCount:Number(row.reply_num)||0,bodyKind:'preview'}:{floor:Number(row.floor)||null,parentPostId:t.kind==='comments'?t.pid:null,commentCount:comments,commentsUrl})};
+      const item:any={id:rowId,url,author:who,publishedAt,content:body.text.slice(0,isForum?400:1000),contentTruncated:body.text.length>(isForum?400:1000),...(isForum?{title:str(row.title).slice(0,300),pinned:Number(row.is_top)>0,replyCount:Number(row.reply_num)||0,bodyKind:'preview'}:{floor:Number(row.floor)||null,parentPostId:t.kind==='comments'?t.pid:null,commentCount:comments,commentsUrl})};
       posts.push(item);images.push(...body.images);links.push(...body.links);
       if(isForum)links.push({url,label:(item.pinned?'[置顶] ':'')+item.title});
       if(commentsUrl)links.push({url:commentsUrl,label:row.floor+'楼的楼中楼（'+comments+'条）'});
@@ -116,7 +116,7 @@ export async function tiebaPage(raw:string,poster:PublicPoster,signal?:AbortSign
       coverage:t.kind==='forum'?'forum_thread_previews':t.kind==='thread'?'thread_floors':'floor_comments',
       forum,thread,page:current,totalPages,totalReported:Number(p.total_count??p.total_num??data.subpost_num)||0,returned:posts.length,
       notice:t.kind==='forum'?'按发帖时间请求，置顶单独标记。列表是摘要，点帖子读取正文；仅当前页，nextPage 继续。':'正文在 text，posts 为作者/楼层/时间索引；textOffset 续读正文，nextPage 翻页，commentsUrl 读楼中楼。仅接口公开返回的内容，删除或隐藏回复可能缺失。',
-      unavailable:[],posts,text:text.join('\n\n').slice(0,200000),images,links,nextPage};
+      unavailable:[] as {url:string;error:string}[],posts,text:text.join('\n\n').slice(0,200000),images,links,nextPage};
   }catch(e){
     if(signal?.aborted)throw e;
     return {...base,status:'unavailable',coverage:'none',notice:'贴吧未返回可读内容；错误见 unavailable，不能当成已读帖子。',

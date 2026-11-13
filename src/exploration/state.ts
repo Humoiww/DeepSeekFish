@@ -9,7 +9,7 @@ export type ExplorationSettings={enabled:boolean;owner:string;minMinutes:number;
 export const explorationDefaults:ExplorationSettings={enabled:false,owner:'',minMinutes:9,maxMinutes:11,probability:0.028,maxRunMinutes:60,runTokens:0,allowImages:false,allowPublicPosts:false};
 export const interval=(s:ExplorationSettings,rng=random)=>Math.round((s.minMinutes+(s.maxMinutes-s.minMinutes)*rng())*60000);
 export const expectedPerDay=(s:ExplorationSettings)=>1440/((s.minMinutes+s.maxMinutes)/2)*s.probability;
-export type ExplorationRun={id:string;owner:string;trigger:string;state:string;created:number;started:number|null;finished:number|null;lease:number;lock:string|null;error:string|null;tokens:number;web_tokens:number;web_nano:number;unknown_tokens:number;shared:number;note:string|null;cancel:number};
+export type ExplorationRun={id:string;owner:string;trigger:string;state:string;created:number;started:number|null;finished:number|null;lease:number;lock:string|null;error:string|null;tokens:number;web_tokens:number;web_nano:number;unknown_tokens:number;shared:number;note:string|null;cancel:number;instruction?:string|null};
 const active="state IN ('queued','running')";
 export class ExplorationState{
   constructor(public store:Store,private cfg:()=>Config,private now=Date.now,private rng=random){
@@ -23,7 +23,8 @@ export class ExplorationState{
       CREATE TABLE IF NOT EXISTS curiosity_revisions(seq INTEGER PRIMARY KEY,id TEXT NOT NULL,run_id TEXT NOT NULL,version INTEGER NOT NULL,at INTEGER NOT NULL,entry TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS exploration_proposals(task_id TEXT PRIMARY KEY,run_id TEXT NOT NULL,created INTEGER NOT NULL);`);
     store.db.exec('CREATE TABLE IF NOT EXISTS exploration_observations(run_id TEXT NOT NULL,step INTEGER NOT NULL,tool TEXT NOT NULL,data TEXT NOT NULL,at INTEGER NOT NULL,PRIMARY KEY(run_id,step))');
-    store.transaction(()=>{for(const column of ['web_tokens','unknown_tokens','web_nano'])if(!store.db.prepare('PRAGMA table_info(exploration_runs)').all().some((c:any)=>c.name===column))store.db.exec('ALTER TABLE exploration_runs ADD COLUMN '+column+' INTEGER NOT NULL DEFAULT 0');});
+    store.transaction(()=>{if(!store.db.prepare('PRAGMA table_info(exploration_runs)').all().some((c:any)=>c.name==='instruction'))store.db.exec('ALTER TABLE exploration_runs ADD COLUMN instruction TEXT');
+    for(const column of ['web_tokens','unknown_tokens','web_nano'])if(!store.db.prepare('PRAGMA table_info(exploration_runs)').all().some((c:any)=>c.name===column))store.db.exec('ALTER TABLE exploration_runs ADD COLUMN '+column+' INTEGER NOT NULL DEFAULT 0');});
   }
   settings():ExplorationSettings{
     const configured=JSON.parse(this.store.getMeta('exploration:settings')??'{}'),users=this.cfg().privateUsers;
@@ -57,7 +58,7 @@ export class ExplorationState{
     if(prior)return {run:prior,reused:true};
     const id=randomUUID();this.store.db.prepare("INSERT INTO exploration_runs(id,owner,trigger,state,created) VALUES (?,?,?,'queued',?)").run(id,owner,trigger,this.now());return {run:this.get(id),reused:false};
   }
-  manual(){return this.store.transaction(()=>{this.recover();return this.insert('manual');});}
+  manual(instruction?:string){if(instruction!==undefined&&(typeof instruction!=='string'||!instruction.trim()||instruction.length>4000))throw new FishError('INVALID_EXPLORATION_INSTRUCTION');return this.store.transaction(()=>{this.recover();const result=this.insert('manual');if(instruction!==undefined){if(result.reused)throw new FishError('EXPLORATION_BUSY');this.store.db.prepare('UPDATE exploration_runs SET instruction=? WHERE id=?').run(instruction,result.run.id);return {...result,run:this.get(result.run.id)};}return result;});}
   check(){return this.store.transaction(()=>{
     this.recover();const s=this.settings(),row=this.store.db.prepare('SELECT * FROM exploration_schedule WHERE id=1').get() as any;
     if(!s.enabled)return {checked:false,hit:false};
@@ -88,7 +89,8 @@ export class ExplorationState{
     const a=JSON.stringify(args),summary:any={};
     for(const k of ['url','title','error','sent','deliveryStatus','imageId','catalogId','id','version','state','billing'])if(result?.[k]!==undefined)summary[k]=result[k];
     summary.excerpt=String(result?.text??result?.content??result?.description??'').slice(0,600);
-    summary.sources=(result?.results??result?.images??[]).slice(0,8).map((r:any)=>({url:r.url??r.image?.sourceUrl,id:r.id??r.image?.id,title:String(r.title??r.description??'').slice(0,200)}));
+    const candidates=result?.results??result?.images;
+    summary.sources=(Array.isArray(candidates)?candidates:[]).slice(0,8).map((r:any)=>({url:r.url??r.image?.sourceUrl,id:r.id??r.image?.id,title:String(r.title??r.description??'').slice(0,200)}));
     this.store.db.prepare('INSERT OR IGNORE INTO exploration_observations VALUES (?,?,?,?,?)').run(run,step,tool,JSON.stringify({arguments:a.length>3000?{excerpt:a.slice(0,3000)}:args,result:summary}),this.now());
   }
   observations(id:string,offset=0){const rows=this.store.db.prepare('SELECT step,tool,data,at FROM exploration_observations WHERE run_id=? ORDER BY step LIMIT 11 OFFSET ?').all(id,offset) as any[];return {observations:rows.slice(0,10).map(r=>({...r,...JSON.parse(r.data),data:undefined})),nextOffset:rows.length>10?offset+10:null};}

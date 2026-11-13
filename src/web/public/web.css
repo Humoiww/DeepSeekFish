@@ -128,3 +128,5 @@ dialog{max-height:calc(var(--app-height,100dvh) - 24px);overflow-y:auto;overscro
 #exploration-dialog select {width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--line,#dce3d8);border-radius:10px;background:#fff;color:inherit;font:inherit}
 
 #budget-detail{white-space:pre-line;overflow-wrap:anywhere}
+
+#tieba-dialog{width:min(1040px,calc(100% - 24px));max-height:92dvh;overflow:auto}#tieba-frame{display:block;width:100%;border:1px solid #dbe2d5;touch-action:none;user-select:none}#tieba-dialog input,#tieba-dialog select{font:inherit;padding:10px;border:1px solid #cedaca;border-radius:8px;max-width:100%;box-sizing:border-box;width:100%}.tieba-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}#tieba-dialog label{display:block;margin:10px 0}#tieba-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto}#tieba-dialog button{min-height:44px}

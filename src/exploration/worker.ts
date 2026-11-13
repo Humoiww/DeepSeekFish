@@ -54,10 +54,10 @@ export class ExplorationWorker{
   const background={kind:'自主探索',now:new Date(started).toISOString(),owner:run.owner,delivery:{recipient:run.owner,transport:this.services.transport.status},character:{appearance:appearancePrompt(root),referenceId:'character'},
    curiosity:this.state.journal().entries?.slice(0,5).map(e=>({id:e.id,title:e.title,preview:e.preview.slice(0,200),version:e.version})),recent:newsMemory(this.state.store,run.owner).recent,
    previous:this.state.status().recent.filter((r:any)=>r.id!==run.id&&r.owner===run.owner).slice(0,3).map((r:any)=>({id:r.id,state:r.state,at:r.created,note:r.note?.slice(0,500)})),...qqResources(cfg(),ledger,group,'exploration')};
-  const messages:ChatMessage[]=[{role:'system',content:explorationPrompt(root)},{role:'system',content:JSON.stringify(background)},{role:'user',content:'你醒了一会儿，现在是自己的时间。'}];
+  const messages:ChatMessage[]=[{role:'system',content:explorationPrompt(root)},{role:'system',content:JSON.stringify(background)},{role:'user',content:run.trigger==='manual'&&run.instruction?run.instruction:'你醒了一会儿，现在是自己的时间。'}];
   const logPath='runtime/logs/exploration/'+run.id+'.json';makeDir(root,'runtime/logs/exploration');
   const save=()=>{
-   const log=JSON.stringify(diagnosticSafe({id:run.id,request:run.trigger==='manual'?'手动唤醒 · 自主探索':'随机刻 · 自主探索',conversation:group,startedAt:started,finishedAt:state==='running'?undefined:this.now(),state,note,inputContext:background,trace}));
+   const log=JSON.stringify(diagnosticSafe({id:run.id,request:run.trigger==='manual'?(run.instruction??'手动唤醒 · 自主探索'):'随机刻 · 自主探索',conversation:group,startedAt:started,finishedAt:state==='running'?undefined:this.now(),state,note,inputContext:background,trace}));
    if(Buffer.byteLength(log)>8*1024*1024)throw new FishError('EXPLORATION_TRACE_STORAGE_LIMIT');writePrivateAtomic(root,logPath,log);
   };
   const heartbeat=setInterval(()=>{try{this.state.heartbeat(run.id,run.lock!);const settings=this.state.settings();if(this.now()-started>=settings.maxRunMinutes*60000)controller.abort(new FishError('EXPLORATION_TIME_BUDGET'));}catch(e){controller.abort(e);}},1000);heartbeat.unref();

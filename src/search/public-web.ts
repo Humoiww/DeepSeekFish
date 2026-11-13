@@ -3,7 +3,7 @@ import https from 'node:https';
 import dns from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { Parser } from 'htmlparser2';
-import { FishError } from '../types.js';
+import { FishError,codeOf } from '../types.js';
 import { publicUrl } from './provider.js';
 import { pageEvidence } from './evidence.js';
 import { bilibiliSpace } from './bilibili.js';
@@ -14,6 +14,7 @@ import {mastodonPage} from './mastodon.js';
 import {parseFeed} from './feeds.js';
 import {socialOutput} from './social-common.js';
 import { tiebaPage } from './tieba.js';
+import {tiebaAccountRead} from '../tieba/client.js';
 import { MAX_IMAGE_BYTES } from '../image/limits.js';
 
 export function publicAddress(address:string):boolean{
@@ -136,10 +137,14 @@ function jsonAssets(value:unknown,base:string){
     }
   };visit(value);return {title:'公开JSON数据',text:JSON.stringify(value).slice(0,200000),images:[...images.values()],links:[...links.values()]};
 }
-export async function browsePage(url:string,offset=0,signal?:AbortSignal,reader:PublicReader=readPublic,query='',textOffset=0,poster:PublicPoster=postPublic){
+export async function browsePage(url:string,offset=0,signal?:AbortSignal,reader:PublicReader=readPublic,query='',textOffset=0,poster:PublicPoster=postPublic,accountRead:typeof tiebaAccountRead=tiebaAccountRead){
   if(!Number.isSafeInteger(offset)||offset<0||offset>100000||!Number.isSafeInteger(textOffset)||textOffset<0||textOffset>200000||typeof query!=='string'||query.length>200)throw new FishError('WEB_OFFSET_INVALID');
   if(typeof url!=='string'||url.length>8192||!publicUrl(url))throw new FishError('WEB_PUBLIC_URL_REQUIRED');
-  const tieba=await tiebaPage(url,poster,signal);
+  let tieba=await tiebaPage(url,poster,signal);
+  if(tieba?.status==='unavailable'&&(poster===postPublic||accountRead!==tiebaAccountRead)&&!signal?.aborted){
+    const original=tieba;
+    try{const authenticated=await accountRead(url);if(authenticated?.coverage&&authenticated.status!=='login_required')tieba=authenticated;else if(authenticated?.status==='login_required')tieba={...original,access:{mode:'login_required'}};}catch(e){const code=codeOf(e);if(code==='TIEBA_LOGIN_REQUIRED')tieba={...original,access:{mode:'login_required'}};else if(!['TIEBA_NOT_CONFIGURED','TIEBA_WORKER_UNAVAILABLE','TIEBA_WORKER_FAILED'].includes(code))tieba={...original,unavailable:[...original.unavailable,{url:original.sourceUrl,error:code}]};}
+  }
   if(tieba)return {...tieba,text:tieba.text.slice(textOffset,textOffset+5000),textOffset,nextTextOffset:textOffset+5000<tieba.text.length?textOffset+5000:null,
     images:tieba.images.slice(offset,offset+25),links:tieba.links.slice(offset,offset+25),totalImages:tieba.images.length,totalLinks:tieba.links.length,nextOffset:Math.max(tieba.images.length,tieba.links.length)>offset+25?offset+25:null};
   const feed=await bilibiliSpace(url,reader,signal);

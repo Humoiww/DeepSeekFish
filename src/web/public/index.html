@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"><meta name="color-scheme" content="light"><title>DeepSeekFish · 本地助手</title><link rel="icon" href="/fish.svg" type="image/svg+xml"><link rel="stylesheet" href="/web.css"><script src="/web.js" defer></script><script src="/activity.js" defer></script><script src="/exploration.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"><meta name="color-scheme" content="light"><title>DeepSeekFish · 本地助手</title><link rel="icon" href="/fish.svg" type="image/svg+xml"><link rel="stylesheet" href="/web.css"><script src="/web.js" defer></script><script src="/activity.js" defer></script><script src="/exploration.js" defer></script><script src="/tieba.js" defer></script></head>
 <body>
 <div class="app-shell">
   <!-- Mobile app-shell is a stacking context; keep its backdrop beside the drawers. -->
@@ -13,6 +13,7 @@
     <div class="sidebar-bottom">
       <div class="budget-box"><div><span>今日 API 费用</span><strong id="budget-text">—</strong></div><div class="meter"><i id="budget-bar"></i></div><small id="budget-detail">每次请求前检查预算</small><button id="reset-tokens" class="budget-reset" type="button" title="重置今日可用费用额度，保留实际消费记录及未确认费用">Reset 今日额度</button></div>
       <button id="qq-button" class="sidebar-action"><span>◉</span> QQ 对话 <span class="arrow">↗</span></button>
+      <button id="tieba-button" class="sidebar-action"><span>☷</span> 贴吧账号 <span class="arrow">↗</span></button>
       <button id="exploration-button" class="sidebar-action"><span>♧</span> 自主探索 <span class="arrow">↗</span></button>
       <button id="activity-button" class="sidebar-action"><span>≡</span> 活动记录 <span class="arrow">↗</span></button>
       <button id="persona-button" class="sidebar-action"><span>✎</span> 人格与提示词 <span class="arrow">↗</span></button>
@@ -144,4 +145,19 @@
   <details><summary>她提出的创意</summary><div id="exploration-proposals"></div></details>
 </dialog>
 
+<dialog id="tieba-dialog" aria-labelledby="tieba-heading">
+  <div class="dialog-heading"><h2 id="tieba-heading">贴吧账号</h2><button type="button" class="icon-button" id="tieba-dismiss" aria-label="关闭贴吧账号">×</button></div>
+  <p id="tieba-status" role="status">正在读取状态…</p><p id="tieba-error" class="form-error" role="alert"></p>
+  <div class="tieba-actions"><button id="tieba-start" type="button" class="primary-button">开始登录 / 重新打开登录</button><button id="tieba-check" type="button" class="quiet-button">检查并确认账号</button><button id="tieba-status-refresh" type="button" class="quiet-button">刷新状态</button><button id="tieba-logout" type="button" class="quiet-button">退出此 VPS 的账号</button></div>
+  <section><h3>贴吧发言</h3><p id="tieba-posting-policy">当前预演模式：发帖、回帖和楼中楼只保存预演，不会真实发出；未关注的吧只读。</p><button id="tieba-account-refresh" type="button" class="quiet-button">读取账号与关注列表</button><pre id="tieba-following"></pre><button id="tieba-actions-refresh" type="button" class="quiet-button">查看最近的发言预演</button><pre id="tieba-actions"></pre></section>
+  <p class="hint">在下方百度官方页面扫码或手动完成验证。登录资料独立保存在 VPS；保存资料不等于验证成功。账号状态只在你检查或实际读取时验证，不自动轮询。</p>
+  <section id="tieba-login" hidden>
+    <p class="hint">点击画面操作；可拖动滑块。扫码时可在电脑打开此页，用手机百度 / 贴吧 App 扫码。手机单设备可切换官方短信登录。完成后点「检查并确认账号」。</p>
+    <p id="tieba-frame-state" role="status">点击「开始登录」后加载官方登录画面。</p><img id="tieba-frame" alt="百度官方登录页面" draggable="false" hidden>
+    <div class="tieba-actions"><button id="tieba-frame-refresh" type="button" class="quiet-button">刷新画面</button><button id="tieba-tab" type="button" class="quiet-button">Tab</button><button id="tieba-enter" type="button" class="quiet-button">Enter</button><button id="tieba-backspace" type="button" class="quiet-button">退格</button><button id="tieba-selectall" type="button" class="quiet-button">全选输入框</button><button id="tieba-scroll-up" type="button" class="quiet-button">向上滚动</button><button id="tieba-scroll-down" type="button" class="quiet-button">向下滚动</button></div>
+    <form id="tieba-input-form" autocomplete="off"><label>输入到画面中已点击的官方输入框<input id="tieba-text" type="password" autocomplete="off" maxlength="1000" placeholder="账号 / 验证码 / 密码，仅用于此次手动输入"></label><button type="submit" class="quiet-button">输入</button></form>
+    <p class="hint">输入后本地输入框立即清空；不会写入聊天、活动日志或模型上下文。关闭本窗口会停止浏览器并保留会话；长时间无操作也会自动关闭。</p>
+  </section>
+  <details><summary>验证贴吧读取</summary><form id="tieba-read-form"><label>贴吧名或帖子链接<input id="tieba-read-url" maxlength="1000" placeholder="DeepSeek 或 https://tieba.baidu.com/p/帖子ID"></label><label>读取方式<select id="tieba-read-mode"><option value="public">原有读取路径（公开优先）</option><option value="account">验证使用当前账号读取</option></select></label><button type="submit" class="quiet-button">读取</button></form><pre id="tieba-read-result"></pre></details>
+</dialog>
 </body></html>

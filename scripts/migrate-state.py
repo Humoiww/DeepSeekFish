@@ -87,7 +87,7 @@ if args.action == 'export':
                     relative = f.relative_to(stage) if f.is_relative_to(stage) else f.relative_to(root)
                     archive.add(f, arcname=str(relative), recursive=False)
                 manifest = json.dumps({'version': 1, 'createdAt': datetime.now(timezone.utc).isoformat(), 'files': len(files), 'credentialsIncluded': False,
-                                       'excluded': ['.env', 'runtime/codex-home', 'runtime/data/*token*', 'runtime/data/*secrets*', 'runtime/data/*credentials*', 'runtime/napcat', 'node_modules', 'dist', 'runtime/tools', 'runtime/cache', 'runtime/tmp']}, indent=2).encode()
+                                       'excluded': ['.env', 'runtime/codex-home', 'runtime/tieba-account', 'runtime/data/*token*', 'runtime/data/*secrets*', 'runtime/data/*credentials*', 'runtime/napcat', 'node_modules', 'dist', 'runtime/tools', 'runtime/cache', 'runtime/tmp']}, indent=2).encode()
                 member = tarfile.TarInfo('migration-manifest.json'); member.size = len(manifest); member.mode = 0o600;archive.addfile(member, io.BytesIO(manifest))
             partial.chmod(0o600); os.replace(partial, destination)
         finally:

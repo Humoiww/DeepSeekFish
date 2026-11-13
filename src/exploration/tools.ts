@@ -9,6 +9,8 @@ import {knowledgeTools,knowledgeSnapshot,updateKnowledge} from '../memory/knowle
 import {contextTools,TurnContext} from '../agent/context.js';
 import {hasToolMarkup} from '../agent/tool-protocol.js';
 import {redact} from '../storage/db.js';
+import {tiebaTools} from '../tieba/posting.js';
+import {TiebaAccountClient} from '../tieba/client.js';
 import {webTools,browseTools} from '../search/tools.js';
 import {searchEvidence,type SearchService,type WebCharge} from '../search/provider.js';
 import {browsePage,downloadWebImage} from '../search/public-web.js';
@@ -58,7 +60,7 @@ export class ExplorationTools{
     const copy=structuredClone(t);delete (copy.function.parameters.properties as any)?.remark;
     if(copy.function.name==='generate_image')copy.function.description='请GPT小姐画图，参考图与画面由你选择；返回图库ID，是否发送由你决定。';return copy;
   });
-  return [...extraTools,recall,...contextTools,...knowledgeTools,...(s.cfg().search?[...webTools,...browseTools]:[]),...chat,
+  return [...extraTools,recall,...contextTools,...knowledgeTools,...(s.cfg().search?[...tiebaTools,...webTools,...browseTools]:[]),...chat,
     ...imageLibraryTools(),...(s.transport.attachment?fileTools():[]),
     ...mediaTools([]),...(s.forwards?forwardTools:[]),...(settings.allowPublicPosts&&s.publisher?[tool('publish_qzone','在你自己的QQ空间公开发布图文；与私聊不同，内容会公开。',{text:string,imageId:string},['text','imageId'])]:[])];
  }
@@ -84,6 +86,8 @@ export class ExplorationTools{
   const offered=this.available().find(t=>t.function.name===name);if(!offered)throw new FishError('TOOL_NOT_ALLOWED');
   if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!Object.hasOwn(offered.function.parameters.properties as any,k)))throw new FishError('INVALID_TOOL_ARGS');
   const out=(result:any,parts?:ChatPart[])=>({result,parts});
+  if(name==='get_tieba_account')return out(await new TiebaAccountClient().account());
+  if(name==='publish_tieba')return out(await new TiebaAccountClient().publish(args,'explore:'+this.run.id+':'+callId));
   if(name==='finish_exploration'){if(args.note!==undefined&&(typeof args.note!=='string'||args.note.length>4000))throw new FishError('INVALID_TOOL_ARGS');return {result:{finished:true,note:args.note??''},finish:true};}
   if(name==='read_curiosity')return out(s.state.journal(args));
   if(name==='write_curiosity')return out(s.state.writeJournal(this.run.id,args));
