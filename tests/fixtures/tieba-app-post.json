@@ -1,0 +1,58 @@
+{
+  "source": "https://github.com/Nekomeow114/dsh-tieba-dive/blob/06e1657eb5262d3d2337466debf0a7ca1c165fbf/lib/tieba.js",
+  "license": "MIT; third_party/dsh-tieba-dive.LICENSE",
+  "requests": [
+    {
+      "kind": "reply",
+      "args": {
+        "tid": "11193581226",
+        "fid": "28340562",
+        "kw": "肥鱼避难所",
+        "content": "离线协议样本，不会发送。",
+        "tbs": "OFFLINE_TBS",
+        "bduss": "OFFLINE_BDUSS",
+        "nameShow": "离线鱼"
+      },
+      "hex": "0aab010a290802120932322e31322e312e30520d4f46464c494e455f42445553535a0b4f46464c494e455f544253220b4f46464c494e455f5442539a0124e7a6bbe7babfe58d8fe8aeaee6a0b7e69cacefbc8ce4b88de4bc9ae58f91e98081e38082d201083238333430353632f2010fe882a5e9b1bce981bfe99abee68980ea020b313131393335383132323682030130320131920101318201023132ba03023133d20309e7a6bbe7babfe9b1bc"
+    },
+    {
+      "kind": "comment",
+      "args": {
+        "tid": "11193581226",
+        "fid": "28340562",
+        "kw": "肥鱼避难所",
+        "content": "离线协议样本，不会发送。",
+        "tbs": "OFFLINE_TBS",
+        "bduss": "OFFLINE_BDUSS",
+        "nameShow": "离线鱼",
+        "quoteId": "154137712467",
+        "subPostId": "",
+        "replyUid": "5761543338"
+      },
+      "hex": "0ad4010a290802120932322e31322e312e30520d4f46464c494e455f42445553535a0b4f46464c494e455f544253220b4f46464c494e455f5442539a0124e7a6bbe7babfe58d8fe8aeaee6a0b7e69cacefbc8ce4b88de4bc9ae58f91e98081e38082d201083238333430353632f2010fe882a5e9b1bce981bfe99abee68980ea020b3131313933353831323236f2020c3135343133373731323436378a030c313534313337373132343637920300a2010a3537363135343333333882030130320131920101318201023132d20309e7a6bbe7babfe9b1bc"
+    },
+    {
+      "kind": "subreply",
+      "args": {
+        "tid": "11193581226",
+        "fid": "28340562",
+        "kw": "肥鱼避难所",
+        "content": "回复 #(reply, tb.fixture, 离线吧友) :离线子回复",
+        "tbs": "OFFLINE_TBS",
+        "bduss": "OFFLINE_BDUSS",
+        "nameShow": "离线鱼",
+        "quoteId": "154137712467",
+        "subPostId": "154137729422",
+        "replyUid": "9007199254740993"
+      },
+      "hex": "0afc010a290802120932322e31322e312e30520d4f46464c494e455f42445553535a0b4f46464c494e455f544253220b4f46464c494e455f5442539a013ae59b9ee5a48d2023287265706c792c2074622e666978747572652c20e7a6bbe7babfe590a7e58f8b29203ae7a6bbe7babfe5ad90e59b9ee5a48dd201083238333430353632f2010fe882a5e9b1bce981bfe99abee68980ea020b3131313933353831323236f2020c3135343133373731323436378a030c31353431333737313234363792030c313534313337373239343232a201103930303731393932353437343039393382030130320131920101318201023132d20309e7a6bbe7babfe9b1bc"
+    }
+  ],
+  "responses": {
+    "success": "0a040800120012121a1039303037313939323534373430393933",
+    "rejected": "0a1508b3db06120fe8afb7e6b182e8a2abe68b92e7bb9d1200",
+    "captcha": "0a1608011212e8afb7e8be93e585a5e9aa8ce8af81e7a0811200",
+    "acceptedNoId": "0a04080012001200",
+    "captchaWithZeroCode": "0a100800120ce5ae89e585a8e9aa8ce8af811200"
+  }
+}

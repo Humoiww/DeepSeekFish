@@ -7,9 +7,9 @@ const api='https://tiebac.baidu.com',web='https://tieba.baidu.com';
 type Target={kind:'forum'|'thread'|'comments';page:number;forum?:string;tid?:string;pid?:string;postId?:string};
 const array=(v:any):any[]=>Array.isArray(v)?v:[];
 const str=(v:unknown)=>typeof v==='string'||typeof v==='number'?String(v):'';
-const id=(v:unknown)=>/^[1-9]\d{0,19}$/.test(str(v))?str(v):'';
+const id=(v:unknown)=>typeof v==='number'&&!Number.isSafeInteger(v)?'':/^[1-9]\d{0,19}$/.test(str(v))?str(v):'';
 const timestamp=(v:unknown)=>Number(v)>0&&Number(v)<1e11?new Date(Number(v)*1000).toISOString():null;
-const author=(v:any)=>({id:id(v?.id)||null,name:str(v?.name_show||v?.name).slice(0,100)||null});
+const author=(v:any)=>{const portrait=str(v?.portrait).split('?')[0];return {id:id(v?.id)||null,name:str(v?.name_show||v?.name).slice(0,100)||null,portrait:/^[a-zA-Z0-9_.-]{1,200}$/.test(portrait)?portrait:null};};
 const safeUrl=(v:unknown)=>{try{const u=new URL(str(v),web);return v&&publicUrl(u.href)?u.href:null;}catch{return null;}};
 
 export function tiebaTarget(u:URL):Target|undefined{
@@ -100,7 +100,7 @@ export async function tiebaPage(raw:string,poster:PublicPoster,signal?:AbortSign
     for(const row of array(source).slice(0,100)){
       const rowId=id(row.id);if(!rowId)continue;
       const isForum=t.kind==='forum',url=isForum?web+'/p/'+rowId:pageUrl(t)+(t.kind==='thread'?'&pid='+rowId:'')+'#'+rowId;
-      const who=author(row.author?.id?row.author:users.get(id(row.author_id))),publishedAt=timestamp(isForum?row.create_time:row.time);
+      const uid=id(row.author?.id)||id(row.author_id),who=author({...users.get(uid),...row.author,id:uid}),publishedAt=timestamp(isForum?row.create_time:row.time);
       const body=content(isForum?(row.first_post_content??row.abstract):row.content,(isForum?'帖子 ':'楼层 ')+rowId);
       const comments=Number(row.sub_post_number)||0;
       const commentsUrl=!isForum&&t.kind==='thread'&&comments>0?pageUrl({kind:'comments',tid:t.tid,pid:rowId,page:1}):null;

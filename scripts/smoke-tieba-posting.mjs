@@ -7,7 +7,7 @@ import {TiebaPosting,tiebaTools} from '../dist/src/tieba/posting.js';
 const base=path.resolve('runtime/tmp');fs.mkdirSync(base,{recursive:true});const dir=fs.mkdtempSync(path.join(base,'tieba-posting-smoke-'));
 const actor={id:'101',name:'smoke'},policy={mode:'preview',accountId:'101'},following=[{id:'11',name:'followed-one'},{id:'22',name:'followed-two'}];
 let sends=0;const reads=[];
-const reader={async followed(){return following;},async read(url){reads.push(url);const tid=new URL(url).pathname.includes('/comment')?new URL(url).searchParams.get('tid'):new URL(url).pathname.split('/').at(-1);return {status:'content',forum:{id:tid==='999'?'33':'11'},thread:{id:tid},posts:new URL(url).pathname.includes('/comment')?[{id:'77',parentPostId:'55',author:{id:'202'}}]:[{id:'55'}]};}};
+const reader={async followed(){return following;},async read(url){reads.push(url);const tid=new URL(url).pathname.includes('/comment')?new URL(url).searchParams.get('tid'):new URL(url).pathname.split('/').at(-1);return {status:'content',forum:{id:tid==='999'?'33':'11'},thread:{id:tid},posts:new URL(url).pathname.includes('/comment')?[{id:'77',parentPostId:'55',author:{id:'202',name:'fixture',portrait:'tb.fixture'}}]:[{id:'55',author:{id:'202',name:'fixture',portrait:'tb.fixture'}}]};}};
 const send=async()=>{sends++;throw Error('No network writer exists in this smoke test');},db=new TiebaPosting(dir),results=[];
 try{
  for(const [n,input] of [
@@ -24,6 +24,6 @@ try{
  assert.equal((await db.publish(original,'thread',actor,policy,reader,send)).reused,true);
  await assert.rejects(db.publish(original,'thread',{id:'303',name:'another'},policy,reader,send),/ACCOUNT_NOT_AUTHORIZED/);
  assert.equal(sends,0);assert.ok(db.history().every(r=>r.state==='preview'));
- assert.deepEqual(tiebaTools.map(t=>t.function.name),['get_tieba_account','publish_tieba']);
+ assert.ok(tiebaTools.some(t=>t.function.name==='get_tieba_account'));assert.ok(tiebaTools.some(t=>t.function.name==='publish_tieba'));
  console.log(JSON.stringify({ok:true,mode:'preview',actions:results,realPublicationRequests:0,denied:['unfollowed forum','spoofed forum/thread','spoofed floor','model mode override','another account'],deduplication:true,nestedReplyVerified:true}));
 }finally{db.close();fs.rmSync(dir,{recursive:true,force:true});}

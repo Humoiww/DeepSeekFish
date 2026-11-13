@@ -5,12 +5,17 @@ import path from 'node:path';
 import {FishError,codeOf,type ModelTool} from '../types.js';
 import type {PublicPoster} from '../search/public-web.js';
 import type {TiebaIdentity} from './session.js';
+import {APP_POST_URL,AppPostFailure} from './app-post.js';
 
 export interface FollowedForum {id:string;name:string}
 export interface PublishInput {action:'thread'|'reply'|'comment';forumId:string;title?:string;content:string;threadId?:string;postId?:string;page?:number;subPostId?:string;commentPage?:number}
 export interface PostingPolicy {mode:'preview'|'live';accountId:string}
-export interface PostingReader {followed(userId:string):Promise<FollowedForum[]>;read(url:string):Promise<any>;publicRead?(url:string):Promise<any>}
+export interface SystemDeletion {postId:string;threadId:string;category:'system';reason:string;time:string;timeZone:'Asia/Hong_Kong';source:'tieba_account_recycle'}
+export interface PostingReader {followed(userId:string):Promise<FollowedForum[]>;read(url:string):Promise<any>;publicRead?(url:string):Promise<any>;deletion?(postId:string,threadId:string):Promise<SystemDeletion|null>}
+export interface ReplyTarget {id:string;postId:string;name:string;portrait:string|null}
+export interface PostingRequest {protocol:'legacy_thread_form'|'app_protobuf';action:PublishInput['action'];url:string;fields:Record<string,string>}
 const numeric=(v:unknown)=>typeof v==='string'&&/^[1-9]\d{0,19}$/.test(v);
+const fingerprintOf=(account:string,v:PublishInput)=>createHash('sha256').update(JSON.stringify([account,v.action,v.forumId,v.threadId??'',v.postId??'',v.subPostId??'',v.title??'',v.content])).digest('hex');
 export function publishInput(v:any):PublishInput{
  if(!v||typeof v!=='object'||Array.isArray(v)||Object.keys(v).some(k=>!['action','forumId','title','content','threadId','postId','page','subPostId','commentPage'].includes(k))||!['thread','reply','comment'].includes(v.action)||!numeric(v.forumId)||typeof v.content!=='string'||!v.content.trim()||v.content.length>20000||v.content.includes('\0'))throw new FishError('TIEBA_PUBLISH_INPUT_INVALID');
  if(v.commentPage!==undefined&&(!Number.isInteger(v.commentPage)||v.commentPage<1||v.commentPage>10000))throw new FishError('TIEBA_PAGE_INVALID');
@@ -42,28 +47,37 @@ export async function postingTarget(input:PublishInput,identity:TiebaIdentity,po
  if(identity.id!==policy.accountId)throw new FishError('TIEBA_ACCOUNT_NOT_AUTHORIZED');
  const followed=await reader.followed(identity.id),forum=followed.find(f=>f.id===input.forumId);
  if(!forum)throw new FishError('TIEBA_FORUM_READ_ONLY');
- let replyTo:{id:string;postId:string}|undefined;
+ let replyTo:ReplyTarget|undefined;
  if(input.action!=='thread'){
   const page=await reader.read('https://tieba.baidu.com/p/'+input.threadId+'?pn='+(input.page??1));
   if(page?.status!=='content'||String(page.thread?.id)!==input.threadId)throw new FishError('TIEBA_THREAD_NOT_VERIFIED');
   if(String(page.forum?.id)!==forum.id)throw new FishError('TIEBA_FORUM_MISMATCH');
-  if(input.action==='comment'&&!page.posts?.some((p:any)=>p.id===input.postId))throw new FishError('TIEBA_FLOOR_NOT_VERIFIED');
+  if(input.action==='comment'){
+   const parent=page.posts?.find((p:any)=>p.id===input.postId);if(!parent)throw new FishError('TIEBA_FLOOR_NOT_VERIFIED');
+   if(!numeric(parent.author?.id))throw new FishError('TIEBA_REPLY_TARGET_IDENTITY_UNAVAILABLE');
+   replyTo={id:parent.author.id,postId:parent.id,name:parent.author.name??'',portrait:parent.author.portrait??null};
+  }
   if(input.subPostId){
    const comments=await reader.read('https://tieba.baidu.com/p/comment?tid='+input.threadId+'&pid='+input.postId+'&pn='+(input.commentPage??1));
    const target=comments.posts?.find((p:any)=>p.id===input.subPostId&&p.parentPostId===input.postId);
    if(comments.status!=='content'||String(comments.forum?.id)!==forum.id||String(comments.thread?.id)!==input.threadId||!target||!numeric(target.author?.id))throw new FishError('TIEBA_COMMENT_NOT_VERIFIED');
-   replyTo={id:target.author.id,postId:target.id};
+   if(typeof target.author.name!=='string'||!target.author.name||typeof target.author.portrait!=='string'||! /^[a-zA-Z0-9_.-]{1,200}$/.test(target.author.portrait))throw new FishError('TIEBA_REPLY_TARGET_METADATA_UNAVAILABLE');
+   replyTo={id:target.author.id,postId:target.id,name:target.author.name,portrait:target.author.portrait};
   }
  }
  return {...forum,...(replyTo?{replyTo}:{})};
 }
 /** Plain-text first. Target IDs are server-verified before these API fields
  * are built. CSRF/session fields are added only by the isolated browser. */
-export function postingRequest(input:PublishInput,forum:FollowedForum&{replyTo?:{id:string;postId:string}}){
- const fields:Record<string,string>={_client_type:'2',_client_version:'12.64.1.1',fid:forum.id,kw:forum.name,content:input.content};
+export function postingRequest(input:PublishInput,forum:FollowedForum&{replyTo?:ReplyTarget}):PostingRequest{
+ const fields:Record<string,string>={_client_type:'2',_client_version:input.action==='thread'?'12.64.1.1':'22.12.1.0',fid:forum.id,kw:forum.name,content:input.content};
  if(input.action==='thread')fields.title=input.title!;
- else {fields.tid=input.threadId!;if(input.action==='comment'){fields.quote_id=input.postId!;fields.repostid=input.postId!;if(forum.replyTo){fields.sub_post_id=forum.replyTo.postId;fields.reply_uid=forum.replyTo.id;}}}
- return {url:'https://tiebac.baidu.com'+(input.action==='thread'?'/c/c/thread/add':'/c/c/post/add'),fields};
+ else {fields.tid=input.threadId!;if(input.action==='comment'){
+  if(!forum.replyTo)throw new FishError('TIEBA_REPLY_TARGET_IDENTITY_UNAVAILABLE');
+  fields.quote_id=input.postId!;fields.repostid=input.postId!;fields.sub_post_id=input.subPostId??'';fields.reply_uid=forum.replyTo.id;
+  if(input.subPostId)fields.content='回复 #(reply, '+forum.replyTo.portrait+', '+forum.replyTo.name.replace(/[()]/g,'')+') :'+input.content;
+ }}
+ return {protocol:input.action==='thread'?'legacy_thread_form':'app_protobuf',action:input.action,url:input.action==='thread'?'https://tiebac.baidu.com/c/c/thread/add':APP_POST_URL,fields};
 }
 /** A missing response ID is not permission to re-send. Confirm only a unique
  * self-authored item in the correct scope, with matching text and time. */
@@ -79,7 +93,7 @@ export async function findPublication(input:PublishInput,forum:FollowedForum,who
  let page=await reader.read(url);inspect?.(page);if(page?.status!=='content'||String(page.forum?.id)!==forum.id)return null;
  if(input.action!=='thread'&&!expectedId&&Number(page.totalPages)>1){page=await reader.read(url+(url.includes('?')?'&':'?')+'pn='+page.totalPages);inspect?.(page);}
  if(page?.status!=='content'||String(page.forum?.id)!==forum.id)return null;
- const hits=(page.posts??[]).filter((p:any)=>(!expectedId||p.id===expectedId)&&p.author?.id===who.id&&Date.parse(p.publishedAt)>=since-2000&&Date.parse(p.publishedAt)<=Date.now()+2000&&(input.action!=='thread'||p.title===input.title)&&(input.action!=='comment'||p.parentPostId===input.postId)&&(norm(p.content)===wanted||p.contentTruncated&&wanted.startsWith(norm(p.content))));
+ const hits=(page.posts??[]).filter((p:any)=>(!expectedId||p.id===expectedId)&&p.author?.id===who.id&&Date.parse(p.publishedAt)>=since-2000&&Date.parse(p.publishedAt)<=Date.now()+2000&&(input.action!=='thread'||p.title===input.title)&&(input.action!=='comment'||p.parentPostId===input.postId)&&(norm(p.content)===wanted||p.contentTruncated&&wanted.startsWith(norm(p.content))||input.subPostId&&!p.contentTruncated&&norm(p.content).startsWith('回复')&&norm(p.content).endsWith(wanted)));
  if(hits.length!==1)return null;const hit=hits[0];
  if(input.action==='thread'){
   const full=await reader.read('https://tieba.baidu.com/p/'+hit.id);
@@ -99,12 +113,26 @@ async function publicationVisibility(input:PublishInput,forum:FollowedForum,who:
    if(hit){observed=hit;if(access==='public')return {publicVerified:true,visibility:'public',observed,checks,verifiedAt:Date.now()};}
   }catch(e){checks[access]={error:codeOf(e)};}
  }
- return {publicVerified:false,visibility:observed?'author_only':'not_observed',observed,checks,verifiedAt:Date.now()};
+ let deletion:SystemDeletion|null=null;
+ if(id&&reader.deletion){try{const found=await reader.deletion(id,input.action==='thread'?id:input.threadId!);checks.deletion={checked:true,coverage:'recycle_first_page',matched:!!found};if(found?.postId===id&&found.threadId===(input.action==='thread'?id:input.threadId)&&found.category==='system'&&found.source==='tieba_account_recycle')deletion=found;}catch(e){checks.deletion={error:codeOf(e)};}}
+ return {publicVerified:false,visibility:deletion?'removed_by_system':observed?'author_only':'not_observed',observed,checks,...(deletion?{deletion}:{}),verifiedAt:Date.now()};
 }
 export class TiebaPosting {
  private db:DatabaseSync;
  constructor(dir:string){
   this.db=new DatabaseSync(path.join(dir,'actions.sqlite'));fs.chmodSync(path.join(dir,'actions.sqlite'),0o600);this.db.exec('PRAGMA busy_timeout=5000;PRAGMA journal_mode=WAL;CREATE TABLE IF NOT EXISTS tieba_actions(id TEXT PRIMARY KEY,account TEXT,fingerprint TEXT,state TEXT,request TEXT,result TEXT,created INTEGER);');
+  // Older fingerprints depended on JSON key order. Normalize only the derived
+  // dedupe key; original requests/results and uncertain outcomes stay intact.
+  if(Number((this.db.prepare('PRAGMA user_version').get() as any).user_version)<1){
+   this.db.exec('BEGIN IMMEDIATE');try{
+    if(Number((this.db.prepare('PRAGMA user_version').get() as any).user_version)<1){
+     for(const r of this.db.prepare('SELECT id,account,request,fingerprint FROM tieba_actions').all() as any[]){
+      let input:PublishInput;try{input=publishInput(JSON.parse(r.request));}catch{continue;}
+      const fingerprint=fingerprintOf(r.account,input);if(r.fingerprint!==fingerprint)this.db.prepare('UPDATE tieba_actions SET fingerprint=? WHERE id=?').run(fingerprint,r.id);
+     }this.db.exec('PRAGMA user_version=1');
+    }this.db.exec('COMMIT');
+   }catch(e){this.db.exec('ROLLBACK');this.db.close();throw e;}
+  }
   // Preview text is bounded; unknown/live receipts are never silently discarded.
   this.db.exec("DELETE FROM tieba_actions WHERE state='preview' AND id NOT IN (SELECT id FROM tieba_actions WHERE state='preview' ORDER BY created DESC LIMIT 500)");
  }
@@ -117,17 +145,17 @@ export class TiebaPosting {
   const prior=JSON.parse(row.result??'{}');if(['preview','rejected','held'].includes(row.state))return {...prior,state:row.state,requestId,retryScheduled:false};
   const input=publishInput(JSON.parse(row.request)),forum=prior.forum??{id:input.forumId,name:''};
   const proof=await publicationVisibility(input,forum,identity,reader,row.created,numeric(prior.id)?prior.id:undefined);
-  const observed=proof.observed,state=proof.publicVerified?'confirmed':numeric(prior.id)||observed?'accepted':'unknown',lastPubliclyVisibleAt=proof.publicVerified?proof.verifiedAt:prior.lastPubliclyVisibleAt??null;
-  const result={submitted:state!=='unknown',published:proof.publicVerified,deliveryStatus:state==='confirmed'?'confirmed':state==='accepted'?'accepted':'unconfirmed',requestId,
+  const observed=proof.observed,state=proof.publicVerified?'confirmed':proof.visibility==='removed_by_system'?'deleted':numeric(prior.id)||observed?'accepted':'unknown',lastPubliclyVisibleAt=proof.publicVerified?proof.verifiedAt:prior.lastPubliclyVisibleAt??null;
+  const result={submitted:state!=='unknown'?true:prior.submitted??null,published:proof.publicVerified,deliveryStatus:state==='confirmed'?'confirmed':state==='deleted'?'deleted':state==='accepted'?'accepted':'unconfirmed',requestId,
    ...(numeric(prior.id)?{id:prior.id,url:prior.url}:observed??{}),...(prior.receipt?{receipt:prior.receipt}:{}),forum,action:input.action,
-   ...proof,lastPubliclyVisibleAt,...(!proof.publicVerified&&lastPubliclyVisibleAt?{visibility:'no_longer_observed'}:{}),retryScheduled:false,initialResult:prior.initialResult??prior,
+   ...proof,lastPubliclyVisibleAt,...(!proof.publicVerified&&lastPubliclyVisibleAt&&state!=='deleted'?{visibility:'no_longer_observed'}:{}),retryScheduled:false,initialResult:prior.initialResult??prior,
    ...(state==='confirmed'?{}:{notice:'尚未读到公开内容；平台接受请求不等于公开发布，当前不会自动重发。'})};
-  this.db.prepare('UPDATE tieba_actions SET state=?,result=? WHERE id=?').run(state,JSON.stringify(result),requestId);return result;
+  this.db.prepare('UPDATE tieba_actions SET state=?,result=?,fingerprint=? WHERE id=?').run(state,JSON.stringify(result),fingerprintOf(identity.id,input),requestId);return result;
  }
  async publish(raw:unknown,requestId:string,identity:TiebaIdentity,policy:PostingPolicy,reader:PostingReader,send:(request:ReturnType<typeof postingRequest>)=>Promise<{id:string;url:string;receipt?:Record<string,unknown>}>){
   const input=publishInput(raw);if(identity.id!==policy.accountId)throw new FishError('TIEBA_ACCOUNT_NOT_AUTHORIZED');if(!['preview','live'].includes(policy.mode))throw new FishError('TIEBA_PUBLISH_DISABLED');if(typeof requestId!=='string'||!requestId||requestId.length>240)throw new FishError('TIEBA_REQUEST_ID_INVALID');
-  const fingerprint=createHash('sha256').update(JSON.stringify([identity.id,input])).digest('hex');
-  const prior=this.db.prepare("SELECT fingerprint,state,result FROM tieba_actions WHERE id=? OR (account=? AND fingerprint=? AND state IN ('held','unknown','accepted')) ORDER BY created DESC LIMIT 1").get(requestId,identity.id,fingerprint) as any;
+  const fingerprint=fingerprintOf(identity.id,input);
+  const prior=this.db.prepare("SELECT fingerprint,state,result FROM tieba_actions WHERE id=? OR (account=? AND fingerprint=? AND state IN ('held','unknown','accepted','rejected','deleted')) ORDER BY created DESC LIMIT 1").get(requestId,identity.id,fingerprint) as any;
   if(prior){if(prior.fingerprint!==fingerprint)throw new FishError('TIEBA_REQUEST_ID_REUSED');return {...JSON.parse(prior.result??'{}'),state:prior.state,reused:true,retryScheduled:false};}
   const forum=await postingTarget(input,identity,policy,reader),request=postingRequest(input,forum);
   const preview={published:false,mode:'preview',state:'preview',account:identity,forum,action:input.action,request:input,endpoint:request.url,notice:'预演已保存，没有向贴吧发送发布请求。'};
@@ -138,11 +166,15 @@ export class TiebaPosting {
   this.db.prepare('INSERT INTO tieba_actions VALUES (?,?,?,?,?,?,?)').run(requestId,identity.id,fingerprint,'held',JSON.stringify(input),JSON.stringify({published:false,deliveryStatus:'unconfirmed',retryScheduled:false}),Date.now());
   let result:any,state:string;
   try{const sent=await send(request);if(!numeric(sent.id))throw new FishError('TIEBA_PUBLICATION_UNCONFIRMED');state='accepted';result={submitted:true,published:false,deliveryStatus:'accepted',...sent,forum,action:input.action,requestId,retryScheduled:false};}
-  catch(e){const error=codeOf(e);const rejected=['TIEBA_PUBLICATION_REJECTED','TIEBA_PUBLICATION_CHALLENGE','TIEBA_LOGIN_REQUIRED','TIEBA_ACCOUNT_CHANGED','TIEBA_FORUM_READ_ONLY'].includes(error)||/^TIEBA_READ_HTTP_4[0-9][0-9]$/.test(error);state=rejected?'rejected':'unknown';result={submitted:false,published:false,deliveryStatus:rejected?'failed':'unconfirmed',error,forum,action:input.action,requestId,retryScheduled:false};}
+  catch(e){
+   const error=codeOf(e),receipt=e instanceof AppPostFailure?e.receipt:undefined,returnedId=receipt?.id;
+   const rejected=receipt?.accepted!==true&&(['TIEBA_PUBLICATION_REJECTED','TIEBA_PUBLICATION_CHALLENGE','TIEBA_LOGIN_REQUIRED','TIEBA_ACCOUNT_CHANGED','TIEBA_FORUM_READ_ONLY'].includes(error)||/^TIEBA_READ_HTTP_4[0-9][0-9]$/.test(error));
+   state=rejected?'rejected':'unknown';result={submitted:receipt?.accepted===true?true:rejected?false:null,published:false,deliveryStatus:rejected?'failed':'unconfirmed',error,...(receipt?{receipt}:{}),...(numeric(returnedId)?{id:returnedId,url:'https://tieba.baidu.com/p/'+input.threadId+'?pid='+returnedId+'#'+returnedId}:{}),forum,action:input.action,requestId,retryScheduled:false};
+  }
   // Save the returned ID before doing any readback. A restart cannot turn an
   // accepted submission into permission to post the same content again.
   this.db.prepare('UPDATE tieba_actions SET state=?,result=? WHERE id=?').run(state,JSON.stringify(result),requestId);
-  return state==='rejected'?result:this.verify(requestId,identity,reader);
+  return state==='rejected'||result.error==='TIEBA_PUBLICATION_CHALLENGE'?result:this.verify(requestId,identity,reader);
  }
 }
 export const tiebaTools:ModelTool[]=[

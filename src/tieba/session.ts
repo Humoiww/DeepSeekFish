@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {TiebaPosting,type FollowedForum,type PostingPolicy,type PublishInput,publishInput,postingTarget,postingRequest} from './posting.js';
+import {TiebaPosting,type FollowedForum,type PostingPolicy,type PublishInput,type SystemDeletion,publishInput,postingTarget,postingRequest} from './posting.js';
 import {FishError,codeOf} from '../types.js';
 import type {TiebaReplyPage} from './replies.js';
 import {tiebaPage} from '../search/tieba.js';
@@ -12,7 +12,7 @@ export interface SessionStatus {state:AccountState;browserRunning:boolean;profil
 export interface LoginInput {kind:'click'|'drag'|'text'|'key'|'scroll';x?:number;y?:number;toX?:number;toY?:number;text?:string;key?:string;delta?:number}
 export interface AccountBrowser {
  login():Promise<void>;loginInfo?():Promise<NonNullable<SessionStatus['loginPage']>>;identity():Promise<TiebaIdentity|null>;frame():Promise<Buffer>;input(value:LoginInput):Promise<void>;
- read(url:string):Promise<any>;replies?(page:number):Promise<TiebaReplyPage>;followed?(userId:string):Promise<FollowedForum[]>;sendPost?(request:ReturnType<typeof postingRequest>):Promise<{id:string;url:string;receipt?:Record<string,unknown>}>;close():Promise<void>;
+ read(url:string):Promise<any>;deletion?(postId:string,threadId:string):Promise<SystemDeletion|null>;replies?(page:number):Promise<TiebaReplyPage>;followed?(userId:string):Promise<FollowedForum[]>;sendPost?(request:ReturnType<typeof postingRequest>):Promise<{id:string;url:string;receipt?:Record<string,unknown>}>;close():Promise<void>;
 }
 export function loginInput(v:any):LoginInput{
  if(!v||typeof v!=='object'||Array.isArray(v))throw new FishError('TIEBA_INPUT_INVALID');
@@ -111,12 +111,12 @@ export class TiebaSessionManager {
   });
  }
  async verifyPublication(requestId:string){return this.usingAccount('verify_publication',async(browser,who)=>{
-  const posting=new TiebaPosting(this.dir);try{return await posting.verify(requestId,who,{followed:async()=>[],read:url=>browser.read(url),publicRead:url=>tiebaPage(url,postPublic)});}finally{posting.close();}
+  const posting=new TiebaPosting(this.dir);try{return await posting.verify(requestId,who,{followed:async()=>[],read:url=>browser.read(url),publicRead:url=>tiebaPage(url,postPublic),...(browser.deletion?{deletion:(id:string,tid:string)=>browser.deletion!(id,tid)}:{})});}finally{posting.close();}
  });}
  async publish(raw:PublishInput,requestId:string){const input=publishInput(raw);return this.usingAccount('publish',async(browser,who)=>{
   if(!browser.followed||!browser.sendPost)throw new FishError('TIEBA_PUBLISH_UNAVAILABLE');
   const policy=this.policy(),blocked=path.join(this.dir,'publication-needs-human');if(policy.mode==='live'&&fs.existsSync(blocked))throw new FishError('TIEBA_PUBLICATION_NEEDS_HUMAN');
-  const reader={followed:(id:string)=>browser.followed!(id),read:(url:string)=>browser.read(url),publicRead:(url:string)=>tiebaPage(url,postPublic)},posting=new TiebaPosting(this.dir);
+  const reader={followed:(id:string)=>browser.followed!(id),read:(url:string)=>browser.read(url),publicRead:(url:string)=>tiebaPage(url,postPublic),...(browser.deletion?{deletion:(id:string,tid:string)=>browser.deletion!(id,tid)}:{})},posting=new TiebaPosting(this.dir);
   try{
    const result=await posting.publish(input,requestId,who,policy,reader,async request=>{
     const current=await browser.identity();if(!current||current.id!==who.id)throw new FishError('TIEBA_ACCOUNT_CHANGED');

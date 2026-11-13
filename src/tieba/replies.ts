@@ -1,4 +1,5 @@
 import {FishError} from '../types.js';
+import {pbNumber as number,pbBytes as bytes,pbString as string,parseFields,protoMultipart,type PBField as Field} from './protobuf.js';
 
 export interface TiebaReply {
  id:string;threadId:string;parentPostId:string|null;isFloor:boolean;time:number;
@@ -7,28 +8,12 @@ export interface TiebaReply {
 export interface TiebaReplyPage {page:number;hasMore:boolean;replies:TiebaReply[]}
 // Only the small read-only ReplyMe schema is decoded here. IDs stay bigint /
 // strings; unknown protobuf fields are skipped, never executed or logged.
-type Field={n:number;v?:bigint;b?:Buffer};
-function integer(v:bigint){const b:number[]=[];do{b.push(Number(v&127n)|(v>127n?128:0));v>>=7n;}while(v);return Buffer.from(b);}
-const number=(n:number,v:number)=>Buffer.concat([integer(BigInt(n*8)),integer(BigInt(v))]);
-const bytes=(n:number,b:Buffer)=>Buffer.concat([integer(BigInt(n*8+2)),integer(BigInt(b.length)),b]);
-const string=(n:number,s:string)=>bytes(n,Buffer.from(s));
 export function replyRequest(bduss:string,page:number){
  const common=Buffer.concat([number(1,2),string(2,'12.64.1.1'),string(10,bduss)]);
- const data=bytes(1,Buffer.concat([number(1,page),bytes(3,common)])),boundary='fish-tieba-reply-read';
- return {type:'multipart/form-data; boundary='+boundary,body:Buffer.concat([Buffer.from('--'+boundary+'\r\nContent-Disposition: form-data; name="data"; filename="file"\r\nContent-Type: application/octet-stream\r\n\r\n'),data,Buffer.from('\r\n--'+boundary+'--\r\n')])};
+ const data=bytes(1,Buffer.concat([number(1,page),bytes(3,common)]));
+ return protoMultipart(data,'fish-tieba-reply-read');
 }
-function fields(b:Buffer):Field[]{
- let p=0;const out:Field[]=[];
- const read=()=>{let v=0n;for(let i=0;i<10;i++){if(p>=b.length)throw new FishError('TIEBA_REPLIES_FORMAT_CHANGED');const c=b[p++];v|=BigInt(c&127)<<BigInt(i*7);if(!(c&128))return v;}throw new FishError('TIEBA_REPLIES_FORMAT_CHANGED');};
- while(p<b.length){
-  if(out.length>=5000)throw new FishError('TIEBA_REPLIES_FORMAT_CHANGED');
-  const tag=Number(read()),n=tag>>>3,w=tag&7;if(!n)throw new FishError('TIEBA_REPLIES_FORMAT_CHANGED');
-  if(w===0)out.push({n,v:read()});
-  else if(w===2){const len=Number(read());if(!Number.isSafeInteger(len)||len<0||p+len>b.length)throw new FishError('TIEBA_REPLIES_FORMAT_CHANGED');out.push({n,b:b.subarray(p,p+len)});p+=len;}
-  else if(w===1||w===5){p+=w===1?8:4;if(p>b.length)throw new FishError('TIEBA_REPLIES_FORMAT_CHANGED');}
-  else throw new FishError('TIEBA_REPLIES_FORMAT_CHANGED');
- }return out;
-}
+const fields=(b:Buffer):Field[]=>parseFields(b,'TIEBA_REPLIES_FORMAT_CHANGED');
 const sub=(f:Field[],n:number)=>fields(f.find(x=>x.n===n)?.b??Buffer.alloc(0));
 const value=(f:Field[],n:number)=>f.find(x=>x.n===n)?.v??0n;
 const text=(f:Field[],n:number)=>f.find(x=>x.n===n)?.b?.toString('utf8')??'';

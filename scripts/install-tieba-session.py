@@ -16,6 +16,7 @@ if not chrome.is_file():raise SystemExit('Install the existing browser worker fi
 actual=subprocess.check_output([str(chrome),'--version'],text=True).strip()
 if actual!='Google Chrome for Testing 156.0.8078.47':raise SystemExit('Browser differs from the reviewed existing version: '+actual)
 files=['src/capture/cdp.ts','src/capture/server.ts','src/capture/tieba-browser.ts','src/tieba/session.ts','src/tieba/client.ts','src/tieba/posting.ts','src/tieba/replies.ts','src/tieba/reply-watch.ts','src/agent/bot.ts','src/exploration/tools.ts','src/exploration/state.ts','src/exploration/worker.ts','src/search/tieba.ts','src/search/public-web.ts','src/web/app.ts','src/web/server.ts','src/web/tailnet.ts','src/web/public/index.html','src/web/public/web.css','src/web/public/tieba.js','scripts/install-tieba-session.py','scripts/migrate-state.py','docs/tieba-account.md','scripts/smoke-tieba-posting.mjs']
+files.extend(['src/tieba/app-post.ts','src/tieba/protobuf.ts','third_party/dsh-tieba-dive.LICENSE','docs/tieba-reply-transport.md'])
 for name in list(files):
  if name.endswith('.ts'):files.extend(['dist/'+name[:-3]+'.js','dist/'+name[:-3]+'.js.map'])
 files.append('src/web/public/exploration.js')

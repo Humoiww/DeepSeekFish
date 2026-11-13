@@ -1,0 +1,95 @@
+# 贴吧回帖传输重做与验证边界
+
+## 已核实的参考版本
+
+阅读并固定到 `Nekomeow114/dsh-tieba-dive` 提交 `06e1657eb5262d3d2337466debf0a7ca1c165fbf`：
+
+- [lib/tieba.js](https://github.com/Nekomeow114/dsh-tieba-dive/blob/06e1657eb5262d3d2337466debf0a7ca1c165fbf/lib/tieba.js)：`encodeAddFloor`、`replyFloor`、`encodeAddPost`、`replySub`、`parseAddPostResponse`，以及 `reply()` 的网页提交路径。
+- [CHANGELOG.md](https://github.com/Nekomeow114/dsh-tieba-dive/blob/06e1657eb5262d3d2337466debf0a7ca1c165fbf/CHANGELOG.md)：2026-10-24 的 1.28.0 将主楼回帖改为 App Protobuf 优先；维护者记录当时网页会遇到百度安全验证。这是上游环境的记录，不是本 VPS 的兼容性证明。
+- MIT 版权及许可保存在 `third_party/dsh-tieba-dive.LICENSE`。只移植回帖协议结构，没有安装其插件、账号管理、人格、兴趣规则、心跳或发言频率控制。
+
+## 原实现哪里不完整
+
+此前 `postingRequest()` 为所有回复生成普通键值字段，`TiebaBrowser.accountPoster(true)` 附加 BDUSS、TBS 与旧式 MD5 sign 后，用 `application/x-www-form-urlencoded` 请求 `/c/c/post/add`；版本声明为 `12.64.1.1`。返回内容只尝试 JSON，再从若干字段读取新回复 ID。它不是所参考源码中的 Protobuf 回帖协议。
+
+| 层次 | 原实现 | 新回帖实现 |
+| --- | --- | --- |
+| 端点 | `/c/c/post/add` | `/c/c/post/add?cmd=309731&format=protobuf` |
+| HTTP 消息 | URL-encoded 表单 | multipart 的 `data` 文件部分，内容为 Protobuf；`x_bd_data_type: protobuf` |
+| 消息结构 | 扁平 key/value | 顶层字段 1 包 data，data 字段 1 包 common |
+| 身份与版本 | BDUSS/TBS 位于表单；旧式 sign | common 字段 1=Android 类型，2=`22.12.1.0`，10=BDUSS，11=TBS；data 字段 4 再带 TBS |
+| 正文/目标 | `content/fid/kw/tid` 表单字段 | data 字段 19/26/30/45，ID 按上游定义编码为字符串 |
+| 主楼回帖 | 与楼中楼共用简化表单 | 使用上游 `encodeAddFloor`，含其固定字段 6/16/18/48，以及主楼路径特有的 55=`13` |
+| 楼中楼 | quote/repost 参数不足以说明已实现完整协议 | 使用 `encodeAddPost`：46=quote_id、49=repostid、50=sub_post_id、20=reply_uid |
+| 显示名 | 未传 | 上游字段 58，可从当前服务端身份读到时才传 |
+| 响应 | JSON 的 post.id 等 | Error 位于顶层字段 1，errno/errmsg 为 1/2；data 位于顶层字段 2，pid 是 data 字段 3 的字符串 |
+
+固定字段的数值和编码类型来自上述源码，没有凭字段号猜测业务含义。请求字节与固定版本上游纯编码器生成的离线样本逐字节比较。multipart 在内存构造，不沿用上游将含凭据消息写入临时 `.bin` 文件再调用 curl 的方式。
+
+上游 `curl --compressed` 的响应解压能力也一并处理：新回帖请求声明 gzip/deflate/br，按响应编码解压后再解析 Protobuf；压缩体与解压输出分别限制为 2 MiB，解码失败仍视为不确定，不重发。
+
+浏览器仍负责原 Profile、账号实际验证和私有凭据边界。BDUSS 仅从该隔离 Profile 读取；TBS 仍取自已验证的现有 `/c/s/login`，不改登录、账号或注册流程。凭据只注入私有请求内存，不进入回执、模型、测试数据或普通日志。
+
+这次替换的是 `reply` / `comment`。新主题帖 `thread` 继续原有传输，本轮没有宣称其已切换为新协议。公开读帖也继续原路径。
+
+## 主楼与楼中楼
+
+- 主楼回帖：不带父楼或子回复引用，走 `encodeAddFloor`。
+- 父楼下的评论：实际验证父楼所属帖子和贴吧、父楼作者 UID，quote_id/repostid 均指向父楼，未指定子回复时 sub_post_id 为空字符串。
+- 回复某个子评论：还须实际验证该子评论属于指定父楼，从返回内容取得作者 UID、显示名及公开 portrait；按上游 `replySub` 构造 `回复 #(reply, portrait, name) :正文`。缺身份元数据就停止，不猜 UID，不接受模型传入的接收者身份。
+- 原读取器合并嵌入 author 与 user_list 中同 UID 的资料，保留公开 portrait；没有把头像添加到帖子配图中。
+
+父楼直接评论的参数字节已与上游编码器对齐，但其空 sub_post_id 的平台实际接受情况仍需受控实发验证；不能拿字节一致冒充已通过平台审核。真实旧失败样本没有回复子评论的案例，该分支目前只有合成样本。
+
+## 接受、可见与后来删除
+
+发送前持久保存意图。一个传输调用只有一次写请求：
+
+| 状态 | 实际证据 |
+| --- | --- |
+| rejected | 明确拒绝，或明确要求验证码；不转网页再提交 |
+| unknown | 超时、损坏/不认识的响应，或接受但没有回复 ID；保留不确定性 |
+| accepted | errno=0 且生成了合法 ID，但尚未公开读回匹配正文 |
+| confirmed | 非登录视角实际读到对应 ID、作者、范围、时间和内容 |
+| deleted | 当前账号官方回收站「系统删贴」中匹配同一 PID/TID 的记录 |
+
+HTTP 200 不是成功依据。一个 Protobuf 成功响应也只证明接受并分配 ID，不证明此后一直可见。仅本人可见与完全未读到分别记录；曾经公开可见而后来读不到、又无明确删除记录时，记为 `no_longer_observed`，不武断叫删除。保留初始回执和最后公开可见时间。
+
+遇验证码、拒绝、未知回执不自动重试，也不自动降级到 `/f/commit/post/add`。上游的失败后网页写入策略没有照搬。相同发布意图按规范化业务字段去重，参数排列变化不能绕过去重；旧不确定回执迁移派生去重键时，原请求与结果不改写。
+
+JSON/HTML 若出现在 Protobuf 响应位置，只用于识别明确拒绝/验证码，其余按不确定处理，不猜测响应 ID。安全回执保留协议版本来源、错误码、是否接受、是否生成 ID及读取证据；不保存原始含凭据请求或任意响应正文。
+
+## 官方网页替代路径评估
+
+本 VPS 用当前账号实际打开了官方网页、回收站，并只打开了空白 Quill 回帖编辑器；没有填入或发布内容。确认可见 `#tb-editor-pb-content .ql-editor` 与 `.publish-btn`，并不等于发布可通过平台验证。当前页面还尝试加载被现有资源边界阻止的 banti-static、tieba-ares CDN；本轮没有更改浏览器资源策略、伪造设备信息或绕过验证码。
+
+因此网页正常交互是可进一步核对的替代方案，而不是本轮已验证的备用发送通道。尤其不能在 Protobuf 请求超时或回执不明后立即走网页重发。
+
+## 实际做过的验证
+
+构建：
+
+```sh
+runtime/tools/node/bin/node node_modules/typescript/bin/tsc -p tsconfig.json
+```
+
+本轮授权的单个离线验证文件：
+
+```sh
+runtime/tools/node/bin/node --test --test-isolation=none dist/tests/tieba-app-post.test.js
+```
+
+7 个针对性用例覆盖：上游字节向量；实际 driver 到模拟 HTTPS 的 multipart/头部/TBS 注入；三种回复关系与权限校验；验证码/拒绝/无 ID/损坏响应/超时均只写一次；数据库重新打开和参数换序后的去重；接受→公开→系统删除；原 ReplyMe 读取及 64 位身份不回归。没有启动浏览器、访问外网或发送真实内容。
+
+另外读取了现有私有 outbox 与已保存失败工具调用，仅将业务参数放进本地忽略目录 `runtime/research/tieba-publication-diagnostics/failed-requests.json`：
+
+- 8 条历史业务请求：5 条主楼回帖、3 条父楼下评论；全部与固定上游编码器的字节结果一致。
+- 1 条把吧名传入 forumId 的历史错误请求，仍在写入前被拒绝。
+- 重放使用明确标记的虚构 BDUSS/TBS 和离线目标身份，核对的是协议编码，不能证明线上账号状态、接收者身份或平台接受结果。
+- 汇总保存在同目录 `offline-replay-result.json`；私有原始日志及凭据没有提交 Git。
+
+真实历史调查确实从系统回收站读到多条「涉嫌异常行为」删除记录；同账号、同内容手机正常是主人提供的对照。它们说明需要处理程序发布路径/服务器环境，但不证明本次新协议一定免于平台风控。
+
+**本轮未部署、未以新协议实发任何回复。** 没有宣称在线兼容性、可见性或删除问题已验证解决。
+
+若以后单独获准真实测试：先确认唯一目标、唯一正文及请求 ID；只提交一次，保存原生回执；从不带账号凭据的读取器核对 PID/作者/正文，稍后按约定间隔再次只读复查，并查询是否出现系统删除记录。任何阶段不确定都停止写入，不以更换通道或改正文的方式再试。部署和真实发言测试各自需要明确授权。

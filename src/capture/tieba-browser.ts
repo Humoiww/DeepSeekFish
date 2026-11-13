@@ -4,13 +4,15 @@ import https from 'node:https';
 import dns from 'node:dns/promises';
 import {once} from 'node:events';
 import {createHash} from 'node:crypto';
-import {followedForums,type FollowedForum,postingRequest} from '../tieba/posting.js';
+import {gunzipSync,inflateSync,brotliDecompressSync} from 'node:zlib';
+import {followedForums,type FollowedForum,type SystemDeletion,postingRequest} from '../tieba/posting.js';
 import {Pipe} from './cdp.js';
 import {FishError} from '../types.js';
 import type {AccountBrowser,TiebaIdentity,LoginInput} from '../tieba/session.js';
 import {tiebaPage} from '../search/tieba.js';
 import {publicAddress,type PublicPoster} from '../search/public-web.js';
 import {replyRequest,replyPage} from '../tieba/replies.js';
+import {sendAppReply} from '../tieba/app-post.js';
 
 const HOME='https://tieba.baidu.com/';
 export const LOGIN='https://passport.baidu.com/v2/?login&tpl=tb&u='+encodeURIComponent(HOME);
@@ -106,19 +108,24 @@ export class TiebaBrowser implements AccountBrowser {
  private async accountPoster(writing=false):Promise<PublicPoster|null>{
   const bduss=await this.bduss();if(!bduss)return null;
   const poster:PublicPoster=async(raw,body,signal)=>{
-   const u=new URL(raw);if(u.origin!=='https://tiebac.baidu.com'||!['/c/f/frs/page','/c/f/pb/page','/c/f/pb/floor','/c/s/login','/c/f/forum/like',...(writing?['/c/c/thread/add','/c/c/post/add']:[])].includes(u.pathname)||u.search)throw new FishError('TIEBA_READ_TARGET_DENIED');
+   const u=new URL(raw);if(u.origin!=='https://tiebac.baidu.com'||!['/c/f/frs/page','/c/f/pb/page','/c/f/pb/floor','/c/s/login','/c/f/forum/like',...(writing?['/c/c/thread/add']:[])].includes(u.pathname)||u.search)throw new FishError('TIEBA_READ_TARGET_DENIED');
    const fields=Object.fromEntries(body);delete fields.sign;if(u.pathname==='/c/s/login')fields.bdusstoken=bduss;else fields.BDUSS=bduss;
    const privateBody=new URLSearchParams(fields);privateBody.set('sign',createHash('md5').update(Object.keys(fields).sort().map(k=>k+'='+fields[k]).join('')+'tiebaclient!!!').digest('hex'));
    return this.request(raw,Buffer.from(privateBody.toString()),'application/x-www-form-urlencoded',signal);
   };
   return poster;
  }
- private async request(raw:string,bytes:Buffer,type:string,signal?:AbortSignal):ReturnType<PublicPoster>{
+ private async request(raw:string,bytes:Buffer,type:string,signal?:AbortSignal,userAgent='bdtb for Android 12.64.1.1',compressed=false):ReturnType<PublicPoster>{
    const u=new URL(raw),addresses=await dns.lookup(u.hostname,{all:true});if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw new FishError('TIEBA_PRIVATE_ADDRESS');const address=addresses.find(a=>a.family===4)??addresses[0];
    return new Promise((resolve,reject)=>{
-    const req=https.request(u,{method:'POST',agent:false,signal:AbortSignal.any([AbortSignal.timeout(20000),...(signal?[signal]:[])]),maxVersion:'TLSv1.2',headers:{'content-type':type,'content-length':bytes.length,'user-agent':'bdtb for Android 12.64.1.1',...(type.startsWith('multipart/')?{'x_bd_data_type':'protobuf'}:{})},lookup:((_host:any,opts:any,cb:any)=>opts.all?cb(null,[address]):cb(null,address.address,address.family)) as any},res=>{
+    const req=https.request(u,{method:'POST',agent:false,signal:AbortSignal.any([AbortSignal.timeout(20000),...(signal?[signal]:[])]),maxVersion:'TLSv1.2',headers:{'content-type':type,'content-length':bytes.length,'user-agent':userAgent,...(compressed?{'accept-encoding':'gzip, deflate, br'}:{}),...(type.startsWith('multipart/')?{'x_bd_data_type':'protobuf'}:{})},lookup:((_host:any,opts:any,cb:any)=>opts.all?cb(null,[address]):cb(null,address.address,address.family)) as any},res=>{
      if(res.statusCode!==200){res.destroy();reject(new FishError('TIEBA_READ_HTTP_'+res.statusCode));return;}
-     const parts:Buffer[]=[];let size=0;res.on('data',(b:Buffer)=>{size+=b.length;if(size>2097152)res.destroy(new FishError('TIEBA_READ_LIMIT'));else parts.push(b);});res.on('error',reject);res.on('end',()=>resolve({url:raw,type:String(res.headers['content-type']??'application/octet-stream'),bytes:Buffer.concat(parts)}));
+     const parts:Buffer[]=[];let size=0;res.on('data',(b:Buffer)=>{size+=b.length;if(size>2097152)res.destroy(new FishError('TIEBA_READ_LIMIT'));else parts.push(b);});res.on('error',reject);res.on('end',()=>{
+      try{let body=Buffer.concat(parts);const encoding=res.headers['content-encoding'],options={maxOutputLength:2097152};
+       if(encoding==='gzip')body=gunzipSync(body,options);else if(encoding==='deflate')body=inflateSync(body,options);else if(encoding==='br')body=brotliDecompressSync(body,options);else if(encoding&&encoding!=='identity')throw new FishError('TIEBA_READ_ENCODING_UNSUPPORTED');
+       resolve({url:raw,type:String(res.headers['content-type']??'application/octet-stream'),bytes:body});
+      }catch(e){reject(e instanceof FishError?e:new FishError('TIEBA_READ_DECODE_FAILED'));}
+     });
     });req.on('error',()=>reject(new FishError('TIEBA_READ_NETWORK_FAILED')));req.end(bytes);
    });
  }
@@ -128,11 +135,28 @@ export class TiebaBrowser implements AccountBrowser {
   return replyPage(response.bytes,page);
  }
  async followed(userId:string):Promise<FollowedForum[]>{const poster=await this.accountPoster();if(!poster)throw new FishError('TIEBA_LOGIN_REQUIRED');return followedForums(poster,userId);}
+ async deletion(postId:string,threadId:string):Promise<SystemDeletion|null>{
+  if(!/^[1-9]\d{0,19}$/.test(postId)||! /^[1-9]\d{0,19}$/.test(threadId))throw new FishError('TIEBA_POST_ID_REQUIRED');
+  await this.navigate('https://tieba.baidu.com/pmc/recycle');
+  let opened=false;
+  for(let i=0;i<12;i++){opened=await this.evaluate(`(()=>{const t=document.querySelector('li[data-type="system"]');if(!t)return false;t.click();return true;})()`);if(opened)break;await sleep(250);}
+  if(!opened)throw new FishError('TIEBA_DELETION_STATE_UNAVAILABLE');await sleep(1800);
+  const result=await this.evaluate(`(()=>{if(new URL(location.href).searchParams.get('tab')!=='system')return {ready:false};const rows=Array.from(document.querySelectorAll('a[href*="/pmc/post/appeal?"]')).map(a=>{const u=new URL(a.href),cells=Array.from(a.closest('tr')?.querySelectorAll('td')||[]).map(e=>e.textContent.trim());return {postId:u.searchParams.get('pid'),threadId:u.searchParams.get('tid'),reason:([...cells].reverse().find(s=>/被系统删除/.test(s))||'').slice(0,600),time:(cells.find(s=>/^\\d{4}-\\d{2}-\\d{2} /.test(s))||'').slice(0,40)};});return {ready:/全部记录/.test(document.body?.innerText||''),rows};})()`);
+  if(!result?.ready)throw new FishError('TIEBA_DELETION_STATE_UNAVAILABLE');
+  const found=result.rows?.find((r:any)=>r.postId===postId&&r.threadId===threadId);if(!found)return null;
+  if(!found.reason)throw new FishError('TIEBA_DELETION_STATE_UNAVAILABLE');
+  return {...found,source:'tieba_account_recycle',category:'system',timeZone:'Asia/Hong_Kong'};
+ }
  async sendPost(request:ReturnType<typeof postingRequest>){
   const poster=await this.accountPoster(true);if(!poster)throw new FishError('TIEBA_LOGIN_REQUIRED');
   const auth=await poster('https://tiebac.baidu.com/c/s/login',new URLSearchParams({_client_type:'2',_client_version:'12.64.1.1'}));
   let login:any;try{login=JSON.parse(auth.bytes.toString());}catch{throw new FishError('TIEBA_IDENTITY_FORMAT_CHANGED');}
   if(!['0',0].includes(login?.error_code)||typeof login?.anti?.tbs!=='string')throw new FishError('TIEBA_LOGIN_REQUIRED');
+  if(request.protocol==='app_protobuf'){
+   const bduss=await this.bduss();if(!bduss)throw new FishError('TIEBA_LOGIN_REQUIRED');
+   return sendAppReply(request,{bduss,tbs:login.anti.tbs,nameShow:typeof login.user?.name_show==='string'?login.user.name_show:undefined},(url,body,type)=>this.request(url,body,type,undefined,'aiotieba/4.8.1',true));
+  }
+  if(request.protocol!=='legacy_thread_form'||request.action!=='thread'||request.url!=='https://tiebac.baidu.com/c/c/thread/add')throw new FishError('TIEBA_POST_TRANSPORT_INVALID');
   const result=await poster(request.url,new URLSearchParams({...request.fields,tbs:login.anti.tbs}));
   let d:any;try{d=JSON.parse(result.bytes.toString());}catch{throw new FishError('TIEBA_PUBLICATION_UNCONFIRMED');}
   if(d?.need_vcode||d?.anti?.need_vcode)throw new FishError('TIEBA_PUBLICATION_CHALLENGE');
