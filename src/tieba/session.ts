@@ -68,7 +68,7 @@ export class TiebaSessionManager {
  async check(){return this.operation('verify',async()=>{
   const loginOpen=!!this.browser;await this.ensure();try{
    const who=await this.browser!.identity();this.current.verifiedAt=this.now();this.current.verificationRequired=false;this.current.lastError=null;
-   if(who){fs.rmSync(path.join(this.dir,'publication-needs-human'),{force:true});this.current.identity=who;this.current.lastIdentity=who;this.current.state='logged_in';}
+   if(who){const policy=path.join(this.dir,'publishing.json');if(!fs.existsSync(policy))fs.writeFileSync(policy,JSON.stringify({mode:'preview',accountId:who.id}),{mode:0o600,flag:'wx'});fs.rmSync(path.join(this.dir,'publication-needs-human'),{force:true});this.current.identity=who;this.current.lastIdentity=who;this.current.state='logged_in';}
    else{this.current.identity=null;this.current.state=loginOpen||!this.current.lastIdentity?'waiting_login':'expired';}
    if(who||!loginOpen)await this.stop();else this.touch();this.save();return this.status();
   }catch(e){throw e;}

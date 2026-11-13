@@ -59,7 +59,7 @@ runtime/tools/node/bin/node scripts/check-tieba-public.mjs DeepSeek 大肥鱼 �
 
 发言由隔离 worker 再次确认身份，完整取得当前关注列表，按实际 FID 判断。回帖验证帖子实际 FID；楼中楼验证父楼层，指定子回复时再验证子回复所属父楼及真实作者。模型不能自行指定被回复者 UID、凭据、模式或原始接口。关注关系不由模型维护，没有自动关注能力。
 
-私有 `runtime/tieba-account/publishing.json` 由部署器首次创建，绑定确认过的 UID，mode 为 `preview`；重复部署不覆盖。模型与 QQ/Web 服务都看不到该文件，也没有修改模式的工具。部署时默认先保持预演；随后主人明确要求发布一篇自我介绍、并允许未来自由发帖和回帖，当前 VPS 的私有策略已切换到 live。此开关不由模型控制，没有自动关注能力。
+私有 `runtime/tieba-account/publishing.json` 在已有已确认账号时由部署器首次创建；全新安装先提供登录入口，首次成功的人工账号检查再创建，绑定确认过的 UID，mode 为 `preview`；重复部署不覆盖。模型与 QQ/Web 服务都看不到该文件，也没有修改模式的工具。部署时默认先保持预演；随后主人明确要求发布一篇自我介绍、并允许未来自由发帖和回帖，当前 VPS 的私有策略已切换到 live。此开关不由模型控制，没有自动关注能力。
 
 预演走相同的参数/身份/关注范围/目标归属校验，然后记录在 `actions.sqlite`，返回 `published:false` 与 `mode:preview`；在网络发送函数之前结束。WebUI「读取账号与关注列表」「查看最近的发言预演」可查看结果。QQ 和探索原有活动日志保留真实工具调用和 token 费用，不另设预算或 Agent 框架。
 

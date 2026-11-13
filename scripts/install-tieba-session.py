@@ -58,9 +58,11 @@ try:
  if not marker.exists():marker.write_text(json.dumps({'version':1,'browser':'156.0.8078.47','driver':'private-cdp-pipe'}));os.chown(marker,worker.pw_uid,worker.pw_gid);marker.chmod(0o600)
  policy=private/'publishing.json'
  if not policy.exists():
-  saved=json.loads((private/'status.json').read_text());who=saved.get('identity') or saved.get('lastIdentity')
-  if not who or not str(who.get('id','')).isdigit():raise RuntimeError('Confirm the account in WebUI before installing posting capabilities.')
-  policy.write_text(json.dumps({'mode':'preview','accountId':str(who['id'])}));os.chown(policy,0,worker.pw_gid);policy.chmod(0o640)
+  saved=json.loads((private/'status.json').read_text()) if (private/'status.json').exists() else {};who=saved.get('identity') or saved.get('lastIdentity')
+  # A fresh install must expose the login page before an identity exists.
+  # The first successful human check will initialize preview for that UID.
+  if who and str(who.get('id','')).isdigit():
+   policy.write_text(json.dumps({'mode':'preview','accountId':str(who['id'])}));os.chown(policy,0,worker.pw_gid);policy.chmod(0o640)
  install_text(Path('/etc/systemd/system/deepseekfish-capture.service.d/tieba.conf'),'[Service]\nReadWritePaths='+str(private)+'\n')
  for unit in ['deepseekfish-web.service','deepseekfish-qq.service']:
   install_text(Path('/etc/systemd/system')/(unit+'.d')/'tieba.conf','[Service]\nInaccessiblePaths=-'+str(private)+'\n')
