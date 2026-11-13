@@ -46,7 +46,10 @@ function pageUrl(t:Target,page=t.page){
 function request(t:Target){
   const fields:Record<string,string>={_client_type:'2',_client_version:'12.64.1.1',pn:String(t.page),rn:'10'};
   if(t.kind==='forum')Object.assign(fields,{kw:t.forum,sort_type:'1'});
-  else Object.assign(fields,{kz:t.tid,...(t.kind==='comments'?{pid:t.pid}:{with_floor:'1',floor_rn:'3',...(t.postId?{pid:t.postId}:{})})});
+  // The legacy JSON page endpoint may return no list/forum when given a
+  // reply pid. Locate it within a real returned page instead; never interpret
+  // that malformed lookup response as evidence of deletion.
+  else Object.assign(fields,{kz:t.tid,...(t.kind==='comments'?{pid:t.pid}:{with_floor:'1',floor_rn:'3',...(t.postId?{r:'1',rn:'30'}:{})})});
   const body=new URLSearchParams(fields);
   body.set('sign',createHash('md5').update(Object.keys(fields).sort().map(k=>k+'='+fields[k]).join('')+'tiebaclient!!!').digest('hex'));
   return {url:api+(t.kind==='forum'?'/c/f/frs/page':t.kind==='thread'?'/c/f/pb/page':'/c/f/pb/floor'),body};
@@ -99,7 +102,7 @@ export async function tiebaPage(raw:string,poster:PublicPoster,signal?:AbortSign
     }
     for(const row of array(source).slice(0,100)){
       const rowId=id(row.id);if(!rowId)continue;
-      const isForum=t.kind==='forum',url=isForum?web+'/p/'+rowId:pageUrl(t)+(t.kind==='thread'?'&pid='+rowId:'')+'#'+rowId;
+      const isForum=t.kind==='forum',url=isForum?web+'/p/'+rowId:pageUrl(t.kind==='thread'?{...t,postId:rowId}:t)+'#'+rowId;
       const uid=id(row.author?.id)||id(row.author_id),who=author({...users.get(uid),...row.author,id:uid}),publishedAt=timestamp(isForum?row.create_time:row.time);
       const body=content(isForum?(row.first_post_content??row.abstract):row.content,(isForum?'帖子 ':'楼层 ')+rowId);
       const comments=Number(row.sub_post_number)||0;
@@ -119,6 +122,7 @@ export async function tiebaPage(raw:string,poster:PublicPoster,signal?:AbortSign
       coverage:t.kind==='forum'?'forum_thread_previews':t.kind==='thread'?'thread_floors':'floor_comments',
       forum,thread,page:current,totalPages,totalReported:Number(t.kind==='comments'?data.subpost_num??p.total_count:p.total_count??p.total_num)||0,returned:posts.length,
       platformNotice:str(data.partial_visible_toast).slice(0,300)||null,
+      ...(t.postId?{target:{postId:t.postId,found:posts.some(p=>p.id===t.postId),coverage:'returned_page',order:'reverse_time'}}:{}),
       notice:t.kind==='forum'?'按发帖时间请求，置顶单独标记。列表是摘要，点帖子读取正文；仅当前页，nextPage 继续。':'正文在 text，posts 为作者/楼层/时间索引；textOffset 续读正文，nextPage 翻页，commentsUrl 读楼中楼。仅接口公开返回的内容，删除或隐藏回复可能缺失。',
       unavailable:missingComments?[{url:r.url,error:'TIEBA_COMMENTS_NOT_RETURNED'}]:[] as {url:string;error:string}[],posts,text:text.join('\n\n').slice(0,200000),images,links,nextPage};
   }catch(e){

@@ -80,6 +80,10 @@ test('HTTP acceptance and generated ID remain separate from public visibility an
  visible=true;const b=await db.verify('accepted',who,reads);assert.equal(b.deliveryStatus,'confirmed');assert.equal(b.visibility,'public');assert.ok(b.lastPubliclyVisibleAt);
  visible=false;removed=true;const c=await db.verify('accepted',who,reads);assert.equal(c.deliveryStatus,'deleted');assert.equal(c.visibility,'removed_by_system');assert.equal(c.deletion?.reason,'因存在涉嫌异常行为被系统删除');assert.equal(c.lastPubliclyVisibleAt,b.lastPubliclyVisibleAt);
  assert.equal((await db.publish(input,'no-resend',who,policy,reads,async()=>{writes++;throw Error('must not run');})).reused,true);assert.equal(writes,1);
+ const located=await tiebaPage('https://tieba.baidu.com/p/'+input.threadId+'?pid='+id,async(url,body)=>{
+  assert.equal(body.get('pid'),null);assert.equal(body.get('r'),'1');assert.equal(body.get('rn'),'30');
+  return {url,type:'application/json',bytes:Buffer.from(JSON.stringify({error_code:0,forum,thread:{id:input.threadId},page:{current_page:1,total_page:1},user_list:[who],post_list:[{id,author_id:who.id,time:Math.floor(Date.parse(at)/1000),floor:18,content:[{type:0,text:input.content}]}]}))};
+ });assert.equal(located?.posts[0].id,id);assert.equal(located?.posts[0].author.id,who.id);assert.ok(located&&'target' in located);assert.equal(located.target?.found,true);assert.deepEqual(new URL(located.posts[0].url).searchParams.getAll('pid'),[id]);
 });
 test('shared codec preserves existing ReplyMe read messages, pagination and 64-bit identities',()=>{
  const request=replyRequest('OFFLINE_BDUSS',2),root=parseFields(unpack(request.body))[0].b!,data=parseFields(root),common=parseFields(data.find(f=>f.n===3)!.b!);

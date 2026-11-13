@@ -4,7 +4,7 @@ No account state, app settings, keys or machine network configuration is copied.
 """
 import argparse,datetime,json,os,pwd,shutil,sqlite3,subprocess,time,urllib.request
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument('--root',type=Path,default=Path('/srv/deepseekfish/app'));args=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--root',type=Path,default=Path('/srv/deepseekfish/app'));p.add_argument('--hold-qq',action='store_true',help='Leave QQ worker/path stopped for an explicitly authorized one-shot validation; caller must restore them.');args=p.parse_args()
 if os.geteuid()!=0:raise SystemExit('Run with sudo; only the existing app/capture units are managed.')
 source=Path(__file__).resolve().parent.parent;root=args.root.resolve()
 if root!=Path('/srv/deepseekfish/app'):raise SystemExit('This VPS installer targets /srv/deepseekfish/app only.')
@@ -73,13 +73,13 @@ try:
  for socket in ['deepseekfish-capture.socket','deepseekfish-tailnet.socket']:
   if prior_units.get(socket) or prior_units.get(socket.replace('.socket','.service')):subprocess.run(['systemctl','start',socket],check=True,timeout=20)
  for unit,active in prior_units.items():
-  if active:subprocess.run(['systemctl','start',unit],check=True,timeout=40)
- subprocess.run(['systemctl','start','deepseekfish-qq.path'],check=True)
+  if active and not(args.hold_qq and unit=='deepseekfish-qq.service'):subprocess.run(['systemctl','start',unit],check=True,timeout=40)
+ if not args.hold_qq:subprocess.run(['systemctl','start','deepseekfish-qq.path'],check=True)
  token=(root/'runtime/data/webui-admin-token').read_text().strip()
  for attempt in range(40):
   try:
    for unit,active in prior_units.items():
-    if active:subprocess.run(['systemctl','is-active','--quiet',unit],check=True)
+    if active and not(args.hold_qq and unit=='deepseekfish-qq.service'):subprocess.run(['systemctl','is-active','--quiet',unit],check=True)
    req=urllib.request.Request('http://127.0.0.1:17862/api/tieba',headers={'Authorization':'Bearer '+token})
    with urllib.request.urlopen(req,timeout=3) as response:status=json.load(response)
    if status.get('state')=='unconfigured' or status.get('lastError',{}) and status['lastError'].get('code')=='TIEBA_WORKER_UNAVAILABLE':raise RuntimeError('Account worker not available')
@@ -88,7 +88,7 @@ try:
    if attempt==39:raise
    time.sleep(.25)
  if pids()!=baseline:raise RuntimeError('An unrelated service process changed')
- print(json.dumps({'deployed':True,'backup':str(backup),'files':len(files),'browser':actual,'profilePreserved':True,'healthChecked':True,'unrelatedPids':baseline}))
+ print(json.dumps({'deployed':True,'backup':str(backup),'files':len(files),'browser':actual,'profilePreserved':True,'healthChecked':True,'qqHeld':args.hold_qq,'unrelatedPids':baseline}))
 except BaseException:
  for dest,prior in reversed(records):
   destination=Path(dest)

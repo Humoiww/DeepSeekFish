@@ -1,6 +1,6 @@
 # 贴吧账号会话
 
-回帖传输层后续重做及本轮离线验证边界见 [tieba-reply-transport.md](tieba-reply-transport.md)。新协议尚未部署或实发验证，下面的历史交付记录不代表新版本已在平台可用。
+回帖传输层重做及验证边界见 [tieba-reply-transport.md](tieba-reply-transport.md)。2026-11-13 经主人另行授权已部署 App Protobuf，并只提交了一次复用旧失败正文的普通楼层回复；非登录视角读到了匹配 PID、作者和完整正文。楼中楼仍仅离线验证，不能据此宣称所有发布分支或后续平台审核已验证通过。
 
 账号基础设施保留人工登录、身份验证和独立 Profile；随后按主人要求新增发帖、回帖、楼中楼接口。新安装默认 preview；当前 VPS 已按主人随后明确授权切到 live，仅关注的贴吧可真实发言。人格和随机探索调度不变。
 
@@ -41,6 +41,8 @@ sudo python3 scripts/install-tieba-session.py
 ```
 
 安装器仅复用已安装并核对版本的浏览器；缺失时明确提示先使用现有 `scripts/install-capture.py`。不自动安装全局依赖。重复执行不覆盖 Profile、账号状态、配置或其他登录。检测到实际模型/生图/定时发布运行时拒绝部署，等任务完成后再运行。短暂停止项目 QQ/Web/私网网关/截图 worker，安装后恢复原来活跃的服务，QQ path watcher 恢复；Native QQ、SSH、Tailscale 不重启，不修改网络。
+
+仅在单独授权的受控实发验证中，操作者可使用 `--hold-qq` 暂时保持项目 QQ worker/path 停止，由调用方在 finally 中恢复；普通部署不加该参数。该选项本身不发帖，也不更改长期发言权限。
 
 每次保存代码和项目 service drop-in 的旧版本到 `/srv/deepseekfish/backups/tieba-session-时间/`，`files.json` 记录目标及备份文件；异常自动回滚代码，不回滚/删除账号 Profile。人工回滚时停这四个 app 单元，按清单还原旧文件/删除新增文件，daemon-reload 后恢复；保留私有账号目录供未来重新安装。
 
