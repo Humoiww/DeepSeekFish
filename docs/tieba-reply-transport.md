@@ -104,3 +104,11 @@ runtime/tools/node/bin/node --test --test-isolation=none dist/tests/tieba-app-po
 测试意图在网络写入前落盘；唯一请求 ID 为 `operator-protobuf-test:44fe71d2-5825-43c1-914c-79bdc97301ff`，完成记录为 `submissionCalls:1`。原接受回执、即时/60 秒检查错误和后续只读证据分别保留在 VPS 私有 `runtime/logs/tieba-protobuf-test-44fe71d2-5825-43c1-914c-79bdc97301ff/`，未覆盖历史错误。测试期间暂停项目 QQ worker/path，结束后恢复；没有重启 Native QQ、SSH 或 Tailscale。
 
 本次只证明一次普通主楼回复经新协议被接受且公开读到。楼中楼、回复子评论仍仅离线验证；新主题帖仍是原传输。不能保证平台以后不会删除该回复，也不能由此确定旧删除的唯一原因。后续真实发言测试仍须单独授权；回执不确定时不重投、不切换写通道。
+
+## 同日后续：新回复触发验证，并非上次回帖消失
+
+随后 QQ 记录 `b5f7b778-429d-4d94-9620-d10ba00e8e61` 中，模型自主读吧、读帖，尝试回复 `11193897530`。新 Protobuf 回执为 `errorCode:5`、`challenge:true`、`accepted:false`、`idGenerated:false`，没有生成回复 ID。模型接着改了正文再调用，隔离服务用已有 `publication-needs-human` 标记挡在网络写入前。两次工具调用不等于两次平台提交；本次没有替模型再次发言。
+
+旧测试 PID `154137933844` 在此后独立非登录读取中仍可见（作者 UID、正文一致）。这证明成功和验证拒绝是两条不同的请求，不代表连续可用性或验证码处理已打通。
+
+此前只保存错误码与 challenge 标志，丢弃了平台 errmsg，无法事后恢复该次原始验证文字。已修正未来回执：仅保留有界、凭据及验证链接脱敏后的平台错误字段，不保存原始响应或 Cookie。账号状态与 `get_tieba_account` 同时暴露人工验证阻塞；WebUI 明确区分「已登录」与「发言因验证暂停」。没有清除现有阻塞标记、自动重发、伪造验证通过或接入验证码绕过；登录身份验证本身也不能证明平台下一次发言会被接受。

@@ -33,6 +33,15 @@ export class AppPostFailure extends FishError {
  constructor(code:string,readonly receipt:Record<string,unknown>){super(code);}
 }
 const challenge=(s:string)=>/验证码|安全验证|安全检测|captcha|vcode/i.test(s);
+/** Only a bounded platform error field, never the response body or a
+ * credential-bearing challenge URL. Scrub the actual injected credentials. */
+function platformMessage(value:unknown,auth:{bduss:string;tbs:string}){
+ let text=typeof value==='string'?value:'';
+ for(const secret of [auth.bduss,auth.tbs])if(secret)text=text.split(secret).join('[凭据省略]');
+ return text.replace(/https?:\/\/[^\s<>"']+/gi,'[验证链接省略]')
+  .replace(/((?:bduss(?:_bfess)?|stoken|tbs|cookie|authorization|vcode_str|captcha_token)\s*["']?\s*[:=]\s*["']?)[^\s"'<>;,]+/gi,'$1[凭据省略]')
+  .replace(/[A-Za-z0-9+/_=-]{32,}/g,'[凭据省略]').replace(/[\x00-\x1f\x7f]/g,' ').slice(0,500);
+}
 /** One invocation makes exactly one write request. Parser failure, explicit
  * rejection, captcha and timeout never select another transport. */
 export async function sendAppReply(plan:PostingRequest,auth:{bduss:string;tbs:string;nameShow?:string},request:(url:string,body:Buffer,type:string)=>Promise<{bytes:Buffer}>){
@@ -49,12 +58,14 @@ export async function sendAppReply(plan:PostingRequest,auth:{bduss:string;tbs:st
   receipt.responseKind=json?'json':'unexpected';
   const code=json?.error_code??json?.errno??json?.no;
   if(typeof code==='number'||typeof code==='string'&&/^-?\d{1,9}$/.test(code))receipt.errorCode=Number(code);
+  const message=platformMessage(json?.error_msg??json?.errmsg??json?.error,auth);if(message)receipt.errorMessage=message;
   if(Number(json?.need_vcode)>0||Number(json?.anti?.need_vcode)>0||challenge(String(json?.error_msg??json?.errmsg??json?.error??text))){receipt.challenge=true;throw new AppPostFailure('TIEBA_PUBLICATION_CHALLENGE',receipt);}
   if(receipt.errorCode!==undefined&&receipt.errorCode!==0)throw new AppPostFailure('TIEBA_PUBLICATION_REJECTED',receipt);
   if(receipt.errorCode===0)receipt.accepted=true;
   throw new AppPostFailure('TIEBA_PUBLICATION_UNCONFIRMED',receipt);
  }
  receipt.errorCode=result.errno;receipt.accepted=result.errno===0;receipt.idGenerated=!!result.pid;if(result.pid)receipt.id=result.pid;
+ const message=platformMessage(result.errmsg,auth);if(message)receipt.errorMessage=message;
  if(challenge(result.errmsg)){receipt.challenge=true;throw new AppPostFailure('TIEBA_PUBLICATION_CHALLENGE',receipt);}
  if(result.errno!==0)throw new AppPostFailure('TIEBA_PUBLICATION_REJECTED',receipt);
  if(!result.pid)throw new AppPostFailure('TIEBA_PUBLICATION_UNCONFIRMED',receipt);

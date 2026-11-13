@@ -8,7 +8,7 @@ import {postPublic} from '../search/public-web.js';
 
 export interface TiebaIdentity {id:string;name:string}
 export type AccountState='unconfigured'|'needs_check'|'waiting_login'|'logged_in'|'expired'|'check_failed';
-export interface SessionStatus {state:AccountState;browserRunning:boolean;profileSaved:boolean;verifiedAt:number|null;identity:TiebaIdentity|null;lastIdentity:TiebaIdentity|null;lastError:{code:string;stage:string;at:number}|null;waitingUntil:number|null;verificationRequired:boolean;loginPage?:{title:string;origin:string;qrVisible:boolean;challenge:boolean;blocked:boolean;bodyCharacters?:number;inputCount?:number;frameCount?:number;blockedOrigins?:string[]}}
+export interface SessionStatus {state:AccountState;browserRunning:boolean;profileSaved:boolean;verifiedAt:number|null;identity:TiebaIdentity|null;lastIdentity:TiebaIdentity|null;lastError:{code:string;stage:string;at:number}|null;waitingUntil:number|null;verificationRequired:boolean;publication?:{needsHuman:boolean;detectedAt:number|null;error:string|null};loginPage?:{title:string;origin:string;qrVisible:boolean;challenge:boolean;blocked:boolean;bodyCharacters?:number;inputCount?:number;frameCount?:number;blockedOrigins?:string[]}}
 export interface LoginInput {kind:'click'|'drag'|'text'|'key'|'scroll';x?:number;y?:number;toX?:number;toY?:number;text?:string;key?:string;delta?:number}
 export interface AccountBrowser {
  login():Promise<void>;loginInfo?():Promise<NonNullable<SessionStatus['loginPage']>>;identity():Promise<TiebaIdentity|null>;frame():Promise<Buffer>;input(value:LoginInput):Promise<void>;
@@ -35,7 +35,12 @@ export class TiebaSessionManager {
   const state:AccountState=!installed?'unconfigured':saved.state==='expired'?'expired':fs.existsSync(path.join(dir,'profile'))?'needs_check':'waiting_login';
   this.current={state,browserRunning:false,profileSaved:fs.existsSync(path.join(dir,'profile')),identity:null,lastIdentity:saved.lastIdentity??saved.identity??null,verifiedAt:saved.verifiedAt??null,lastError:saved.lastError??null,waitingUntil:null,verificationRequired:true};
  }
- status():SessionStatus{return structuredClone({...this.current,browserRunning:!!this.browser});}
+ private publicationStatus(){
+  const file=path.join(this.dir,'publication-needs-human'),needsHuman=fs.existsSync(file);let detectedAt:number|null=null;
+  if(needsHuman){try{const at=Number(fs.readFileSync(file,'utf8'));if(Number.isSafeInteger(at)&&at>0)detectedAt=at;}catch{}}
+  return {needsHuman,detectedAt,error:needsHuman?'TIEBA_PUBLICATION_NEEDS_HUMAN':null};
+ }
+ status():SessionStatus{return structuredClone({...this.current,browserRunning:!!this.browser,publication:this.publicationStatus()});}
  private save(){const p=path.join(this.dir,'status.json'),tmp=p+'.tmp';fs.writeFileSync(tmp,JSON.stringify(this.current),{mode:0o600});fs.renameSync(tmp,p);}
  private acquire(){
   if(this.current.state==='unconfigured')throw new FishError('TIEBA_NOT_CONFIGURED');
@@ -101,7 +106,7 @@ export class TiebaSessionManager {
  async account(){return this.usingAccount('account',async(browser,who)=>{
   if(!browser.followed)throw new FishError('TIEBA_FOLLOW_LIST_UNAVAILABLE');
   const following=await browser.followed(who.id);let mode='unconfigured';try{mode=this.policy().mode;}catch{}
-  return {account:who,verifiedAt:this.current.verifiedAt,following,posting:{mode,scope:'followed_forums',otherForums:'read_only'}};
+  return {account:who,verifiedAt:this.current.verifiedAt,following,posting:{mode,scope:'followed_forums',otherForums:'read_only',...this.publicationStatus()}};
  });}
  async replies(page=1){
   if(!Number.isSafeInteger(page)||page<1||page>10000)throw new FishError('TIEBA_PAGE_INVALID');

@@ -57,6 +57,8 @@ test('captcha, rejection, missing ID, malformed body and timeout never retry or 
   [Buffer.from('<html>百度安全验证</html>'),'TIEBA_PUBLICATION_CHALLENGE'],[Buffer.from('{"error_code":121,"error_msg":"denied"}'),'TIEBA_PUBLICATION_REJECTED'],[Buffer.from([0x12,0xff]),'TIEBA_PUBLICATION_UNCONFIRMED'],[new FishError('TIEBA_READ_NETWORK_FAILED'),'TIEBA_READ_NETWORK_FAILED']
  ];
  for(const [body,code] of cases){let calls=0;await assert.rejects(sendAppReply(plan,fixture.requests[0].args,async url=>{calls++;assert.equal(url,APP_POST_URL);if(body instanceof Error)throw body;return {bytes:body};}),(e:any)=>e.code===code);assert.equal(calls,1,code);}
+ const auth=fixture.requests[0].args,message='请输入验证码 BDUSS='+auth.bduss+' tbs='+auth.tbs+' https://example.invalid/verify?token=private';
+ for(const bytes of [pbBytes(1,Buffer.concat([pbNumber(1,5),pbString(2,message)])),Buffer.from(JSON.stringify({error_code:5,error_msg:message}))])await assert.rejects(sendAppReply(plan,auth,async()=>({bytes})),(e:any)=>{assert.equal(e.code,'TIEBA_PUBLICATION_CHALLENGE');assert.equal(e.receipt.errorCode,5);assert.match(e.receipt.errorMessage,/请输入验证码/);assert.ok(!JSON.stringify(e.receipt).includes('OFFLINE_'));assert.ok(!JSON.stringify(e.receipt).includes('example.invalid'));return true;});
 });
 test('uncertain and rejected outbox outcomes block identical submissions under a new call ID',async t=>{
  for(const key of ['acceptedNoId','rejected','captcha','timeout']){

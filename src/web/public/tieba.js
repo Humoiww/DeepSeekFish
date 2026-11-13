@@ -10,6 +10,7 @@
   if(s.lastError?.code==='TIEBA_WORKER_UNAVAILABLE')lines.push('无法连接隔离服务，浏览器和资料状态暂时无法确认');else lines.push('浏览器：'+(s.browserRunning?'运行中':'已关闭')+'；资料：'+(s.profileSaved?'已保存':'未保存'));
   if(s.loginPage)lines.push('官方页面：'+s.loginPage.title+' · '+s.loginPage.origin+(s.loginPage.blocked?' · 页面暂不可用':s.loginPage.challenge?' · 需要手动完成验证':''));
   if(s.lastError)lines.push('最近错误：'+s.lastError.code+' · '+s.lastError.stage);
+  if(s.publication?.needsHuman)lines.push('发言已暂停：贴吧要求人工安全验证（'+s.publication.error+'）。已登录不代表发言验证已通过。'+(s.publication.detectedAt?'\n触发时间：'+new Date(s.publication.detectedAt).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong'}):''));
   $('tieba-status').textContent=lines.join('\n');$('tieba-status').style.whiteSpace='pre-wrap';
   $('tieba-login').hidden=!(s.browserRunning&&s.state==='waiting_login');
  }
@@ -31,7 +32,7 @@
  const input=v=>task(async()=>{await api('tieba/input',v);await frame();});
  $('tieba-button').onclick=()=>{closeDrawers(false);dialog.showModal();void task(async()=>{const s=await status();if(s.browserRunning&&s.state==='waiting_login')await frame();});};
  $('tieba-start').onclick=()=>task(async()=>{render(await api('tieba/start',{}));await frame();});
- $('tieba-account-refresh').onclick=()=>task(async()=>{const a=await api('tieba/account',{});$('tieba-following').textContent=a.account.name+' · UID '+a.account.id+'\n'+a.following.map(f=>f.name+'吧 · '+f.id).join('\n');$('tieba-posting-policy').textContent=a.posting.mode==='preview'?'预演模式：只保存，不真实发布；仅已关注的贴吧允许准备发言。':a.posting.mode==='live'?'仅已关注的贴吧允许真实发言；其他贴吧只读。':'发言配置不可读，当前不能发帖。';});
+ $('tieba-account-refresh').onclick=()=>task(async()=>{const a=await api('tieba/account',{});$('tieba-following').textContent=a.account.name+' · UID '+a.account.id+'\n'+a.following.map(f=>f.name+'吧 · '+f.id).join('\n');$('tieba-posting-policy').textContent=(a.posting.needsHuman?'发言已暂停：贴吧要求人工安全验证。已登录不代表发言验证已通过。\n':'')+(a.posting.mode==='preview'?'预演模式：只保存，不真实发布；仅已关注的贴吧允许准备发言。':a.posting.mode==='live'?'仅已关注的贴吧允许真实发言；其他贴吧只读。':'发言配置不可读，当前不能发帖。');});
  $('tieba-actions-refresh').onclick=()=>task(async()=>{$('tieba-actions').textContent=JSON.stringify(await api('tieba/actions'),null,2);});
  $('tieba-check').onclick=()=>task(async()=>{const s=await api('tieba/check',{});render(s);if(s.browserRunning&&s.state==='waiting_login')await frame();});
  $('tieba-status-refresh').onclick=()=>task(status);$('tieba-frame-refresh').onclick=()=>task(frame);
