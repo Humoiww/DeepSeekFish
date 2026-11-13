@@ -189,6 +189,8 @@ export class Bot {
                 else{if(args.text.trim())await this.send(last,args.text);result={sent:!!args.text.trim(),...(memory?{memory}:{})};finished=true;}
               }else if(call.function.name==='get_tieba_account'){
                 if(Object.keys(args).length)throw new FishError('INVALID_TOOL_ARGS');result=await new TiebaAccountClient().account();
+              }else if(call.function.name==='get_tieba_replies'){
+                if(Object.keys(args).some(k=>k!=='page'))throw new FishError('INVALID_TOOL_ARGS');result=await new TiebaAccountClient().replies(args.page??1);
               }else if(call.function.name==='publish_tieba'){
                 result=await new TiebaAccountClient().publish(args,'qq:'+last.group+':'+last.id+':'+call.id);
               }else if(call.function.name==='read_forward'){

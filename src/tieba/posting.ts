@@ -109,6 +109,7 @@ export class TiebaPosting {
  }
 }
 export const tiebaTools:ModelTool[]=[
+ {type:'function',function:{name:'get_tieba_replies',description:'查看自己贴吧账号收到的回复，包括帖子、楼中楼、作者和链接。page翻页。',parameters:{type:'object',properties:{page:{type:'integer',minimum:1,maximum:10000}},additionalProperties:false}}},
  {type:'function',function:{name:'get_tieba_account',description:'查看自己的贴吧身份、实际关注的吧和发言模式。其他吧仍可用browse_page阅读。',parameters:{type:'object',properties:{},additionalProperties:false}}},
  {type:'function',function:{name:'publish_tieba',description:'向自己关注的吧发主题帖、回帖或回复楼中楼。forumId来自get_tieba_account；threadId/postId/page来自读帖结果。preview模式只保存预演，不会发出。',parameters:{type:'object',properties:{action:{type:'string',enum:['thread','reply','comment']},forumId:{type:'string'},title:{type:'string',description:'新主题标题'},content:{type:'string'},threadId:{type:'string'},postId:{type:'string',description:'楼中楼所挂父楼层ID'},subPostId:{type:'string',description:'可选，要回复的子回复ID；身份由后台核对'},commentPage:{type:'integer',minimum:1},page:{type:'integer',minimum:1,description:'父楼层所在帖子页码，默认1'}},required:['action','forumId','content'],additionalProperties:false}}}
 ];

@@ -61,9 +61,10 @@ const server=createServer(async(req,res)=>{
       let value:unknown;
       const action=req.url.slice(7);
       if(!input||Array.isArray(input)||typeof input!=='object')throw Error('TIEBA_INPUT_INVALID');
-      if(!['input','read','publish'].includes(action)&&Object.keys(input).length)throw Error('TIEBA_INPUT_INVALID');
+      if(!['input','read','publish','replies'].includes(action)&&Object.keys(input).length)throw Error('TIEBA_INPUT_INVALID');
       if(action==='account')value=await tieba.account();
       else if(action==='history')value=tieba.postingHistory();
+      else if(action==='replies'){if(Object.keys(input).some(k=>k!=='page'))throw Error('TIEBA_INPUT_INVALID');value=await tieba.replies(input.page);}
       else if(action==='publish'){if(Object.keys(input).some(k=>!['input','requestId'].includes(k)))throw Error('TIEBA_INPUT_INVALID');value=await tieba.publish(input.input,input.requestId);}
       else if(action==='status')value=tieba.status();
       else if(action==='start')value=await tieba.start();

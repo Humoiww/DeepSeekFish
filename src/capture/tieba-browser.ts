@@ -10,6 +10,7 @@ import {FishError} from '../types.js';
 import type {AccountBrowser,TiebaIdentity,LoginInput} from '../tieba/session.js';
 import {tiebaPage} from '../search/tieba.js';
 import {publicAddress,type PublicPoster} from '../search/public-web.js';
+import {replyRequest,replyPage} from '../tieba/replies.js';
 
 const HOME='https://tieba.baidu.com/';
 export const LOGIN='https://passport.baidu.com/v2/?login&tpl=tb&u='+encodeURIComponent(HOME);
@@ -97,25 +98,34 @@ export class TiebaBrowser implements AccountBrowser {
   }
   await sleep(400);
  }
- private async accountPoster(writing=false):Promise<PublicPoster|null>{
-  // The normalizer chooses three read-only endpoints, never a supplied action.
+ private async bduss(){
   const cookies=await this.pipe.call('Storage.getCookies');
   const cookie=(name:string)=>cookies.cookies?.find((c:any)=>c.name===name&&['baidu.com','.baidu.com','tieba.baidu.com','.tieba.baidu.com'].includes(c.domain))?.value;
-  const bduss=cookie('BDUSS');if(typeof bduss!=='string'||!bduss)return null;
+  const value=cookie('BDUSS');return typeof value==='string'&&value?value:null;
+ }
+ private async accountPoster(writing=false):Promise<PublicPoster|null>{
+  const bduss=await this.bduss();if(!bduss)return null;
   const poster:PublicPoster=async(raw,body,signal)=>{
    const u=new URL(raw);if(u.origin!=='https://tiebac.baidu.com'||!['/c/f/frs/page','/c/f/pb/page','/c/f/pb/floor','/c/s/login','/c/f/forum/like',...(writing?['/c/c/thread/add','/c/c/post/add']:[])].includes(u.pathname)||u.search)throw new FishError('TIEBA_READ_TARGET_DENIED');
    const fields=Object.fromEntries(body);delete fields.sign;if(u.pathname==='/c/s/login')fields.bdusstoken=bduss;else fields.BDUSS=bduss;
    const privateBody=new URLSearchParams(fields);privateBody.set('sign',createHash('md5').update(Object.keys(fields).sort().map(k=>k+'='+fields[k]).join('')+'tiebaclient!!!').digest('hex'));
-   const addresses=await dns.lookup(u.hostname,{all:true});if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw new FishError('TIEBA_PRIVATE_ADDRESS');const address=addresses.find(a=>a.family===4)??addresses[0];
-   const bytes=Buffer.from(privateBody.toString());
-   return new Promise((resolve,reject)=>{
-    const req=https.request(u,{method:'POST',agent:false,signal:AbortSignal.any([AbortSignal.timeout(20000),...(signal?[signal]:[])]),maxVersion:'TLSv1.2',headers:{'content-type':'application/x-www-form-urlencoded','content-length':bytes.length,'user-agent':'bdtb for Android 12.64.1.1'},lookup:((_host:any,opts:any,cb:any)=>opts.all?cb(null,[address]):cb(null,address.address,address.family)) as any},res=>{
-     if(res.statusCode!==200){res.destroy();reject(new FishError('TIEBA_READ_HTTP_'+res.statusCode));return;}
-     const parts:Buffer[]=[];let size=0;res.on('data',(b:Buffer)=>{size+=b.length;if(size>2097152)res.destroy(new FishError('TIEBA_READ_LIMIT'));else parts.push(b);});res.on('error',reject);res.on('end',()=>resolve({url:raw,type:'application/json',bytes:Buffer.concat(parts)}));
-    });req.on('error',()=>reject(new FishError('TIEBA_READ_NETWORK_FAILED')));req.end(bytes);
-   });
+   return this.request(raw,Buffer.from(privateBody.toString()),'application/x-www-form-urlencoded',signal);
   };
   return poster;
+ }
+ private async request(raw:string,bytes:Buffer,type:string,signal?:AbortSignal):ReturnType<PublicPoster>{
+   const u=new URL(raw),addresses=await dns.lookup(u.hostname,{all:true});if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw new FishError('TIEBA_PRIVATE_ADDRESS');const address=addresses.find(a=>a.family===4)??addresses[0];
+   return new Promise((resolve,reject)=>{
+    const req=https.request(u,{method:'POST',agent:false,signal:AbortSignal.any([AbortSignal.timeout(20000),...(signal?[signal]:[])]),maxVersion:'TLSv1.2',headers:{'content-type':type,'content-length':bytes.length,'user-agent':'bdtb for Android 12.64.1.1',...(type.startsWith('multipart/')?{'x_bd_data_type':'protobuf'}:{})},lookup:((_host:any,opts:any,cb:any)=>opts.all?cb(null,[address]):cb(null,address.address,address.family)) as any},res=>{
+     if(res.statusCode!==200){res.destroy();reject(new FishError('TIEBA_READ_HTTP_'+res.statusCode));return;}
+     const parts:Buffer[]=[];let size=0;res.on('data',(b:Buffer)=>{size+=b.length;if(size>2097152)res.destroy(new FishError('TIEBA_READ_LIMIT'));else parts.push(b);});res.on('error',reject);res.on('end',()=>resolve({url:raw,type:String(res.headers['content-type']??'application/octet-stream'),bytes:Buffer.concat(parts)}));
+    });req.on('error',()=>reject(new FishError('TIEBA_READ_NETWORK_FAILED')));req.end(bytes);
+   });
+ }
+ async replies(page:number){
+  const bduss=await this.bduss();if(!bduss)throw new FishError('TIEBA_LOGIN_REQUIRED');
+  const request=replyRequest(bduss,page),response=await this.request('https://tiebac.baidu.com/c/u/feed/replyme?cmd=303007',request.body,request.type) as {bytes:Buffer};
+  return replyPage(response.bytes,page);
  }
  async followed(userId:string):Promise<FollowedForum[]>{const poster=await this.accountPoster();if(!poster)throw new FishError('TIEBA_LOGIN_REQUIRED');return followedForums(poster,userId);}
  async sendPost(request:ReturnType<typeof postingRequest>){

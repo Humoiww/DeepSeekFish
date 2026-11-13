@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {TiebaPosting,type FollowedForum,type PostingPolicy,type PublishInput,publishInput,postingTarget,postingRequest} from './posting.js';
 import {FishError,codeOf} from '../types.js';
+import type {TiebaReplyPage} from './replies.js';
 
 export interface TiebaIdentity {id:string;name:string}
 export type AccountState='unconfigured'|'needs_check'|'waiting_login'|'logged_in'|'expired'|'check_failed';
@@ -9,7 +10,7 @@ export interface SessionStatus {state:AccountState;browserRunning:boolean;profil
 export interface LoginInput {kind:'click'|'drag'|'text'|'key'|'scroll';x?:number;y?:number;toX?:number;toY?:number;text?:string;key?:string;delta?:number}
 export interface AccountBrowser {
  login():Promise<void>;loginInfo?():Promise<NonNullable<SessionStatus['loginPage']>>;identity():Promise<TiebaIdentity|null>;frame():Promise<Buffer>;input(value:LoginInput):Promise<void>;
- read(url:string):Promise<any>;followed?(userId:string):Promise<FollowedForum[]>;sendPost?(request:ReturnType<typeof postingRequest>):Promise<{id:string;url:string}>;close():Promise<void>;
+ read(url:string):Promise<any>;replies?(page:number):Promise<TiebaReplyPage>;followed?(userId:string):Promise<FollowedForum[]>;sendPost?(request:ReturnType<typeof postingRequest>):Promise<{id:string;url:string}>;close():Promise<void>;
 }
 export function loginInput(v:any):LoginInput{
  if(!v||typeof v!=='object'||Array.isArray(v))throw new FishError('TIEBA_INPUT_INVALID');
@@ -21,7 +22,7 @@ export function loginInput(v:any):LoginInput{
  if(v.kind==='scroll'&&(!Number.isInteger(v.delta)||Math.abs(v.delta)>700))throw new FishError('TIEBA_INPUT_INVALID');return v;
 }
 /** Lifecycle/state only. All login material stays in the private driver/profile.
- * No timer verifies a session or retries a challenge. */
+ * The reply watcher may read a saved session; challenges require a human. */
 export class TiebaSessionManager {
  private browser?:AccountBrowser;private busy=false;private timer?:NodeJS.Timeout;private locked=false;
  private current:SessionStatus;private lock:string;
@@ -88,10 +89,11 @@ export class TiebaSessionManager {
   if(!['preview','live'].includes(p.mode)||typeof p.accountId!=='string'||! /^[1-9]\d{0,19}$/.test(p.accountId))throw new FishError('TIEBA_PUBLISH_NOT_CONFIGURED');return {mode:p.mode,accountId:p.accountId};
  }
  private async usingAccount<T>(stage:string,work:(browser:AccountBrowser,who:TiebaIdentity)=>Promise<T>){return this.operation(stage,async()=>{
-  if(this.browser)throw new FishError('TIEBA_LOGIN_IN_PROGRESS');await this.ensure();
-  try{const who=await this.browser!.identity();if(!who)throw new FishError('TIEBA_LOGIN_REQUIRED');
+  if(this.browser)throw new FishError('TIEBA_LOGIN_IN_PROGRESS');
+  if(this.current.state==='expired')throw new FishError('TIEBA_LOGIN_REQUIRED');await this.ensure();
+  try{const who=await this.browser!.identity();if(!who){this.current.state='expired';this.current.identity=null;this.current.verifiedAt=this.now();this.save();throw new FishError('TIEBA_LOGIN_REQUIRED');}
    this.current.state='logged_in';this.current.identity=who;this.current.lastIdentity=who;this.current.verifiedAt=this.now();this.current.verificationRequired=false;
-   const result=await work(this.browser!,who);this.save();return result;
+   const result=await work(this.browser!,who);this.current.lastError=null;this.save();return result;
   }finally{await this.stop();}
  });}
  async account(){return this.usingAccount('account',async(browser,who)=>{
@@ -99,6 +101,13 @@ export class TiebaSessionManager {
   const following=await browser.followed(who.id);let mode='unconfigured';try{mode=this.policy().mode;}catch{}
   return {account:who,verifiedAt:this.current.verifiedAt,following,posting:{mode,scope:'followed_forums',otherForums:'read_only'}};
  });}
+ async replies(page=1){
+  if(!Number.isSafeInteger(page)||page<1||page>10000)throw new FishError('TIEBA_PAGE_INVALID');
+  return this.usingAccount('replies',async(browser,who)=>{
+   if(!browser.replies)throw new FishError('TIEBA_REPLIES_UNAVAILABLE');
+   return {account:who,...await browser.replies(page)};
+  });
+ }
  async publish(raw:PublishInput,requestId:string){const input=publishInput(raw);return this.usingAccount('publish',async(browser,who)=>{
   if(!browser.followed||!browser.sendPost)throw new FishError('TIEBA_PUBLISH_UNAVAILABLE');
   const policy=this.policy(),blocked=path.join(this.dir,'publication-needs-human');if(policy.mode==='live'&&fs.existsSync(blocked))throw new FishError('TIEBA_PUBLICATION_NEEDS_HUMAN');

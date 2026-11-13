@@ -50,15 +50,17 @@ export class ExplorationState{
     this.store.db.prepare("UPDATE exploration_runs SET state='interrupted',finished=?,error='PROCESS_INTERRUPTED',lock=NULL,lease=0 WHERE state='running' AND lease<=?").run(this.now(),this.now());
     this.store.db.prepare("UPDATE exploration_runs SET state='cancelled',finished=? WHERE state='queued' AND cancel=1").run(this.now());
     // A stale manual queue is not a collection of work to catch up after offline time.
-    this.store.db.prepare("UPDATE exploration_runs SET state='interrupted',finished=?,error='QUEUED_WHILE_OFFLINE' WHERE state='queued' AND created<?").run(this.now(),this.now()-3600000);
+    this.store.db.prepare("UPDATE exploration_runs SET state='interrupted',finished=?,error='QUEUED_WHILE_OFFLINE' WHERE state='queued' AND trigger!='tieba_reply' AND created<?").run(this.now(),this.now()-3600000);
   }
-  private insert(trigger:string){
+  /** Called inside the caller's transaction, so event receipts and enqueue
+   * commit together. Reused active runs are never overwritten. */
+  enqueue(trigger:string,instruction?:string){
     const owner=this.settings().owner;this.assertOwner(owner);
     const prior=this.store.db.prepare(`SELECT * FROM exploration_runs WHERE ${active}`).get() as ExplorationRun|undefined;
     if(prior)return {run:prior,reused:true};
-    const id=randomUUID();this.store.db.prepare("INSERT INTO exploration_runs(id,owner,trigger,state,created) VALUES (?,?,?,'queued',?)").run(id,owner,trigger,this.now());return {run:this.get(id),reused:false};
+    const id=randomUUID();this.store.db.prepare("INSERT INTO exploration_runs(id,owner,trigger,state,created,instruction) VALUES (?,?,?,'queued',?,?)").run(id,owner,trigger,this.now(),instruction??null);return {run:this.get(id),reused:false};
   }
-  manual(instruction?:string){if(instruction!==undefined&&(typeof instruction!=='string'||!instruction.trim()||instruction.length>4000))throw new FishError('INVALID_EXPLORATION_INSTRUCTION');return this.store.transaction(()=>{this.recover();const result=this.insert('manual');if(instruction!==undefined){if(result.reused)throw new FishError('EXPLORATION_BUSY');this.store.db.prepare('UPDATE exploration_runs SET instruction=? WHERE id=?').run(instruction,result.run.id);return {...result,run:this.get(result.run.id)};}return result;});}
+  manual(instruction?:string){if(instruction!==undefined&&(typeof instruction!=='string'||!instruction.trim()||instruction.length>4000))throw new FishError('INVALID_EXPLORATION_INSTRUCTION');return this.store.transaction(()=>{this.recover();const result=this.enqueue('manual',instruction);if(instruction!==undefined&&result.reused)throw new FishError('EXPLORATION_BUSY');return result;});}
   check(){return this.store.transaction(()=>{
     this.recover();const s=this.settings(),row=this.store.db.prepare('SELECT * FROM exploration_schedule WHERE id=1').get() as any;
     if(!s.enabled)return {checked:false,hit:false};
@@ -68,7 +70,7 @@ export class ExplorationState{
     // Exactly one roll after a long offline gap, never replay missed ticks.
     const hit=this.rng()<s.probability;
     this.store.db.prepare('UPDATE exploration_schedule SET next_check=?,last_check=?,checks=checks+1,hits=hits+? WHERE id=1').run(this.now()+interval(s,this.rng),this.now(),Number(hit));
-    return {checked:true,hit,...(hit?this.insert('random'):{})};
+    return {checked:true,hit,...(hit?this.enqueue('random'):{})};
   });}
   claim(){return this.store.transaction(()=>{
     this.recover();const r=this.store.db.prepare("SELECT * FROM exploration_runs WHERE state='queued' AND cancel=0 ORDER BY created LIMIT 1").get() as ExplorationRun|undefined;
@@ -95,7 +97,10 @@ export class ExplorationState{
   }
   observations(id:string,offset=0){const rows=this.store.db.prepare('SELECT step,tool,data,at FROM exploration_observations WHERE run_id=? ORDER BY step LIMIT 11 OFFSET ?').all(id,offset) as any[];return {observations:rows.slice(0,10).map(r=>({...r,...JSON.parse(r.data),data:undefined})),nextOffset:rows.length>10?offset+10:null};}
   status(){
+    const watch=JSON.parse(this.store.getMeta('tieba:reply-watch')??'null'),hasReplies=this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tieba_reply_events'").get();
+    const replyPending=hasReplies?this.store.db.prepare('SELECT count(*) AS count,min(due) AS due FROM tieba_reply_events WHERE run_id IS NULL AND owner=? AND account=?').get(this.settings().owner,watch?.account??''):null;
     const s=this.settings();return {settings:s,expectedPerDay:expectedPerDay(s),schedule:this.store.db.prepare('SELECT * FROM exploration_schedule WHERE id=1').get(),
+      tiebaReplies:{lastCheck:watch?.lastCheck??null,lastError:watch?.lastError??null,paused:watch?.pausedAt!==undefined,pending:replyPending},
       active:this.store.db.prepare(`SELECT * FROM exploration_runs WHERE ${active}`).get()??null,last:this.store.db.prepare('SELECT * FROM exploration_runs ORDER BY created DESC LIMIT 1').get()??null,
       recent:this.store.db.prepare('SELECT * FROM exploration_runs ORDER BY created DESC LIMIT 20').all(),lastError:this.store.db.prepare('SELECT error,finished FROM exploration_runs WHERE error IS NOT NULL ORDER BY created DESC LIMIT 1').get()??null,
       worker:JSON.parse(this.store.getMeta('exploration:worker')??'null'),owners:this.cfg().privateUsers,groups:this.cfg().groups,

@@ -12,6 +12,7 @@ import {FishError,codeOf,type ChatMessage} from '../types.js';
 import {hasToolMarkup} from '../agent/tool-protocol.js';
 import {ExplorationState,type ExplorationRun} from './state.js';
 import {ExplorationTools,type ExplorationServices} from './tools.js';
+import {TiebaReplyWatch} from '../tieba/reply-watch.js';
 
 export function explorationRead(root:string,state:ExplorationState,id:unknown,offset=0,owner?:string,query=''){
  if(id===undefined)return state.history(query,offset,owner);
@@ -26,14 +27,15 @@ export function explorationRead(root:string,state:ExplorationState,id:unknown,of
 }
 export class ExplorationWorker{
  private timer?:NodeJS.Timeout;private active?:{id:string;lock:string;controller:AbortController;promise:Promise<void>};private stopped=true;private polling=false;
- constructor(readonly state:ExplorationState,private model:Pick<BudgetedModel,'complete'>,private services:Omit<ExplorationServices,'state'|'readRun'>,private now=Date.now){}
+ private replies:TiebaReplyWatch;
+ constructor(readonly state:ExplorationState,private model:Pick<BudgetedModel,'complete'>,private services:Omit<ExplorationServices,'state'|'readRun'>,private now=Date.now){this.replies=new TiebaReplyWatch(state,()=>services.cfg().enabled&&services.cfg().search,undefined,now);}
  start(){if(!this.stopped)return;this.stopped=false;void this.poll();}
  private async poll(){if(this.stopped)return;try{await this.tick();}catch(e){this.state.store.setMeta('exploration:worker',JSON.stringify({at:this.now(),state:'error',error:codeOf(e),diagnostic:errorDiagnostic(e)}));}finally{if(!this.stopped){this.timer=setTimeout(()=>void this.poll(),1000);this.timer.unref();}}}
  async tick(){
   if(this.polling)return;this.polling=true;
   try{
    this.state.store.setMeta('exploration:worker',JSON.stringify({at:this.now(),state:this.active?'running':'idle'}));
-   this.state.check();
+   this.replies.tick(!this.active);this.state.check();
    if(this.active){try{this.state.heartbeat(this.active.id,this.active.lock);}catch{this.active.controller.abort();}return;}
    const run=this.state.claim();if(!run)return;
    const controller=new AbortController(),promise=this.execute(run,controller).catch(e=>{this.state.finish(run.id,run.lock!,'failed',codeOf(e));this.state.store.audit('exploration-error','private:'+run.owner,JSON.stringify(errorDiagnostic(e)));});
@@ -41,7 +43,7 @@ export class ExplorationWorker{
   }finally{this.polling=false;}
  }
  async idle(){await this.active?.promise;}
- async stop(){this.stopped=true;clearTimeout(this.timer);this.active?.controller.abort();await this.idle();}
+ async stop(){this.stopped=true;clearTimeout(this.timer);this.active?.controller.abort();await Promise.all([this.idle(),this.replies.idle()]);}
  private prune(){
   const dir=makeDir(this.services.root,'runtime/logs/exploration');const files=fs.readdirSync(dir).filter(n=>/^[a-f0-9-]{36}\.json$/.test(n)).map(name=>({name,stat:fs.lstatSync(safePath(dir,name))})).filter(f=>f.stat.isFile()&&f.stat.nlink===1).sort((a,b)=>b.stat.mtimeMs-a.stat.mtimeMs);
   let kept=0;for(const f of files){kept+=f.stat.size;if(kept>128*1024*1024||f.stat.mtimeMs<this.now()-90*86400000)fs.unlinkSync(safePath(dir,f.name));}
@@ -51,13 +53,13 @@ export class ExplorationWorker{
   const services={...this.services,state:this.state,readRun:(id:string|undefined,offset:number,query?:string)=>explorationRead(root,this.state,id,offset,run.owner,query)};
   const capabilities=new ExplorationTools(services,run,context,controller.signal),seen=new Set<string>();
   const group='private:'+run.owner;
-  const background={kind:'自主探索',now:new Date(started).toISOString(),owner:run.owner,delivery:{recipient:run.owner,transport:this.services.transport.status},character:{appearance:appearancePrompt(root),referenceId:'character'},
+  const background={kind:'自主探索',now:new Date(started).toISOString(),owner:run.owner,...(run.trigger==='tieba_reply'&&run.instruction?{notification:JSON.parse(run.instruction)}:{}),delivery:{recipient:run.owner,transport:this.services.transport.status},character:{appearance:appearancePrompt(root),referenceId:'character'},
    curiosity:this.state.journal().entries?.slice(0,5).map(e=>({id:e.id,title:e.title,preview:e.preview.slice(0,200),version:e.version})),recent:newsMemory(this.state.store,run.owner).recent,
    previous:this.state.status().recent.filter((r:any)=>r.id!==run.id&&r.owner===run.owner).slice(0,3).map((r:any)=>({id:r.id,state:r.state,at:r.created,note:r.note?.slice(0,500)})),...qqResources(cfg(),ledger,group,'exploration')};
   const messages:ChatMessage[]=[{role:'system',content:explorationPrompt(root)},{role:'system',content:JSON.stringify(background)},{role:'user',content:run.trigger==='manual'&&run.instruction?run.instruction:'你醒了一会儿，现在是自己的时间。'}];
   const logPath='runtime/logs/exploration/'+run.id+'.json';makeDir(root,'runtime/logs/exploration');
   const save=()=>{
-   const log=JSON.stringify(diagnosticSafe({id:run.id,request:run.trigger==='manual'?(run.instruction??'手动唤醒 · 自主探索'):'随机刻 · 自主探索',conversation:group,startedAt:started,finishedAt:state==='running'?undefined:this.now(),state,note,inputContext:background,trace}));
+   const log=JSON.stringify(diagnosticSafe({id:run.id,request:run.trigger==='manual'?(run.instruction??'手动唤醒 · 自主探索'):run.trigger==='tieba_reply'?'贴吧新回复 · 自主探索':'随机刻 · 自主探索',conversation:group,startedAt:started,finishedAt:state==='running'?undefined:this.now(),state,note,inputContext:background,trace}));
    if(Buffer.byteLength(log)>8*1024*1024)throw new FishError('EXPLORATION_TRACE_STORAGE_LIMIT');writePrivateAtomic(root,logPath,log);
   };
   const heartbeat=setInterval(()=>{try{this.state.heartbeat(run.id,run.lock!);const settings=this.state.settings();if(this.now()-started>=settings.maxRunMinutes*60000)controller.abort(new FishError('EXPLORATION_TIME_BUDGET'));}catch(e){controller.abort(e);}},1000);heartbeat.unref();
