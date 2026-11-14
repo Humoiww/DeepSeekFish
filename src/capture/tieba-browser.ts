@@ -18,7 +18,7 @@ import {WebPostGate,webPostResponse,webPostResult,type WebOutcome} from '../tieb
 const HOME='https://tieba.baidu.com/';
 export const LOGIN='https://passport.baidu.com/v2/?login&tpl=tb&u='+encodeURIComponent(HOME);
 export function baiduResource(raw:string){
- try{const u=new URL(raw);return u.protocol==='about:'&&u.href==='about:blank'||['data:','blob:'].includes(u.protocol)||u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&(['ppui-static-pc.cdn.bcebos.com','hercules.cdn.bcebos.com','banti-static.cdn.bcebos.com','tieba-ares.cdn.bcebos.com'].includes(u.hostname)||['baidu.com','bdstatic.com','bdimg.com'].some(d=>u.hostname===d||u.hostname.endsWith('.'+d)));}catch{return false;}
+ try{const u=new URL(raw);return u.protocol==='about:'&&u.href==='about:blank'||['data:','blob:'].includes(u.protocol)||u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&(['ppui-static-pc.cdn.bcebos.com','hercules.cdn.bcebos.com','banti-static.cdn.bcebos.com','tieba-ares.cdn.bcebos.com','bioc-static.cdn.bcebos.com','bioc-static-standby.cdn.bcebos.com','bioc-static-su-standby.cdn.bcebos.com'].includes(u.hostname)||['baidu.com','bdstatic.com','bdimg.com'].some(d=>u.hostname===d||u.hostname.endsWith('.'+d)));}catch{return false;}
 }
 export function identityData(value:any):TiebaIdentity|null{
  if(!value||typeof value!=='object')throw new FishError('TIEBA_IDENTITY_FORMAT_CHANGED');
@@ -50,7 +50,9 @@ export class TiebaBrowser implements AccountBrowser {
    if(!baiduResource(url))return false;
    const u=new URL(url);
    if(params?.request?.method==='POST'&&u.hostname==='tieba.baidu.com'&&(/\/f\/commit\//.test(u.pathname)||/^\/c\/c\/(post|thread)\/add/.test(u.pathname))){
-    if(!this.webGate?.allow(params))return false;
+    if(!this.webGate?.allow(params)){
+     if(this.webGate?.armed&&!this.webGate.writes){this.webGate.armed=false;this.webReceived({error:'TIEBA_WEB_REQUEST_NOT_VERIFIED',receipt:{transport:'official_web',accepted:false,idGenerated:false,notSubmitted:true,guardReason:this.webGate.blockedReason||'unexpected_endpoint',fieldNames:this.webGate.fieldNames}});}return false;
+    }
     if(params.networkId)this.webRequests.set(params.networkId,{session:params.sessionId??this.sessions.at(-1)!,status:0});return true;
    }return true;
   });
@@ -110,12 +112,26 @@ export class TiebaBrowser implements AccountBrowser {
  /** Prepare only. Submission remains disarmed until the caller has persisted
   * the outbox intent and explicitly requests the one normal button click. */
  async prepareWebPost(request:ReturnType<typeof postingRequest>){
-  if(request.action!=='reply')throw new FishError('TIEBA_WEB_ACTION_NOT_SUPPORTED');
+  if(!['reply','comment'].includes(request.action))throw new FishError('TIEBA_WEB_ACTION_NOT_SUPPORTED');
   this.webGate=new WebPostGate(request,()=>{});this.onWebOutcome=undefined;
   await this.navigate('https://tieba.baidu.com/p/'+request.fields.tid);
   let ready=false;for(let i=0;i<24;i++){ready=await this.evaluate(`location.pathname==='/p/'+${JSON.stringify(request.fields.tid)}&&!!document.querySelector('.pc-pb-reply-box .reply-input')`);if(ready)break;await sleep(250);}
   if(!ready)throw new FishError('TIEBA_WEB_COMPOSER_CHANGED');
-  await this.clickElement(`document.querySelector('.pc-pb-reply-box .reply-input')`);
+  if(request.action==='reply')await this.clickElement(`document.querySelector('.pc-pb-reply-box .reply-input')`);
+  else {
+   // Observed official Vue2 page: parent floors carry data-id; sub replies
+   // expose their real IDs in the rendered description component's props.
+   // Inspect those bindings only to locate the ordinary Reply button.
+   const parent=JSON.stringify(request.fields.quote_id),child=JSON.stringify(request.fields.sub_post_id??''),floorSelector=JSON.stringify('.pb-comment-item[data-id="'+request.fields.quote_id+'"]');
+   const control=`(()=>{const floor=document.querySelector(${floorSelector});if(!floor)return null;return Array.from(floor.querySelectorAll('.pc-pb-comments-desc')).find(e=>{const p=e.__vue__?.$props;return p&&String(p.commentData?.id)===(${child}||${parent})&&String(p.pid||'')===(${child}?${parent}:'');})?.querySelector('.reply-container');})()`;
+   let found=false;
+   for(let i=0;i<40;i++){
+    if(await this.evaluate(`!!${control}`)){found=true;break;}
+    await this.pipe.call('Input.dispatchMouseEvent',{type:'mouseWheel',x:600,y:350,deltaX:0,deltaY:550},await this.session());await sleep(250);
+   }
+   if(!found)throw new FishError('TIEBA_WEB_REPLY_TARGET_NOT_VISIBLE');
+   await this.clickElement(control);
+  }
   for(let i=0;i<12;i++){if(await this.evaluate(`!!document.querySelector('#tb-editor-pb-content .ql-editor[contenteditable=true]')`))break;await sleep(200);}
   await this.clickElement(`document.querySelector('#tb-editor-pb-content .ql-editor[contenteditable=true]')`);
   const session=await this.session();
@@ -132,11 +148,18 @@ export class TiebaBrowser implements AccountBrowser {
   for(let i=0;i<80;i++){if(this.webGate.outcome)return webPostResult(this.webGate.outcome,this.webGate.plan.fields.tid);await sleep(250);}
   this.webGate.armed=false;throw new FishError('TIEBA_PUBLICATION_UNCONFIRMED');
  }
+ async isWebPublishInput(input:LoginInput){
+  if(!this.webGate||this.webGate.writes)return false;
+  if(input.kind==='click')return !!await this.evaluate(`(()=>{const e=document.elementFromPoint(${input.x},${input.y});return !!e?.closest('.publish-btn:not([disabled])');})()`);
+  if(input.kind==='key'&&input.key==='Enter')return !!await this.evaluate(`!!document.activeElement?.closest('.publish-btn:not([disabled])')`);
+  return false;
+ }
  webPublication(){return this.webGate?{writes:this.webGate.writes,outcome:this.webGate.outcome??null}:null;}
  async identity(){
   const poster=await this.accountPoster();return poster?verifyIdentity(poster):null;
  }
  async frame(){const r=await this.pipe.call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},await this.session());if(typeof r.data!=='string'||r.data.length>8000000)throw new FishError('TIEBA_FRAME_INVALID');return Buffer.from(r.data,'base64');}
+ holdForInteraction(){clearTimeout(this.deadline);}
  async input(v:LoginInput){
   if(this.webGate)this.webGate.humanAt=Date.now();
   const s=await this.session(),send=(params:Record<string,unknown>)=>this.pipe.call('Input.dispatchMouseEvent',params,s);

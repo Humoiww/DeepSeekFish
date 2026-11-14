@@ -61,6 +61,27 @@ export class ExplorationState{
     const id=randomUUID();this.store.db.prepare("INSERT INTO exploration_runs(id,owner,trigger,state,created,instruction) VALUES (?,?,?,'queued',?,?)").run(id,owner,trigger,this.now(),instruction??null);return {run:this.get(id),reused:false};
   }
   manual(instruction?:string){if(instruction!==undefined&&(typeof instruction!=='string'||!instruction.trim()||instruction.length>4000))throw new FishError('INVALID_EXPLORATION_INSTRUCTION');return this.store.transaction(()=>{this.recover();const result=this.enqueue('manual',instruction);if(instruction!==undefined&&result.reused)throw new FishError('EXPLORATION_BUSY');return result;});}
+  /** Trusted internal owner signal; no QQ event or special model prompt.
+   * The one-reply authorization is durable and absent from ordinary runs. */
+  simulatedOwnerSignal(instruction:string){
+    if(typeof instruction!=='string'||!instruction.trim()||instruction.length>4000)throw new FishError('INVALID_EXPLORATION_INSTRUCTION');
+    return this.store.transaction(()=>{
+      this.recover();const result=this.enqueue('simulated_owner_signal',instruction);if(result.reused)throw new FishError('EXPLORATION_BUSY');
+      this.store.setMeta('exploration:publication-grant:'+result.run.id,JSON.stringify({action:'reply',attempts:1,usedBy:null}));
+      this.store.audit('simulated_owner_signal','private:'+result.run.owner,JSON.stringify({runId:result.run.id,instruction,maxReplies:1}));return result;
+    });
+  }
+  reservePublication(run:ExplorationRun,action:string,callId:string){
+    if(run.trigger!=='simulated_owner_signal')return;
+    this.store.transaction(()=>{
+      const key='exploration:publication-grant:'+run.id,grant=JSON.parse(this.store.getMeta(key)??'null');
+      if(!grant||action!==grant.action)throw new FishError('EXPLORATION_PUBLICATION_NOT_AUTHORIZED');
+      // Consume before any I/O. A failed/unknown attempt cannot change target
+      // or call ID and try again. Recorded outcomes have a separate read tool.
+      if(grant.usedBy)throw new FishError('EXPLORATION_PUBLICATION_ALLOWANCE_USED');
+      this.store.setMeta(key,JSON.stringify({...grant,usedBy:callId,usedAt:this.now()}));
+    });
+  }
   check(){return this.store.transaction(()=>{
     this.recover();const s=this.settings(),row=this.store.db.prepare('SELECT * FROM exploration_schedule WHERE id=1').get() as any;
     if(!s.enabled)return {checked:false,hit:false};

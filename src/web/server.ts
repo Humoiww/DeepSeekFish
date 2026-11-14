@@ -43,7 +43,11 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       else if(req.method==='GET'&&url.pathname==='/api/tieba/frame'){
         res.setHeader('Content-Type','image/png');res.end(await app.tieba.frame());return;
       }
-      else if(req.method==='GET'&&url.pathname==='/api/status')value=app.status();
+      else if(req.method==='GET'&&url.pathname==='/api/tieba/publication-frame'){
+        const frame=await app.tieba.publicationFrame(url.searchParams.get('requestId')??'');
+        res.setHeader('Content-Type','image/png');res.setHeader('X-Tieba-Frame-At',String(frame.at));res.setHeader('X-Tieba-Frame-Live',String(frame.live));res.setHeader('X-Tieba-Frame-Request',frame.requestId);res.end(frame.bytes);return;
+      }
+      else if(req.method==='GET'&&url.pathname==='/api/status')value={...app.status(),tieba:await app.tieba.status(),tiebaAttempt:app.tiebaAttempt()};
       else if(req.method==='GET'&&url.pathname==='/api/exploration')value=app.exploration.status();
       else if(req.method==='GET'&&url.pathname==='/api/exploration/journal')value=app.exploration.journal({...Object.fromEntries(url.searchParams),offset:Number(url.searchParams.get('offset')??0),removed:url.searchParams.get('removed')==='true'});
       else if(req.method==='GET'&&url.pathname==='/api/activity')value=await app.activity(url.searchParams);

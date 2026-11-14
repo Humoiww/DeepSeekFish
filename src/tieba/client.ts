@@ -1,6 +1,6 @@
 import {request} from 'node:http';
 import {FishError} from '../types.js';
-import type {PublishInput} from './posting.js';
+import {publishInput,publishInputFeedback,type PublishInput} from './posting.js';
 import type {SessionStatus,LoginInput} from './session.js';
 export type TiebaRpc=(action:string,input?:unknown)=>Promise<any>;
 /** Trusted internal capability. The socket returns only normalized reads,
@@ -12,7 +12,7 @@ export function tiebaRpc(socketPath='/run/deepseekfish-capture.sock'):TiebaRpc{
    res.on('data',(part:Buffer)=>{size+=part.length;if(size>10000000)res.destroy(new Error('limit'));else chunks.push(part);});
    res.on('error',()=>reject(new FishError('TIEBA_WORKER_RESPONSE_FAILED')));
    res.on('end',()=>{try{const value=JSON.parse(Buffer.concat(chunks).toString());if(res.statusCode!==200)throw new FishError(/^TIEBA_[A-Z_0-9]+$/.test(value.error)?value.error:'TIEBA_WORKER_FAILED');resolve(value);}catch(e){reject(e instanceof FishError?e:new FishError('TIEBA_WORKER_RESPONSE_FAILED'));}});
-  });req.setTimeout(90000,()=>req.destroy());req.on('error',()=>reject(new FishError('TIEBA_WORKER_UNAVAILABLE')));req.end(body);
+  });req.setTimeout(action==='status'?2000:90000,()=>req.destroy());req.on('error',()=>reject(new FishError('TIEBA_WORKER_UNAVAILABLE')));req.end(body);
  });
 }
 export class TiebaAccountClient {
@@ -22,8 +22,11 @@ export class TiebaAccountClient {
  startPublication(){return this.rpc('publication-start');}submitPublication(){return this.rpc('publication-submit');}checkPublication(){return this.rpc('publication-check');}
  input(value:LoginInput){return this.rpc('input',value);}
  async frame(){const r=await this.rpc('frame');if(typeof r.png!=='string'||r.png.length>8000000)throw new FishError('TIEBA_FRAME_INVALID');return Buffer.from(r.png,'base64');}
+ async publicationFrame(requestId:string){const r=await this.rpc('publication-frame',{requestId});if(r.requestId!==requestId||typeof r.png!=='string'||r.png.length>8000000)throw new FishError('TIEBA_FRAME_INVALID');return {bytes:Buffer.from(r.png,'base64'),requestId:r.requestId,at:r.at,live:true};}
  read(url:string){return this.rpc('read',{url});}
- account(){return this.rpc('account');}publish(input:PublishInput,requestId:string){return this.rpc('publish',{input,requestId});}history(){return this.rpc('history');}
+ account(){return this.rpc('account');}
+ publish(input:PublishInput,requestId:string){const feedback=publishInputFeedback(input);return feedback?Promise.resolve(feedback):this.rpc('publish',{input:publishInput(input),requestId});}
+ history(){return this.rpc('history');}
  replies(page=1){return this.rpc('replies',{page});}
  verify(requestId:string){return this.rpc('verify',{requestId});}
 }

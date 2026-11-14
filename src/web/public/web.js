@@ -27,7 +27,7 @@ function renderCodexQuota(q){
   const latest=q.recentUsage?.[0];if(latest)content.append(node('small','quota-observation',latest.changes.length?'最近一次窗口变化：'+latest.changes.map(c=>c.window+' +'+c.percentagePoints+' 个百分点').join('，')+'（可能包含其他调用）':'最近一次窗口消耗暂不可比较；不推算剩余张数。'));
 }
 function renderStatus(s){renderCodexQuota(s.codexQuota);$('reset-images').disabled=busy||s.active>0;
-  state=s;$('image-quota').textContent=((s.budgets.usage.find(x=>x.metric==='image'&&x.scope==='*')?.value)||0)+' / '+s.imageLimits.daily;$('model-name').textContent=s.settings.model;$('connection').textContent=s.mock?'离线演示':s.credentialPresent?'API 已配置':'待配置';
+  state=s;if(s.tieba)window.dispatchEvent(new CustomEvent('fish-tieba-status',{detail:{status:s.tieba,attempt:s.tiebaAttempt}}));$('image-quota').textContent=((s.budgets.usage.find(x=>x.metric==='image'&&x.scope==='*')?.value)||0)+' / '+s.imageLimits.daily;$('model-name').textContent=s.settings.model;$('connection').textContent=s.mock?'离线演示':s.credentialPresent?'API 已配置':'待配置';
   $('demo-banner').hidden=!s.mock;$('setup-banner').hidden=s.mock||s.credentialPresent;
   const cost=s.budgets.cost,count=cost.used,limit=cost.daily,money=n=>'¥'+Number(n||0).toFixed(4);
   $('budget-text').textContent=limit?Math.round(count/limit*100)+'%':'已停用';

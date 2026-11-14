@@ -2,7 +2,7 @@
 """Deploy the human-only Tieba login surface into the existing browser worker.
 No account state, app settings, keys or machine network configuration is copied.
 """
-import argparse,datetime,json,os,pwd,shutil,sqlite3,subprocess,time,urllib.request
+import argparse,datetime,hashlib,json,os,pwd,shutil,sqlite3,subprocess,time,urllib.request
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--root',type=Path,default=Path('/srv/deepseekfish/app'));p.add_argument('--hold-qq',action='store_true',help='Leave QQ worker/path stopped for an explicitly authorized one-shot validation; caller must restore them.');args=p.parse_args()
 if os.geteuid()!=0:raise SystemExit('Run with sudo; only the existing app/capture units are managed.')
@@ -15,11 +15,12 @@ chrome=Path('/srv/deepseekfish/capture/browser/chrome-headless-shell')
 if not chrome.is_file():raise SystemExit('Install the existing browser worker first: sudo python3 scripts/install-capture.py --stage-only')
 actual=subprocess.check_output([str(chrome),'--version'],text=True).strip()
 if actual!='Google Chrome for Testing 156.0.8078.47':raise SystemExit('Browser differs from the reviewed existing version: '+actual)
-files=['src/capture/cdp.ts','src/capture/server.ts','src/capture/tieba-browser.ts','src/tieba/session.ts','src/tieba/client.ts','src/tieba/posting.ts','src/tieba/replies.ts','src/tieba/reply-watch.ts','src/agent/bot.ts','src/exploration/tools.ts','src/exploration/state.ts','src/exploration/worker.ts','src/search/tieba.ts','src/search/public-web.ts','src/web/app.ts','src/web/server.ts','src/web/tailnet.ts','src/web/public/index.html','src/web/public/web.css','src/web/public/tieba.js','scripts/install-tieba-session.py','scripts/migrate-state.py','docs/tieba-account.md','scripts/smoke-tieba-posting.mjs']
+files=['AGENTS.md','src/capture/cdp.ts','src/capture/server.ts','src/capture/tieba-browser.ts','src/tieba/session.ts','src/tieba/client.ts','src/tieba/posting.ts','src/tieba/replies.ts','src/tieba/reply-watch.ts','src/agent/bot.ts','src/exploration/tools.ts','src/exploration/state.ts','src/exploration/worker.ts','src/search/tieba.ts','src/search/public-web.ts','src/web/app.ts','src/web/server.ts','src/web/tailnet.ts','src/web/public/index.html','src/web/public/web.css','src/web/public/tieba.js','scripts/install-tieba-session.py','scripts/migrate-state.py','docs/tieba-account.md','scripts/smoke-tieba-posting.mjs']
 files.extend(['src/tieba/app-post.ts','src/tieba/protobuf.ts','src/tieba/web-post.ts','third_party/dsh-tieba-dive.LICENSE','docs/tieba-reply-transport.md'])
+files.extend(['src/exploration/prompt.ts','docs/tieba-publishing-review.md','docs/tieba-autonomous-acceptance.md','scripts/smoke-tieba-web.mjs'])
 for name in list(files):
  if name.endswith('.ts'):files.extend(['dist/'+name[:-3]+'.js','dist/'+name[:-3]+'.js.map'])
-files.append('src/web/public/exploration.js')
+files.extend(['src/web/public/exploration.js','src/web/public/web.js'])
 for name in files:
  if not (source/name).is_file():raise SystemExit('Build/copy missing: '+name)
 # Refuse to interrupt actual model, publication or image work. No model calls.
@@ -56,6 +57,7 @@ try:
  private=root/'runtime/tieba-account';private.mkdir(mode=0o700,exist_ok=True)
  if private.stat().st_uid not in [0,worker.pw_uid]:raise RuntimeError('Unexpected account directory owner')
  os.chown(private,worker.pw_uid,worker.pw_gid);private.chmod(0o700)
+ (private/'publication-needs-human').unlink(missing_ok=True)
  marker=private/'installed.json'
  if not marker.exists():marker.write_text(json.dumps({'version':1,'browser':'156.0.8078.47','driver':'private-cdp-pipe'}));os.chown(marker,worker.pw_uid,worker.pw_gid);marker.chmod(0o600)
  policy=private/'publishing.json'
@@ -88,7 +90,13 @@ try:
    if attempt==39:raise
    time.sleep(.25)
  if pids()!=baseline:raise RuntimeError('An unrelated service process changed')
- print(json.dumps({'deployed':True,'backup':str(backup),'files':len(files),'browser':actual,'profilePreserved':True,'healthChecked':True,'qqHeld':args.hold_qq,'unrelatedPids':baseline}))
+ revision=subprocess.check_output(['git','-c','safe.directory='+str(source),'-C',str(source),'rev-parse','HEAD'],text=True).strip()
+ hashes={name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files}
+ if any(hashlib.sha256((source/name).read_bytes()).hexdigest()!=digest for name,digest in hashes.items()):raise RuntimeError('Installed file differs from build')
+ dirty=subprocess.check_output(['git','-c','safe.directory='+str(source),'-C',str(source),'status','--porcelain','--untracked-files=no'],text=True).strip()
+ manifest={'revision':revision,'workingTreeModified':bool(dirty),'deployedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'backup':str(backup),'files':hashes}
+ record=root/'runtime/logs/tieba-deployment.json';record.write_text(json.dumps(manifest,indent=2));record.chmod(0o600)
+ print(json.dumps({'deployed':True,'revision':revision,'backup':str(backup),'files':len(files),'browser':actual,'profilePreserved':True,'healthChecked':True,'qqHeld':args.hold_qq,'unrelatedPids':baseline}))
 except BaseException:
  for dest,prior in reversed(records):
   destination=Path(dest)

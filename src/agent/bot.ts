@@ -22,7 +22,7 @@ import { MemoryJournal,dayStart,recallTools } from '../memory/journal.js';
 import { recentDialogue,dialogueMessages,dialogueTime,TurnContext,contextTools,contextMetrics } from './context.js';
 import { PersonMemory } from '../memory/people.js';
 import { qqResources,qqImageActivity } from '../qq/resources.js';
-import {tiebaTools} from '../tieba/posting.js';
+import {tiebaTools,trackTiebaPublication} from '../tieba/posting.js';
 import {TiebaAccountClient} from '../tieba/client.js';
 import { qqChatTools,imageLibraryTools,fileTools } from '../qq/chat-tools.js';
 import { QQImageClient } from '../qq/image-client.js';
@@ -194,7 +194,8 @@ export class Bot {
               }else if(call.function.name==='check_tieba_publication'){
                 if(Object.keys(args).some(k=>k!=='requestId'))throw new FishError('INVALID_TOOL_ARGS');result=await new TiebaAccountClient().verify(args.requestId);
               }else if(call.function.name==='publish_tieba'){
-                result=await new TiebaAccountClient().publish(args,'qq:'+last.group+':'+last.id+':'+call.id);
+                const requestId='qq:'+last.group+':'+last.id+':'+call.id;
+                result=await trackTiebaPublication(this.store,args,requestId,()=>new TiebaAccountClient().publish(args,requestId));
               }else if(call.function.name==='read_forward'){
                 if(!this.forwards)throw new FishError('QQ_FORWARD_UNAVAILABLE');
                 const read=await this.forwards.read(last.group,args,this.controller.signal);

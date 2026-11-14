@@ -5,7 +5,8 @@ import {traceModel} from '../agent/model-trace.js';
 import {diagnosticSafe,errorDiagnostic} from '../diagnostics.js';
 import {TurnContext,contextMetrics} from '../agent/context.js';
 import {appearancePrompt} from '../character.js';
-import {explorationPrompt,explorationContinuation} from './prompt.js';
+import {explorationLatestPrompt,explorationContinuation} from './prompt.js';
+import {knowledgePrompt} from '../memory/knowledge.js';
 import {newsMemory} from '../qq/daily-news.js';
 import {qqResources} from '../qq/resources.js';
 import {FishError,codeOf,type ChatMessage} from '../types.js';
@@ -35,9 +36,9 @@ export class ExplorationWorker{
   if(this.polling)return;this.polling=true;
   try{
    this.state.store.setMeta('exploration:worker',JSON.stringify({at:this.now(),state:this.active?'running':'idle'}));
-   this.replies.tick(!this.active);this.state.check();
+   this.replies.tick(false);this.state.check();
    if(this.active){try{this.state.heartbeat(this.active.id,this.active.lock);}catch{this.active.controller.abort();}return;}
-   const run=this.state.claim();if(!run)return;
+   const run=this.state.claim();if(!run){this.replies.tick(true);return;}
    const controller=new AbortController(),promise=this.execute(run,controller).catch(e=>{this.state.finish(run.id,run.lock!,'failed',codeOf(e));this.state.store.audit('exploration-error','private:'+run.owner,JSON.stringify(errorDiagnostic(e)));});
    this.active={id:run.id,lock:run.lock!,controller,promise};void promise.finally(()=>{if(this.active?.id===run.id)this.active=undefined;}).catch(()=>{});
   }finally{this.polling=false;}
@@ -56,27 +57,33 @@ export class ExplorationWorker{
   const background={kind:'自主探索',now:new Date(started).toISOString(),owner:run.owner,...(run.trigger==='tieba_reply'&&run.instruction?{notification:JSON.parse(run.instruction)}:{}),delivery:{recipient:run.owner,transport:this.services.transport.status},character:{appearance:appearancePrompt(root),referenceId:'character'},
    curiosity:this.state.journal().entries?.slice(0,5).map(e=>({id:e.id,title:e.title,preview:e.preview.slice(0,200),version:e.version})),recent:newsMemory(this.state.store,run.owner).recent,
    previous:this.state.status().recent.filter((r:any)=>r.id!==run.id&&r.owner===run.owner).slice(0,3).map((r:any)=>({id:r.id,state:r.state,at:r.created,note:r.note?.slice(0,500)})),...qqResources(cfg(),ledger,group,'exploration')};
-  const messages:ChatMessage[]=[{role:'system',content:explorationPrompt(root)},{role:'system',content:JSON.stringify(background)},{role:'user',content:run.trigger==='manual'&&run.instruction?run.instruction:'你醒了一会儿，现在是自己的时间。'}];
+  const messages:ChatMessage[]=[{role:'system',content:knowledgePrompt(root)},{role:'system',content:JSON.stringify(background)},{role:'user',content:['manual','simulated_owner_signal'].includes(run.trigger)&&run.instruction?run.instruction:'你醒了一会儿，现在是自己的时间。'}];
   const logPath='runtime/logs/exploration/'+run.id+'.json';makeDir(root,'runtime/logs/exploration');
   const save=()=>{
-   const log=JSON.stringify(diagnosticSafe({id:run.id,request:run.trigger==='manual'?(run.instruction??'手动唤醒 · 自主探索'):run.trigger==='tieba_reply'?'贴吧新回复 · 自主探索':'随机刻 · 自主探索',conversation:group,startedAt:started,finishedAt:state==='running'?undefined:this.now(),state,note,inputContext:background,trace}));
+   const log=JSON.stringify(diagnosticSafe({id:run.id,trigger:run.trigger,request:['manual','simulated_owner_signal'].includes(run.trigger)?(run.instruction??'手动唤醒 · 自主探索'):run.trigger==='tieba_reply'?'贴吧新回复 · 自主探索':'随机刻 · 自主探索',conversation:group,startedAt:started,finishedAt:state==='running'?undefined:this.now(),state,note,inputContext:background,trace}));
    if(Buffer.byteLength(log)>8*1024*1024)throw new FishError('EXPLORATION_TRACE_STORAGE_LIMIT');writePrivateAtomic(root,logPath,log);
   };
   const heartbeat=setInterval(()=>{try{this.state.heartbeat(run.id,run.lock!);const settings=this.state.settings();if(this.now()-started>=settings.maxRunMinutes*60000)controller.abort(new FishError('EXPLORATION_TIME_BUDGET'));}catch(e){controller.abort(e);}},1000);heartbeat.unref();
   try{
-   this.prune();state='running';save();
+   // Finish an already-started read-only inbox scan before model tools use
+   // the same account lock. Do not start a new scan ahead of a queued run.
+   await this.replies.idle();this.prune();state='running';save();
    for(;;round++){
     controller.signal.throwIfAborted();this.state.guard(run.id,run.lock!);const settings=this.state.settings();
     if(this.now()-started>=settings.maxRunMinutes*60000)throw new FishError('EXPLORATION_TIME_BUDGET');
-    context.compact(round);messages[0]={role:'system',content:explorationPrompt(root)};const offered=capabilities.available();
-    if(contextMetrics(messages,offered).totalTextTokens>24000){
+    context.compact(round);messages[0]={role:'system',content:knowledgePrompt(root)};const offered=capabilities.available();
+    const latest:ChatMessage={role:'system',content:explorationLatestPrompt(root)};
+    if(contextMetrics([...messages,latest],offered).totalTextTokens>24000){
       const boundaries=messages.map((m,i)=>m.role==='assistant'?i:-1).filter(i=>i>=3);
       if(boundaries.length>8){const cut=boundaries[boundaries.length-8];messages.splice(3,cut-3);messages[1]={role:'system',content:JSON.stringify({...background,earlierActions:{runId:run.id,readWith:'read_exploration'}})};trace.push({contextCompacted:true,round});}
     }
-    const bound=inputBound(messages,offered)+cfg().maxOutputTokens;if(settings.runTokens&&tokens+bound>settings.runTokens)throw new FishError('EXPLORATION_TOKEN_BUDGET');
-    trace.push({round,contextInput:contextMetrics(messages,offered)});
+    // Build a fresh request suffix, never append it to saved dialogue. Native
+    // assistant/tool pairs remain intact and the guidance never accumulates.
+    const input:ChatMessage[]=[...messages,latest];
+    const bound=inputBound(input,offered)+cfg().maxOutputTokens;if(settings.runTokens&&tokens+bound>settings.runTokens)throw new FishError('EXPLORATION_TOKEN_BUDGET');
+    trace.push({round,contextInput:contextMetrics(input,offered)});
     let response;
-    try{response=await traceModel(trace,save,modelPayload(cfg(),messages,cfg().maxOutputTokens,{tools:offered}),round,onReservation=>this.model.complete(group,'exploration',messages,{tools:offered,signal:controller.signal,onReservation}));}
+    try{response=await traceModel(trace,save,modelPayload(cfg(),input,cfg().maxOutputTokens,{tools:offered}),round,onReservation=>this.model.complete(group,'exploration',input,{tools:offered,signal:controller.signal,onReservation}));}
     catch(e){
       const record=trace.at(-1),usage=record?.usage,reservation=record?.reservation;
       if(usage)tokens+=usage.input+usage.output;

@@ -7,6 +7,7 @@ import type {PublicPoster} from '../search/public-web.js';
 import type {TiebaIdentity} from './session.js';
 import {APP_POST_URL,AppPostFailure} from './app-post.js';
 import type {WebOutcome} from './web-post.js';
+import type {Store} from '../storage/db.js';
 
 export interface FollowedForum {id:string;name:string}
 export interface PublishInput {action:'thread'|'reply'|'comment';forumId:string;title?:string;content:string;threadId?:string;postId?:string;page?:number;subPostId?:string;commentPage?:number}
@@ -16,17 +17,56 @@ export interface PostingReader {followed(userId:string):Promise<FollowedForum[]>
 export interface ReplyTarget {id:string;postId:string;name:string;portrait:string|null}
 export interface PostingRequest {protocol:'legacy_thread_form'|'app_protobuf'|'official_web';action:PublishInput['action'];url:string;fields:Record<string,string>}
 const numeric=(v:unknown)=>typeof v==='string'&&/^[1-9]\d{0,19}$/.test(v);
+const publishFields=['action','forumId','title','content','threadId','postId','page','subPostId','commentPage'];
+class PublishInputError extends FishError {
+ constructor(code:string,readonly field:string,readonly reason:string){super(code);}
+}
+const invalidInput=(field:string,reason:string,code='TIEBA_PUBLISH_INPUT_INVALID'):never=>{throw new PublishInputError(code,field,reason);};
 const fingerprintOf=(account:string,v:PublishInput)=>createHash('sha256').update(JSON.stringify([account,v.action,v.forumId,v.threadId??'',v.postId??'',v.subPostId??'',v.title??'',v.content])).digest('hex');
 export function publishInput(v:any):PublishInput{
- if(!v||typeof v!=='object'||Array.isArray(v)||Object.keys(v).some(k=>!['action','forumId','title','content','threadId','postId','page','subPostId','commentPage'].includes(k))||!['thread','reply','comment'].includes(v.action)||!numeric(v.forumId)||typeof v.content!=='string'||!v.content.trim()||v.content.length>20000||v.content.includes('\0'))throw new FishError('TIEBA_PUBLISH_INPUT_INVALID');
- if(v.commentPage!==undefined&&(!Number.isInteger(v.commentPage)||v.commentPage<1||v.commentPage>10000))throw new FishError('TIEBA_PAGE_INVALID');
- if(v.subPostId!==undefined&&(!numeric(v.subPostId)||v.action!=='comment')||v.commentPage!==undefined&&v.action!=='comment')throw new FishError('TIEBA_PUBLISH_INPUT_INVALID');
- if(v.page!==undefined&&(!Number.isInteger(v.page)||v.page<1||v.page>10000))throw new FishError('TIEBA_PAGE_INVALID');
+ if(!v||typeof v!=='object'||Array.isArray(v))invalidInput('$','入参必须是对象。');
+ const unknown=Object.keys(v).find(k=>!publishFields.includes(k));
+ if(unknown)invalidInput(/^[a-zA-Z_][a-zA-Z_0-9]{0,39}$/.test(unknown)?unknown:'$','不支持此参数。预演或真实发布由管理员配置，先用get_tieba_account查看posting.mode；单次调用不能传preview或mode切换模式。');
+ if(!['thread','reply','comment'].includes(v.action))invalidInput('action','只能是thread（新主题）、reply（帖子新楼层）或comment（楼中楼）。');
+ if(!numeric(v.forumId))invalidInput('forumId','必须是get_tieba_account返回的关注吧ID字符串，并与目标帖子所属吧一致。');
+ if(typeof v.content!=='string'||!v.content.trim()||v.content.length>20000||v.content.includes('\0'))invalidInput('content','必须是非空正文字符串，至多20000字符，不能含空字符。');
+ if(v.commentPage!==undefined&&(!Number.isInteger(v.commentPage)||v.commentPage<1||v.commentPage>10000))invalidInput('commentPage','必须是1至10000的整数。','TIEBA_PAGE_INVALID');
+ if(v.subPostId!==undefined&&(!numeric(v.subPostId)||v.action!=='comment'))invalidInput('subPostId','仅comment可传，值为读到的子回复ID字符串。');
+ if(v.commentPage!==undefined&&v.action!=='comment')invalidInput('commentPage','仅comment可传子回复页码。');
+ if(v.page!==undefined&&(!Number.isInteger(v.page)||v.page<1||v.page>10000))invalidInput('page','必须是1至10000的整数。','TIEBA_PAGE_INVALID');
  if(v.action==='thread'){
-  if(typeof v.title!=='string'||!v.title.trim()||v.title.length>200||v.threadId!==undefined||v.postId!==undefined||v.page!==undefined)throw new FishError('TIEBA_PUBLISH_INPUT_INVALID');
- }else if(v.title!==undefined||!numeric(v.threadId)||v.action==='comment'&&!numeric(v.postId)||v.action==='reply'&&v.postId!==undefined)throw new FishError('TIEBA_PUBLISH_INPUT_INVALID');
- if(Buffer.byteLength(JSON.stringify(v),'utf8')>14000)throw new FishError('TIEBA_PUBLISH_INPUT_TOO_LARGE');
+  if(typeof v.title!=='string'||!v.title.trim()||v.title.length>200)invalidInput('title','thread必须传非空标题，至多200字符。');
+  for(const field of ['threadId','postId','page'])if(v[field]!==undefined)invalidInput(field,'thread创建新主题，不传threadId、postId或page。');
+ }else {
+  if(v.title!==undefined)invalidInput('title','只有thread传title。');
+  if(!numeric(v.threadId))invalidInput('threadId','reply和comment必须传实际读到的帖子ID字符串。');
+  if(v.action==='comment'&&!numeric(v.postId))invalidInput('postId','comment必须传父楼层ID；可选subPostId指定子回复。');
+  if(v.action==='reply'&&v.postId!==undefined)invalidInput('postId','reply在帖子中盖新楼，不传postId；回复某个楼层请用comment。');
+ }
+ if(Buffer.byteLength(JSON.stringify(v),'utf8')>14000)invalidInput('$','整份入参JSON超过14000字节，请缩短正文。','TIEBA_PUBLISH_INPUT_TOO_LARGE');
  return {...v,content:v.content.trim(),...(v.title?{title:v.title.trim()}:{})};
+}
+/** The same validator protects the private transport and gives both model
+ * entry points actionable feedback before any account RPC or write intent. */
+export function publishInputFeedback(v:unknown){
+ try{publishInput(v);return undefined;}catch(e){
+  if(!(e instanceof PublishInputError))throw e;
+  return {error:e.code,stage:'input_validation',submitted:false,published:false,requestSent:false,
+   issue:{field:e.field,reason:e.reason},allowedFields:publishFields,
+   requiredByAction:{thread:['action','forumId','content','title'],reply:['action','forumId','content','threadId'],comment:['action','forumId','content','threadId','postId']}};
+ }
+}
+/** Small live owner status, including failures before a publishing outbox
+ * exists. Detailed history stays in the ordinary private activity traces. */
+export async function trackTiebaPublication<T>(store:Store,input:any,requestId:string,operation:()=>Promise<T>):Promise<T>{
+ const startedAt=Date.now(),request=Object.fromEntries(['action','forumId','threadId','postId','subPostId','title','content'].filter(k=>typeof input?.[k]==='string').map(k=>[k,input[k].slice(0,k==='content'?1000:200)]));
+ const record=(result:any)=>store.transaction(()=>{
+  const previous=JSON.parse(store.getMeta('tieba:last-attempt')??'null');if(previous&&previous.startedAt>startedAt)return;
+  const summary=Object.fromEntries(['error','stage','issue','submitted','published','requestSent','deliveryStatus','id','url','receipt'].filter(k=>result?.[k]!==undefined).map(k=>[k,result[k]]));
+  store.setMeta('tieba:last-attempt',JSON.stringify({requestId,startedAt,at:Date.now(),request,result:summary}));
+ });
+ record({stage:'running'});
+ try{const result=await operation();record(result);return result;}catch(e){record({error:codeOf(e),stage:'tool_error'});throw e;}
 }
 export async function followedForums(poster:PublicPoster,userId:string){
  const forums=new Map<string,FollowedForum>();
@@ -140,7 +180,7 @@ export class TiebaPosting {
  close(){this.db.close();}
  history(){return this.db.prepare('SELECT id,account,state,request,result,created FROM tieba_actions ORDER BY created DESC LIMIT 30').all().map((r:any)=>({...r,request:JSON.parse(r.request),result:JSON.parse(r.result??'{}')}));}
  recoverySource(identity:TiebaIdentity){
-  const row=this.history().find(r=>r.account===identity.id&&r.state==='rejected'&&r.result.error==='TIEBA_PUBLICATION_CHALLENGE'&&r.result.submitted===false&&!r.result.id);
+  const row=this.history().find(r=>r.account===identity.id&&r.state==='rejected'&&(r.result.error==='TIEBA_PUBLICATION_CHALLENGE'||r.result.receipt?.notSubmitted===true)&&r.result.submitted===false&&!r.result.id);
   if(!row)throw new FishError('TIEBA_NO_REJECTED_PUBLICATION');return row;
  }
  webAttempt(requestId:string){
@@ -153,7 +193,7 @@ export class TiebaPosting {
  webOutcome(requestId:string,outcome:WebOutcome){
   const row=this.db.prepare('SELECT request,result FROM tieba_actions WHERE id=?').get(requestId) as any;if(!row)throw new FishError('TIEBA_PUBLICATION_NOT_FOUND');
   const input=JSON.parse(row.request),prior=JSON.parse(row.result??'{}');if(prior.id&&outcome.id!==prior.id)return prior;
-  const rejected=outcome.receipt.accepted===false&&!outcome.id&&['TIEBA_PUBLICATION_CHALLENGE','TIEBA_PUBLICATION_REJECTED'].includes(outcome.error??'');
+  const rejected=outcome.receipt.accepted===false&&!outcome.id&&(outcome.receipt.notSubmitted===true||['TIEBA_PUBLICATION_CHALLENGE','TIEBA_PUBLICATION_REJECTED'].includes(outcome.error??''));
   const state=outcome.id?'accepted':rejected?'rejected':'unknown';
   const result={...prior,submitted:outcome.receipt.accepted===true?true:rejected?false:null,published:false,deliveryStatus:state==='accepted'?'accepted':rejected?'failed':'unconfirmed',receipt:outcome.receipt,error:outcome.error??null,...(outcome.id?{id:outcome.id,url:'https://tieba.baidu.com/p/'+input.threadId+'?pid='+outcome.id+'#'+outcome.id}:{}),retryScheduled:false};
   this.db.prepare('UPDATE tieba_actions SET state=?,result=? WHERE id=?').run(state,JSON.stringify(result),requestId);return result;
@@ -165,7 +205,7 @@ export class TiebaPosting {
   const prior=JSON.parse(row.result??'{}');if(['preview','rejected','held'].includes(row.state))return {...prior,state:row.state,requestId,retryScheduled:false};
   const input=publishInput(JSON.parse(row.request)),forum=prior.forum??{id:input.forumId,name:''};
   const proof=await publicationVisibility(input,forum,identity,reader,row.created,numeric(prior.id)?prior.id:undefined);
-  const observed=proof.observed,state=proof.publicVerified?'confirmed':proof.visibility==='removed_by_system'?'deleted':numeric(prior.id)||observed?'accepted':'unknown',lastPubliclyVisibleAt=proof.publicVerified?proof.verifiedAt:prior.lastPubliclyVisibleAt??null;
+  const observed=proof.observed,state=proof.publicVerified?'confirmed':proof.visibility==='removed_by_system'?'deleted':numeric(prior.id)||observed||prior.receipt?.accepted===true?'accepted':'unknown',lastPubliclyVisibleAt=proof.publicVerified?proof.verifiedAt:prior.lastPubliclyVisibleAt??null;
   const result={submitted:state!=='unknown'?true:prior.submitted??null,published:proof.publicVerified,deliveryStatus:state==='confirmed'?'confirmed':state==='deleted'?'deleted':state==='accepted'?'accepted':'unconfirmed',requestId,
    ...(numeric(prior.id)?{id:prior.id,url:prior.url}:observed??{}),...(prior.receipt?{receipt:prior.receipt}:{}),forum,action:input.action,
    ...proof,lastPubliclyVisibleAt,...(!proof.publicVerified&&lastPubliclyVisibleAt&&state!=='deleted'?{visibility:'no_longer_observed'}:{}),retryScheduled:false,initialResult:prior.initialResult??prior,
@@ -176,7 +216,7 @@ export class TiebaPosting {
  async publish(raw:unknown,requestId:string,identity:TiebaIdentity,policy:PostingPolicy,reader:PostingReader,send:(request:ReturnType<typeof postingRequest>)=>Promise<{id:string;url:string;receipt?:Record<string,unknown>}>,humanRetryOf?:string){
   const input=publishInput(raw);if(identity.id!==policy.accountId)throw new FishError('TIEBA_ACCOUNT_NOT_AUTHORIZED');if(!['preview','live'].includes(policy.mode))throw new FishError('TIEBA_PUBLISH_DISABLED');if(typeof requestId!=='string'||!requestId||requestId.length>240)throw new FishError('TIEBA_REQUEST_ID_INVALID');
   const fingerprint=fingerprintOf(identity.id,input);
-  const prior=this.db.prepare("SELECT id,fingerprint,state,result FROM tieba_actions WHERE id=? OR (account=? AND fingerprint=? AND state IN ('held','unknown','accepted','rejected','deleted')) ORDER BY created DESC LIMIT 1").get(requestId,identity.id,fingerprint) as any;
+  const prior=this.db.prepare("SELECT id,fingerprint,state,result FROM tieba_actions WHERE id=? OR id=? OR (account=? AND fingerprint=? AND state IN ('held','unknown','accepted','deleted')) ORDER BY created DESC LIMIT 1").get(requestId,humanRetryOf??'',identity.id,fingerprint) as any;
   if(prior){
    if(prior.fingerprint!==fingerprint)throw new FishError('TIEBA_REQUEST_ID_REUSED');const saved=JSON.parse(prior.result??'{}');
    const allowed=humanRetryOf===prior.id&&requestId!==prior.id&&prior.state==='rejected'&&saved.submitted===false&&!saved.id&&saved.receipt?.accepted===false;
@@ -193,8 +233,8 @@ export class TiebaPosting {
   try{const sent=await send(request);if(!numeric(sent.id))throw new FishError('TIEBA_PUBLICATION_UNCONFIRMED');state='accepted';result={submitted:true,published:false,deliveryStatus:'accepted',...sent,forum,action:input.action,requestId,retryScheduled:false};}
   catch(e){
    const error=codeOf(e),receipt=e instanceof AppPostFailure?e.receipt:undefined,returnedId=receipt?.id;
-   const rejected=receipt?.accepted!==true&&(['TIEBA_PUBLICATION_REJECTED','TIEBA_PUBLICATION_CHALLENGE','TIEBA_LOGIN_REQUIRED','TIEBA_ACCOUNT_CHANGED','TIEBA_FORUM_READ_ONLY'].includes(error)||/^TIEBA_READ_HTTP_4[0-9][0-9]$/.test(error));
-   state=rejected?'rejected':'unknown';result={submitted:receipt?.accepted===true?true:rejected?false:null,published:false,deliveryStatus:rejected?'failed':'unconfirmed',error,...(receipt?{receipt}:{}),...(numeric(returnedId)?{id:returnedId,url:'https://tieba.baidu.com/p/'+input.threadId+'?pid='+returnedId+'#'+returnedId}:{}),forum,action:input.action,requestId,retryScheduled:false};
+   const rejected=receipt?.accepted!==true&&(receipt?.notSubmitted===true||['TIEBA_PUBLICATION_REJECTED','TIEBA_PUBLICATION_CHALLENGE','TIEBA_LOGIN_REQUIRED','TIEBA_ACCOUNT_CHANGED','TIEBA_FORUM_READ_ONLY'].includes(error)||/^TIEBA_READ_HTTP_4[0-9][0-9]$/.test(error));
+   state=rejected?'rejected':receipt?.accepted===true?'accepted':'unknown';result={submitted:receipt?.accepted===true?true:rejected?false:null,published:false,deliveryStatus:rejected?'failed':state==='accepted'?'accepted':'unconfirmed',error,...(receipt?{receipt}:{}),...(numeric(returnedId)?{id:returnedId,url:'https://tieba.baidu.com/p/'+input.threadId+'?pid='+returnedId+'#'+returnedId}:{}),forum,action:input.action,requestId,retryScheduled:false};
   }
   // Save the returned ID before doing any readback. A restart cannot turn an
   // accepted submission into permission to post the same content again.
@@ -206,5 +246,5 @@ export const tiebaTools:ModelTool[]=[
  {type:'function',function:{name:'check_tieba_publication',description:'用发言回执的requestId复查公开/本人可见性。只读，不会重发。',parameters:{type:'object',properties:{requestId:{type:'string'}},required:['requestId'],additionalProperties:false}}},
  {type:'function',function:{name:'get_tieba_replies',description:'查看自己贴吧账号收到的回复，包括帖子、楼中楼、作者和链接。page翻页。',parameters:{type:'object',properties:{page:{type:'integer',minimum:1,maximum:10000}},additionalProperties:false}}},
  {type:'function',function:{name:'get_tieba_account',description:'查看自己的贴吧身份、实际关注的吧和发言模式。其他吧仍可用browse_page阅读。',parameters:{type:'object',properties:{},additionalProperties:false}}},
- {type:'function',function:{name:'publish_tieba',description:'向自己关注的吧发主题帖、回帖或回复楼中楼。forumId来自get_tieba_account；threadId/postId/page来自读帖结果。preview模式只保存预演，不会发出。',parameters:{type:'object',properties:{action:{type:'string',enum:['thread','reply','comment']},forumId:{type:'string'},title:{type:'string',description:'新主题标题'},content:{type:'string'},threadId:{type:'string'},postId:{type:'string',description:'楼中楼所挂父楼层ID'},subPostId:{type:'string',description:'可选，要回复的子回复ID；身份由后台核对'},commentPage:{type:'integer',minimum:1},page:{type:'integer',minimum:1,description:'父楼层所在帖子页码，默认1'}},required:['action','forumId','content'],additionalProperties:false}}}
+ {"type":"function","function":{"name":"publish_tieba","description":"在自己关注的吧发表内容。action区分新主题thread、帖子新楼层reply和楼中楼comment，各自必填项见参数说明。ID取自实际账号与读帖结果。预演/真实发布由管理员配置的posting.mode决定，可用get_tieba_account查询；本接口没有preview或mode参数，单次调用不能切换模式。参数错误会在请求发出前返回具体字段和原因。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["thread","reply","comment"],"description":"thread=新主题：需title，不传threadId/postId/page；reply=帖子新楼层：需threadId，不传title/postId；comment=楼中楼：需threadId和父楼层postId，可传subPostId。"},"forumId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"get_tieba_account返回的关注吧ID；必须与目标帖子所属吧一致。"},"content":{"type":"string","minLength":1,"maxLength":20000,"description":"要发表的正文。"},"title":{"type":"string","minLength":1,"maxLength":200,"description":"仅thread必填的新主题标题。"},"threadId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"reply和comment必填，来自读帖结果的帖子ID。"},"postId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"仅comment必填：实际读到的父楼层ID。reply不传此项。"},"subPostId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"仅comment可选：回复父楼层下某条子回复时填该子回复ID；后台核对真实身份。"},"page":{"type":"integer","minimum":1,"maximum":10000,"description":"仅reply/comment可传，目标父楼层所在帖子页码，默认1。"},"commentPage":{"type":"integer","minimum":1,"maximum":10000,"description":"仅comment可传，目标子回复所在楼中楼页码，默认1。"}},"required":["action","forumId","content"],"additionalProperties":false}}}
 ];

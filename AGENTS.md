@@ -1,4 +1,5 @@
 # DeepSeekFish
+- 用户明确要求：除权限锁外，不允许额外给肥鱼加锁，尤其禁止无意义的行为锁、跨请求失败锁、待人工验证锁。不得用旧请求失败或本地保存的状态阻止新的独立调用，不得把本地合成的拦截伪装成平台真实返回。平台验证码和错误只归属于实际返回它的那次请求；需要展示当前真实回执和对应官网画面，不能拿历史节点冒充最新情况。
 - Node >=24.9, TypeScript; `npm test` builds and runs bounded offline tests.
 - User instruction: do not add or run extra automated tests unless the user explicitly asks for them. Make necessary builds, fix the actual issue, and deliver generated images for the user to judge. The 47 checks from the 2026-11-09 media/debug run were explicitly requested to be removed.
 - Keep all writes, caches and secrets inside this repository. Do not publish without explicit user authorization; never modify global tooling.

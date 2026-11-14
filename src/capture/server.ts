@@ -61,7 +61,7 @@ const server=createServer(async(req,res)=>{
       let value:unknown;
       const action=req.url.slice(7);
       if(!input||Array.isArray(input)||typeof input!=='object')throw Error('TIEBA_INPUT_INVALID');
-      if(!['input','read','publish','replies','verify'].includes(action)&&Object.keys(input).length)throw Error('TIEBA_INPUT_INVALID');
+      if(!['input','read','publish','replies','verify','publication-frame'].includes(action)&&Object.keys(input).length)throw Error('TIEBA_INPUT_INVALID');
       if(action==='account')value=await tieba.account();
       else if(action==='verify'){if(Object.keys(input).some(k=>k!=='requestId'))throw Error('TIEBA_INPUT_INVALID');value=await tieba.verifyPublication(input.requestId);}
       else if(action==='history')value=tieba.postingHistory();
@@ -76,6 +76,7 @@ const server=createServer(async(req,res)=>{
       else if(action==='logout')value=await tieba.logout();
       else if(action==='close'){await tieba.close();value=tieba.status();}
       else if(action==='frame')value={png:(await tieba.frame()).toString('base64')};
+      else if(action==='publication-frame'){if(Object.keys(input).some(k=>k!=='requestId'))throw Error('TIEBA_INPUT_INVALID');const frame=await tieba.publicationFrame(input.requestId);value={png:frame.bytes.toString('base64'),requestId:frame.requestId,at:frame.at};}
       else if(action==='input')value=await tieba.input(input);
       else if(action==='read'){if(Object.keys(input).some(k=>k!=='url')||typeof input.url!=='string'||input.url.length>4096)throw Error('TIEBA_INPUT_INVALID');value=await tieba.read(input.url);}
       else throw Error('TIEBA_ACTION_DENIED');

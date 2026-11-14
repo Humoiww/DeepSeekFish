@@ -1,0 +1,42 @@
+// Focused offline checks for this change. No network, model or public writes.
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {Store} from '../dist/src/storage/db.js';
+import {ExplorationState} from '../dist/src/exploration/state.js';
+import {defaults} from '../dist/src/config.js';
+import {WebPostGate,webPostResponse} from '../dist/src/tieba/web-post.js';
+import {TiebaSessionManager} from '../dist/src/tieba/session.js';
+import {TiebaPosting} from '../dist/src/tieba/posting.js';
+const base=path.resolve('runtime/research/tieba-publishing');
+fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'offline-'));fs.mkdirSync(root+'/runtime/data',{recursive:true});
+let db;
+try{
+ const cfg={...defaults,search:true,privateUsers:['100'],qqTransport:'onebot'};db=new Store(root);let state=new ExplorationState(db,()=>cfg);
+ const {run}=state.simulatedOwnerSignal('来试试看，找个帖子回复一条看看');
+ assert.equal(run.trigger,'simulated_owner_signal');assert.equal(db.db.prepare('SELECT COUNT(*) n FROM messages').get().n,0);
+ assert.throws(()=>state.reservePublication(run,'thread','wrong'),/NOT_AUTHORIZED/);
+ state.reservePublication(run,'reply','first');state=new ExplorationState(db,()=>cfg);
+ assert.throws(()=>state.reservePublication(run,'reply','second'),/ALLOWANCE_USED/);
+ assert.throws(()=>state.reservePublication(run,'reply','first'),/ALLOWANCE_USED/);
+ state.reservePublication({...run,trigger:'random'},'reply','unrelated');
+ let writes=0;const plan={action:'comment',fields:{tid:'123',fid:'456',content:'离线内容',quote_id:'789',repostid:'789',sub_post_id:'111'}};
+ const gate=new WebPostGate(plan,()=>writes++);gate.armed=true;
+ const req=fields=>({request:{url:'https://tieba.baidu.com/c/c/post/add_pc',method:'POST',postData:JSON.stringify(fields)}});
+ assert.equal(gate.allow(req({...plan.fields,sub_post_id:'222'})),false);assert.equal(writes,0);
+ assert.equal(gate.allow(req(plan.fields)),true);assert.equal(gate.allow(req(plan.fields)),false);assert.equal(writes,1);
+ const parsed=webPostResponse(Buffer.from(JSON.stringify({error_code:0,pid:'154139999999',info:{}})),200);
+ assert.equal(parsed.id,'154139999999');assert.equal(parsed.receipt.accepted,true);
+ assert.equal(webPostResponse(Buffer.from(JSON.stringify({error_code:5,pid:0,error_msg:'验证码不正确，请重新输入',info:{need_vcode:1}})),200).error,'TIEBA_PUBLICATION_CHALLENGE');
+ const dir=root+'/account';fs.mkdirSync(dir);fs.mkdirSync(dir+'/profile');fs.writeFileSync(dir+'/installed.json','{}');
+ const who={id:'100',name:'offline'},p=new TiebaPosting(dir),input={action:'reply',forumId:'456',threadId:'123',content:'离线内容'};
+ p.db.prepare('INSERT INTO tieba_actions VALUES (?,?,?,?,?,?,?)').run('pending','100','fixture','rejected',JSON.stringify(input),JSON.stringify({submitted:false,published:false,deliveryStatus:'failed',error:'TIEBA_PUBLICATION_CHALLENGE'}),Date.now());p.close();
+ let closed=0;const browser={identity:async()=>who,close:async()=>{closed++;},read:()=>{throw Error('unexpected read')}};
+ const manager=new TiebaSessionManager(dir,async()=>{throw Error('must reuse existing browser')});
+ manager.browser=browser;manager.publicationOpen=true;manager.publicationWork={accountId:'100',requestId:'pending',input,created:Date.now(),stage:'challenge'};
+ const checked=await manager.verifyPublication('pending');assert.equal(checked.error,'TIEBA_PUBLICATION_CHALLENGE');assert.equal(closed,0);
+ fs.writeFileSync(dir+'/publication-needs-human',JSON.stringify({at:Date.now(),requestId:'later-challenge'}));
+ await manager.finishWeb({publicVerified:true,deliveryStatus:'confirmed'});
+ assert.equal(closed,1);assert.equal(fs.existsSync(dir+'/publication-needs-human'),true);
+ console.log(JSON.stringify({ok:true,checks:['simulated source and restart-safe one-reply authorization','native target guard and no second write','readback reuses challenge browser and preserves unrelated challenge'],networkCalls:0,modelCalls:0,publicationWrites:0}));
+}finally{db?.close();fs.rmSync(root,{recursive:true,force:true});}

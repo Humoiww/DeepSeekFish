@@ -9,7 +9,7 @@ import {knowledgeTools,knowledgeSnapshot,updateKnowledge} from '../memory/knowle
 import {contextTools,TurnContext} from '../agent/context.js';
 import {hasToolMarkup} from '../agent/tool-protocol.js';
 import {redact} from '../storage/db.js';
-import {tiebaTools} from '../tieba/posting.js';
+import {tiebaTools,publishInputFeedback,trackTiebaPublication} from '../tieba/posting.js';
 import {TiebaAccountClient} from '../tieba/client.js';
 import {webTools,browseTools} from '../search/tools.js';
 import {searchEvidence,type SearchService,type WebCharge} from '../search/provider.js';
@@ -84,12 +84,19 @@ export class ExplorationTools{
  async execute(name:string,args:any,callId:string):Promise<{result:any;parts?:ChatPart[];finish?:boolean}>{
   this.guard();const s=this.s,m=this.message(callId),store=s.state.store;
   const offered=this.available().find(t=>t.function.name===name);if(!offered)throw new FishError('TOOL_NOT_ALLOWED');
-  if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!Object.hasOwn(offered.function.parameters.properties as any,k)))throw new FishError('INVALID_TOOL_ARGS');
   const out=(result:any,parts?:ChatPart[])=>({result,parts});
+  if(name==='publish_tieba'){
+    const requestId='explore:'+this.run.id+':'+callId;
+    return out(await trackTiebaPublication(store,args,requestId,async()=>{
+      const feedback=publishInputFeedback(args);if(feedback)return feedback;
+      s.state.reservePublication(this.run,args.action,callId);
+      return new TiebaAccountClient().publish(args,requestId);
+    }));
+  }
+  if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!Object.hasOwn(offered.function.parameters.properties as any,k)))throw new FishError('INVALID_TOOL_ARGS');
   if(name==='get_tieba_account')return out(await new TiebaAccountClient().account());
   if(name==='get_tieba_replies')return out(await new TiebaAccountClient().replies(args.page??1));
   if(name==='check_tieba_publication')return out(await new TiebaAccountClient().verify(args.requestId));
-  if(name==='publish_tieba')return out(await new TiebaAccountClient().publish(args,'explore:'+this.run.id+':'+callId));
   if(name==='finish_exploration'){if(args.note!==undefined&&(typeof args.note!=='string'||args.note.length>4000))throw new FishError('INVALID_TOOL_ARGS');return {result:{finished:true,note:args.note??''},finish:true};}
   if(name==='read_curiosity')return out(s.state.journal(args));
   if(name==='write_curiosity')return out(s.state.writeJournal(this.run.id,args));

@@ -222,7 +222,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   async function close(){accepting=false;await qqBroker?.close();for(const c of active.values())c.abort();await tasks.stop();
     while(active.size)await new Promise(resolve=>setTimeout(resolve,10));await quota.close();store.close();budgetStore.close();}
   return {root,mock,token,
-    exploration,tieba,
+    exploration,tieba,tiebaAttempt:()=>JSON.parse(budgetStore.getMeta('tieba:last-attempt')??'null'),
     tiebaRead:async(input:any)=>{if(!input||Object.keys(input).some(k=>!['url','mode'].includes(k))||typeof input.url!=='string'||input.url.length>4096||!['public','account'].includes(input.mode)||!tiebaTarget(new URL(input.url)))throw new FishError('TIEBA_READ_TARGET_DENIED');return input.mode==='account'?tieba.read(input.url):browsePage(input.url,0,undefined,publicReader);},
     tiebaAudit:(action:string,result:any)=>budgetStore.audit('tieba-account','web',JSON.stringify({action,state:result?.state,error:result?.error??result?.lastError?.code,at:Date.now()})),
     activity:(params:URLSearchParams)=>activity.list(params),activityDetail:(id:unknown)=>activity.detail(id),activityImage:(id:unknown)=>activity.image(id),
