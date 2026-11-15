@@ -1,4 +1,6 @@
-# 验收与已知限制
+# 早期验收与已知限制（历史记录）
+
+本页保留早期按日期记录的验证结果；旧默认值和未完成状态不能当作当前功能说明。当前入口见 [文档索引](README.md)，贴吧的最新范围见 [贴吧验证](tieba/validation.md)。
 
 验收日期：2026-10-27。主机为 Ubuntu Linux，Node 24.19.0，依赖固定在 package-lock.json。`npm ci --ignore-scripts` 不需要编译第三方 native addon；SQLite 由 Node 内置提供。
 

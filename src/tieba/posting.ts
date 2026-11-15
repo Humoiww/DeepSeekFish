@@ -8,6 +8,7 @@ import type {TiebaIdentity} from './session.js';
 import {APP_POST_URL,AppPostFailure} from './app-post.js';
 import type {WebOutcome} from './web-post.js';
 import type {Store} from '../storage/db.js';
+import {moderatorTools} from './moderator.js';
 
 export interface FollowedForum {id:string;name:string}
 export interface PublishInput {action:'thread'|'reply'|'comment';forumId:string;title?:string;content:string;threadId?:string;postId?:string;page?:number;subPostId?:string;commentPage?:number}
@@ -15,7 +16,7 @@ export interface PostingPolicy {mode:'preview'|'live';accountId:string}
 export interface SystemDeletion {postId:string;threadId:string;category:'system';reason:string;time:string;timeZone:'Asia/Hong_Kong';source:'tieba_account_recycle'}
 export interface PostingReader {followed(userId:string):Promise<FollowedForum[]>;read(url:string):Promise<any>;publicRead?(url:string):Promise<any>;deletion?(postId:string,threadId:string):Promise<SystemDeletion|null>}
 export interface ReplyTarget {id:string;postId:string;name:string;portrait:string|null}
-export interface PostingRequest {protocol:'legacy_thread_form'|'app_protobuf'|'official_web';action:PublishInput['action'];url:string;fields:Record<string,string>}
+export interface PostingRequest {protocol:'legacy_thread_form'|'app_protobuf'|'official_web';action:PublishInput['action'];url:string;fields:Record<string,string>;editorContent?:string}
 const numeric=(v:unknown)=>typeof v==='string'&&/^[1-9]\d{0,19}$/.test(v);
 const publishFields=['action','forumId','title','content','threadId','postId','page','subPostId','commentPage'];
 class PublishInputError extends FishError {
@@ -62,7 +63,7 @@ export async function trackTiebaPublication<T>(store:Store,input:any,requestId:s
  const startedAt=Date.now(),request=Object.fromEntries(['action','forumId','threadId','postId','subPostId','title','content'].filter(k=>typeof input?.[k]==='string').map(k=>[k,input[k].slice(0,k==='content'?1000:200)]));
  const record=(result:any)=>store.transaction(()=>{
   const previous=JSON.parse(store.getMeta('tieba:last-attempt')??'null');if(previous&&previous.startedAt>startedAt)return;
-  const summary=Object.fromEntries(['error','stage','issue','submitted','published','requestSent','deliveryStatus','id','url','receipt'].filter(k=>result?.[k]!==undefined).map(k=>[k,result[k]]));
+  const summary=Object.fromEntries(['error','stage','issue','submitted','published','requestSent','deliveryStatus','applicationStatus','ownCandidate','notice','id','url','receipt'].filter(k=>result?.[k]!==undefined).map(k=>[k,result[k]]));
   store.setMeta('tieba:last-attempt',JSON.stringify({requestId,startedAt,at:Date.now(),request,result:summary}));
  });
  record({stage:'running'});
@@ -90,18 +91,19 @@ export async function postingTarget(input:PublishInput,identity:TiebaIdentity,po
  if(!forum)throw new FishError('TIEBA_FORUM_READ_ONLY');
  let replyTo:ReplyTarget|undefined;
  if(input.action!=='thread'){
-  const page=await reader.read('https://tieba.baidu.com/p/'+input.threadId+'?pn='+(input.page??1));
-  if(page?.status!=='content'||String(page.thread?.id)!==input.threadId)throw new FishError('TIEBA_THREAD_NOT_VERIFIED');
+  // The floor endpoint returns the exact parent and its children even when
+  // the parent is not on page one. Thread and comment page numbers differ.
+  const page=await reader.read(input.action==='comment'?'https://tieba.baidu.com/p/comment?tid='+input.threadId+'&pid='+input.postId+'&pn='+(input.commentPage??1):'https://tieba.baidu.com/p/'+input.threadId+'?pn='+(input.page??1));
+  if(!['content','empty','partial'].includes(page?.status)||String(page.thread?.id)!==input.threadId)throw new FishError('TIEBA_THREAD_NOT_VERIFIED');
   if(String(page.forum?.id)!==forum.id)throw new FishError('TIEBA_FORUM_MISMATCH');
   if(input.action==='comment'){
-   const parent=page.posts?.find((p:any)=>p.id===input.postId);if(!parent)throw new FishError('TIEBA_FLOOR_NOT_VERIFIED');
+   const parent=page.parentPost;if(parent?.id!==input.postId||parent.parentPostId!==null)throw new FishError('TIEBA_FLOOR_NOT_VERIFIED');
    if(!numeric(parent.author?.id))throw new FishError('TIEBA_REPLY_TARGET_IDENTITY_UNAVAILABLE');
    replyTo={id:parent.author.id,postId:parent.id,name:parent.author.name??'',portrait:parent.author.portrait??null};
   }
   if(input.subPostId){
-   const comments=await reader.read('https://tieba.baidu.com/p/comment?tid='+input.threadId+'&pid='+input.postId+'&pn='+(input.commentPage??1));
-   const target=comments.posts?.find((p:any)=>p.id===input.subPostId&&p.parentPostId===input.postId);
-   if(comments.status!=='content'||String(comments.forum?.id)!==forum.id||String(comments.thread?.id)!==input.threadId||!target||!numeric(target.author?.id))throw new FishError('TIEBA_COMMENT_NOT_VERIFIED');
+   const target=page.posts?.find((p:any)=>p.id===input.subPostId&&p.parentPostId===input.postId);
+   if(!target||!numeric(target.author?.id))throw new FishError('TIEBA_COMMENT_NOT_VERIFIED');
    if(typeof target.author.name!=='string'||!target.author.name||typeof target.author.portrait!=='string'||! /^[a-zA-Z0-9_.-]{1,200}$/.test(target.author.portrait))throw new FishError('TIEBA_REPLY_TARGET_METADATA_UNAVAILABLE');
    replyTo={id:target.author.id,postId:target.id,name:target.author.name,portrait:target.author.portrait};
   }
@@ -110,14 +112,15 @@ export async function postingTarget(input:PublishInput,identity:TiebaIdentity,po
 }
 /** Plain-text first. Target IDs are server-verified before these API fields
  * are built. CSRF/session fields are added only by the isolated browser. */
-export function postingRequest(input:PublishInput,forum:FollowedForum&{replyTo?:ReplyTarget}):PostingRequest{
+export function postingRequest(input:PublishInput,forum:FollowedForum&{replyTo?:ReplyTarget},transport?:'official_web'):PostingRequest{
  const fields:Record<string,string>={_client_type:'2',_client_version:input.action==='thread'?'12.64.1.1':'22.12.1.0',fid:forum.id,kw:forum.name,content:input.content};
  if(input.action==='thread')fields.title=input.title!;
  else {fields.tid=input.threadId!;if(input.action==='comment'){
   if(!forum.replyTo)throw new FishError('TIEBA_REPLY_TARGET_IDENTITY_UNAVAILABLE');
   fields.quote_id=input.postId!;fields.repostid=input.postId!;fields.sub_post_id=input.subPostId??'';fields.reply_uid=forum.replyTo.id;
-  if(input.subPostId)fields.content='回复 #(reply, '+forum.replyTo.portrait+', '+forum.replyTo.name.replace(/[()]/g,'')+') :'+input.content;
+  if(input.subPostId)fields.content='回复 #(reply, '+forum.replyTo.portrait+', '+(transport?forum.replyTo.name:forum.replyTo.name.replace(/[()]/g,''))+') :'+input.content;
  }}
+ if(transport)return {protocol:transport,action:input.action,url:'https://tieba.baidu.com/c/c/post/add_pc',fields,editorContent:input.content};
  return {protocol:input.action==='thread'?'legacy_thread_form':'app_protobuf',action:input.action,url:input.action==='thread'?'https://tiebac.baidu.com/c/c/thread/add':APP_POST_URL,fields};
 }
 /** A missing response ID is not permission to re-send. Confirm only a unique
@@ -243,8 +246,9 @@ export class TiebaPosting {
  }
 }
 export const tiebaTools:ModelTool[]=[
+ ...moderatorTools,
  {type:'function',function:{name:'check_tieba_publication',description:'用发言回执的requestId复查公开/本人可见性。只读，不会重发。',parameters:{type:'object',properties:{requestId:{type:'string'}},required:['requestId'],additionalProperties:false}}},
- {type:'function',function:{name:'get_tieba_replies',description:'查看自己贴吧账号收到的回复，包括帖子、楼中楼、作者和链接。page翻页。',parameters:{type:'object',properties:{page:{type:'integer',minimum:1,maximum:10000}},additionalProperties:false}}},
+ {type:'function',function:{name:'get_tieba_replies',description:'查看自己贴吧账号收到的公开回帖通知，包括帖子、楼中楼、作者和链接。page翻页。这不是贴吧私信收件箱；目前未接入贴吧私信收发，不能据此判断私信为空。',parameters:{type:'object',properties:{page:{type:'integer',minimum:1,maximum:10000}},additionalProperties:false}}},
  {type:'function',function:{name:'get_tieba_account',description:'查看自己的贴吧身份、实际关注的吧和发言模式。其他吧仍可用browse_page阅读。',parameters:{type:'object',properties:{},additionalProperties:false}}},
- {"type":"function","function":{"name":"publish_tieba","description":"在自己关注的吧发表内容。action区分新主题thread、帖子新楼层reply和楼中楼comment，各自必填项见参数说明。ID取自实际账号与读帖结果。预演/真实发布由管理员配置的posting.mode决定，可用get_tieba_account查询；本接口没有preview或mode参数，单次调用不能切换模式。参数错误会在请求发出前返回具体字段和原因。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["thread","reply","comment"],"description":"thread=新主题：需title，不传threadId/postId/page；reply=帖子新楼层：需threadId，不传title/postId；comment=楼中楼：需threadId和父楼层postId，可传subPostId。"},"forumId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"get_tieba_account返回的关注吧ID；必须与目标帖子所属吧一致。"},"content":{"type":"string","minLength":1,"maxLength":20000,"description":"要发表的正文。"},"title":{"type":"string","minLength":1,"maxLength":200,"description":"仅thread必填的新主题标题。"},"threadId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"reply和comment必填，来自读帖结果的帖子ID。"},"postId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"仅comment必填：实际读到的父楼层ID。reply不传此项。"},"subPostId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"仅comment可选：回复父楼层下某条子回复时填该子回复ID；后台核对真实身份。"},"page":{"type":"integer","minimum":1,"maximum":10000,"description":"仅reply/comment可传，目标父楼层所在帖子页码，默认1。"},"commentPage":{"type":"integer","minimum":1,"maximum":10000,"description":"仅comment可传，目标子回复所在楼中楼页码，默认1。"}},"required":["action","forumId","content"],"additionalProperties":false}}}
+ {"type":"function","function":{"name":"publish_tieba","description":"在自己关注的吧发表内容。action区分新主题thread、帖子新楼层reply和楼中楼comment，各自必填项见参数说明。ID取自实际账号与读帖结果。预演/真实发布由管理员配置的posting.mode决定，可用get_tieba_account查询；本接口没有preview或mode参数，单次调用不能切换模式。参数错误会在请求发出前返回具体字段和原因。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["thread","reply","comment"],"description":"thread=新主题：需title，不传threadId/postId/page；reply=帖子新楼层：需threadId，不传title/postId；comment=楼中楼：需threadId和父楼层postId，可传subPostId。"},"forumId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"get_tieba_account返回的关注吧ID；必须与目标帖子所属吧一致。"},"content":{"type":"string","minLength":1,"maxLength":20000,"description":"要发表的正文。"},"title":{"type":"string","minLength":1,"maxLength":200,"description":"仅thread必填的新主题标题。"},"threadId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"reply和comment必填，来自读帖结果的帖子ID。"},"postId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"仅comment必填：楼中楼页面parentPost.id或回帖通知parentPostId，不能把子回复ID填在这里。reply不传此项。"},"subPostId":{"type":"string","pattern":"^[1-9][0-9]{0,19}$","description":"仅comment可选：回复父楼层下某条子回复时填该子回复ID；后台核对真实身份。"},"page":{"type":"integer","minimum":1,"maximum":10000,"description":"仅reply/comment可传的帖子页码。comment按postId直接定位父楼层，不依赖此页码。"},"commentPage":{"type":"integer","minimum":1,"maximum":10000,"description":"仅comment可传，目标子回复所在楼中楼页码，默认1。"}},"required":["action","forumId","content"],"additionalProperties":false}}}
 ];

@@ -2,6 +2,7 @@ import {request} from 'node:http';
 import {FishError} from '../types.js';
 import {publishInput,publishInputFeedback,type PublishInput} from './posting.js';
 import type {SessionStatus,LoginInput} from './session.js';
+import {moderatorInput,type ModeratorInput} from './moderator.js';
 export type TiebaRpc=(action:string,input?:unknown)=>Promise<any>;
 /** Trusted internal capability. The socket returns only normalized reads,
  * status or an ephemeral login screenshot; never cookies or a generic CDP API. */
@@ -28,6 +29,7 @@ export class TiebaAccountClient {
  publish(input:PublishInput,requestId:string){const feedback=publishInputFeedback(input);return feedback?Promise.resolve(feedback):this.rpc('publish',{input:publishInput(input),requestId});}
  history(){return this.rpc('history');}
  replies(page=1){return this.rpc('replies',{page});}
+ moderator(input:ModeratorInput,requestId:string){return this.rpc('moderator',{input:moderatorInput(input),requestId});}
  verify(requestId:string){return this.rpc('verify',{requestId});}
 }
 export const tiebaAccountRead=(url:string)=>new TiebaAccountClient().read(url);

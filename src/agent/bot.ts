@@ -187,6 +187,9 @@ export class Bot {
                 // sending, so it can shorten/retry or reply without an edit.
                 if(memory&&!memory.ok)result={sent:false,memory};
                 else{if(args.text.trim())await this.send(last,args.text);result={sent:!!args.text.trim(),...(memory?{memory}:{})};finished=true;}
+              }else if(call.function.name==='apply_tieba_moderator'){
+                const requestId='qq:'+last.group+':'+last.id+':'+call.id;
+                result=await trackTiebaPublication(this.store,{action:'moderator_application',forumId:args.forumId,content:args.declaration},requestId,()=>new TiebaAccountClient().moderator(args,requestId));
               }else if(call.function.name==='get_tieba_account'){
                 if(Object.keys(args).length)throw new FishError('INVALID_TOOL_ARGS');result=await new TiebaAccountClient().account();
               }else if(call.function.name==='get_tieba_replies'){

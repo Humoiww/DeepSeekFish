@@ -9,6 +9,7 @@
  }
  function render(s){
   currentStatus=s;
+  const interactive=['publication','application'].includes(s.interaction),application=s.moderatorWork&&s.moderatorWork.created>=(s.publicationWork?.created||0)?s.moderatorWork:null;
   const lines=[labels[s.state]||s.state];
   if(s.identity)lines.push('当前账号：'+s.identity.name+' · UID '+s.identity.id);
   else if(s.lastIdentity)lines.push('上次确认的账号：'+s.lastIdentity.name+'（当前未确认）');
@@ -16,53 +17,53 @@
   if(s.lastError?.code==='TIEBA_WORKER_UNAVAILABLE')lines.push('无法连接隔离服务，浏览器和资料状态暂时无法确认');else lines.push('浏览器：'+(s.browserRunning?'运行中':'已关闭')+'；资料：'+(s.profileSaved?'已保存':'未保存'));
   if(s.loginPage)lines.push('官方页面：'+s.loginPage.title+' · '+s.loginPage.origin+(s.loginPage.blocked?' · 页面暂不可用':s.loginPage.challenge?' · 需要手动完成验证':''));
   if(s.lastError)lines.push('最近错误：'+s.lastError.code+' · '+s.lastError.stage);
-  if(s.publication?.needsHuman)lines.push('这次请求收到贴吧安全验证（'+s.publication.error+'）。已登录不代表发言验证已通过。'+(s.publication.detectedAt?'\n触发时间：'+new Date(s.publication.detectedAt).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong'}):''));
+  if(!application&&s.publication?.needsHuman)lines.push('这次请求收到贴吧安全验证（'+s.publication.error+'）。已登录不代表发言验证已通过。'+(s.publication.detectedAt?'\n触发时间：'+new Date(s.publication.detectedAt).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong'}):''));
   $('tieba-status').textContent=lines.join('\n');$('tieba-status').style.whiteSpace='pre-wrap';
-  screenMode=s.interaction==='publication'?'publication':'login';
-  $('tieba-login').hidden=!(s.browserRunning&&(s.state==='waiting_login'||s.interaction==='publication'));
-  $('tieba-start').disabled=s.interaction==='publication';$('tieba-check').disabled=s.interaction==='publication';
-  $('tieba-login-actions').hidden=s.interaction==='publication';$('tieba-login-description').hidden=s.interaction==='publication';
-  const w=s.publicationWork,stage=w?.stage,stageLabels={preparing:'正在处理这次发言请求',prepared:'原回复已填入官网，尚未提交',started:'提交已开始，等待真实回执',challenge:'官网要求验证，请在下方画面手动完成',accepted:'已获得回执，等待公开确认',confirmed:'已从公开视角确认',rejected:'这次请求未发出或被拒绝，详情见实际回执',unknown:'回执不确定，仅可检查结果，不自动重发'};
-  $('tieba-publication').hidden=!(s.publication?.needsHuman||w);
+  screenMode=interactive?s.interaction:'login';
+  $('tieba-login').hidden=!(s.browserRunning&&(s.state==='waiting_login'||['publication','application'].includes(s.interaction)));
+  $('tieba-start').disabled=interactive;$('tieba-check').disabled=interactive;
+  $('tieba-login-actions').hidden=interactive;$('tieba-login-description').hidden=interactive;
+  const w=application?null:s.publicationWork,stage=w?.stage,stageLabels={preparing:'正在处理这次发言请求',prepared:'原回复已填入官网，尚未提交',started:'提交已开始，等待真实回执',challenge:'官网要求验证，请在下方画面手动完成',accepted:'已获得回执，等待公开确认',confirmed:'已从公开视角确认',rejected:'这次请求未发出或被拒绝，详情见实际回执',unknown:'回执不确定，仅可检查结果，不自动重发'};
+  $('tieba-publication').hidden=!!application||!(s.publication?.needsHuman||w);
   $('tieba-publication-state').textContent=(stageLabels[stage]||'这次请求需要官网验证，可在下方操作。')+(w?.result?.receipt?.errorMessage?'\n平台提示：'+w.result.receipt.errorMessage:'');
   $('tieba-publication-preview').textContent=w?(w.input.action==='thread'?'新主题 '+w.input.title:'帖子 '+w.input.threadId)+'\n'+w.input.content:'';
   $('tieba-publication-submit').hidden=stage!=='prepared'||s.interaction!=='publication';
   $('tieba-publication-check').hidden=!w||stage==='prepared';
   $('tieba-publication-start').disabled=!!w&&['started','accepted','unknown'].includes(stage);
   $('tieba-publication-start').hidden=stage==='confirmed';
-  const a=lastAttempt&&(lastAttempt.requestId===w?.requestId||lastAttempt.startedAt>=(w?.created||0))?lastAttempt:null,matched=a?.requestId===w?.requestId,result=matched&&w?.result?w.result:a?.result||w?.result,request=a?.request||w?.input;
-  if(shownRequest&&shownRequest!==w?.requestId){shownRequest=undefined;frameSerial++;screen.hidden=true;screen.removeAttribute('src');if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=undefined;}}
-  const blocked=result?.error&&!(result.error==='TIEBA_PUBLICATION_NEEDS_HUMAN'&&!s.publication?.needsHuman)||s.publication?.needsHuman&&stage==='challenge';
+  const activeId=application?.requestId||w?.requestId,a=lastAttempt&&(lastAttempt.requestId===activeId||lastAttempt.startedAt>=Math.max(w?.created||0,application?.created||0))?lastAttempt:null,matched=a?.requestId===activeId,result=application?.result|| (matched&&w?.result?w.result:a?.result||w?.result),request=application?{action:'moderator_application',content:application.declaration,forumId:application.forumId}:a?.request||w?.input;
+  if(shownRequest&&shownRequest!==activeId){shownRequest=undefined;frameSerial++;screen.hidden=true;screen.removeAttribute('src');if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=undefined;}}
+  const blocked=result?.error&&!(result.error==='TIEBA_PUBLICATION_NEEDS_HUMAN'&&!s.publication?.needsHuman)||!application&&s.publication?.needsHuman&&stage==='challenge';
   $('tieba-attention').hidden=!blocked;
   $('tieba-alert').hidden=!blocked;
-  const issue=result?.issue,detail=issue?'参数 '+issue.field+'：'+issue.reason:result?.receipt?.errorMessage||result?.error||'贴吧要求安全验证';
-  $('tieba-alert-text').textContent='肥鱼的贴吧发言需要处理：'+detail;
-  $('tieba-attempt').hidden=!a&&!w;
-  $('tieba-attempt-detail').textContent=[request?.threadId?'帖子 '+request.threadId:request?.title?'新主题 '+request.title:'',result?.stage==='input_validation'?'本地参数校验未通过，请求没有发往贴吧':result?.stage==='running'?'正在处理这次请求':result?.published?'已确认公开可见':result?.deliveryStatus==='accepted'?'贴吧已接收，正在核对公开结果':detail,request?.content||'',a?.requestId||w?.requestId||''].filter(Boolean).join('\n');
+  const issue=result?.issue,detail=issue?'参数 '+issue.field+'：'+issue.reason:result?.receipt?.errorMessage||result?.error||(application?'官网申请结果尚未确认':'贴吧要求安全验证');
+  $('tieba-alert-text').textContent=(application?'肥鱼的小吧主申请需要处理：':'肥鱼的贴吧发言需要处理：')+detail;
+  $('tieba-attempt').hidden=!a&&!w&&!application;
+  $('tieba-attempt-detail').textContent=[application?'小吧主申请 · 吧ID '+application.forumId:request?.threadId?'帖子 '+request.threadId:request?.title?'新主题 '+request.title:'',result?.stage==='input_validation'?'本地参数校验未通过，请求没有发往贴吧':result?.stage==='running'?'正在处理这次请求':result?.applicationStatus==='pending_approval'?'申请已提交，等待吧主审批':result?.applicationStatus==='already_moderator'?'官网确认已是小吧主':result?.applicationStatus==='eligible'?'官网允许填写申请感言，尚未提交':result?.published?'已确认公开可见':result?.deliveryStatus==='accepted'?'贴吧已接收，正在核对公开结果':detail,request?.content||'',a?.requestId||activeId||''].filter(Boolean).join('\n');
   if(blocked){
-   const key=(a?.requestId||w?.requestId||'')+':'+detail+':'+(w?.result?.receipt?.httpAttempts||0);
+   const key=(a?.requestId||activeId||'')+':'+detail+':'+(w?.result?.receipt?.httpAttempts||0);
    if(key!==announced){announced=key;pendingOpen=true;}
   }else pendingOpen=false;
  }
  async function status(){const s=await call('tieba');render(s);return s;}
  async function frame(){
   const serial=++frameSerial,previous=frameUrl;
-  const requestId=currentStatus?.interaction==='publication'?currentStatus.publicationWork?.requestId:undefined;
+  const requestId=currentStatus?.interaction==='application'?currentStatus.moderatorWork?.requestId:currentStatus?.interaction==='publication'?currentStatus.publicationWork?.requestId:undefined;
   $('tieba-frame-state').textContent='正在读取当前官网画面…';
   const r=await fetch(requestId?'/api/tieba/publication-frame?requestId='+encodeURIComponent(requestId):'/api/tieba/frame',{cache:'no-store',headers:{authorization:'Bearer '+token},signal:AbortSignal.timeout(12000)});
   if(!r.ok){const e=await r.json();$('tieba-frame-state').textContent='当前画面未读到：'+(e.error||'请求失败')+'，正在等待状态更新。';throw Error(e.error);}
   const blob=await r.blob();if(!blob.size||!blob.type.startsWith('image/'))throw Error('TIEBA_FRAME_INVALID');
   const next=URL.createObjectURL(blob),preview=new Image();preview.src=next;
   try{await preview.decode();}catch{URL.revokeObjectURL(next);$('tieba-frame-state').textContent='登录画面无法显示，请刷新页面。';throw Error('TIEBA_FRAME_DECODE_FAILED');}
-  if(serial!==frameSerial||!dialog.open||requestId&&requestId!==currentStatus?.publicationWork?.requestId){URL.revokeObjectURL(next);return;}
+  if(serial!==frameSerial||!dialog.open||requestId&&requestId!==(currentStatus?.interaction==='application'?currentStatus.moderatorWork?.requestId:currentStatus?.publicationWork?.requestId)){URL.revokeObjectURL(next);return;}
   screen.src=next;screen.hidden=false;frameUrl=next;
-  $('tieba-frame-state').textContent=screenMode==='publication'?'这是当前官网画面，可直接点击、拖动完成验证。画面会自动更新。':'扫码或点击画面登录。画面会自动更新。';
+  $('tieba-frame-state').textContent=screenMode!=='login'?'这是当前官网画面，可直接点击、拖动完成验证。画面会自动更新。':'扫码或点击画面登录。画面会自动更新。';
   if(requestId&&shownRequest!==requestId){shownRequest=requestId;$('tieba-login').scrollIntoView({block:'start'});}
   if(previous)URL.revokeObjectURL(previous);
  }
  async function task(work,label='正在读取，请稍候…'){if(working){$('tieba-operation').textContent='上一项操作仍在等待反馈，可关闭窗口；不会重复提交。';return;}working=true;$('tieba-error').textContent='';$('tieba-operation').textContent=label;dialog.setAttribute('aria-busy','true');try{await work();}catch(e){$('tieba-error').textContent='操作未完成：'+e.message;await status().catch(()=>{});}finally{working=false;$('tieba-operation').textContent='';dialog.removeAttribute('aria-busy');}}
  const input=v=>task(async()=>{const s=await call('tieba/input',v);render(s);if(s.browserRunning)await frame();},'正在处理点击；如果点击了发布，正在等待官网回执…');
- function open(){pendingOpen=false;closeDrawers(false);if(!dialog.open)dialog.showModal();void task(async()=>{const s=await status();if(s.browserRunning&&(s.state==='waiting_login'||s.interaction==='publication'))await frame();});}
+ function open(){pendingOpen=false;closeDrawers(false);if(!dialog.open)dialog.showModal();void task(async()=>{const s=await status();if(s.browserRunning&&(s.state==='waiting_login'||['publication','application'].includes(s.interaction)))await frame();});}
  function maybeOpen(){if(!pendingOpen||document.hidden||document.querySelector('dialog[open]')&&!dialog.open)return;if(!dialog.open)open();else pendingOpen=false;}
  $('tieba-button').onclick=open;$('tieba-alert-open').onclick=open;
  $('tieba-start').onclick=()=>task(async()=>{render(await call('tieba/start',{}));await frame();},'正在打开官方登录页面…');
@@ -72,7 +73,7 @@
  for(const [id,action,label] of [['start','publication-start','正在打开官网并填入原回复，尚未发布…'],['submit','publication-submit','正在提交原回复并等待官网反馈…'],['check','publication-check','正在只读核对公开发布结果…']])$('tieba-publication-'+id).onclick=()=>task(async()=>{const s=await call('tieba/'+action,{});render(s);if(s.browserRunning&&s.interaction==='publication')await frame();},label);
  $('tieba-status-refresh').onclick=()=>task(status);$('tieba-frame-refresh').onclick=()=>task(frame);
  $('tieba-logout').onclick=()=>task(async()=>{render(await api('tieba/logout',{}));screen.removeAttribute('src');if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=undefined;}});
- $('tieba-dismiss').onclick=()=>dialog.close();dialog.addEventListener('close',()=>{frameSerial++;screen.hidden=true;if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=undefined;}screen.removeAttribute('src');$('tieba-text').value='';if(currentStatus?.interaction!=='publication')void api('tieba/close',{}).catch(()=>{});});
+ $('tieba-dismiss').onclick=()=>dialog.close();dialog.addEventListener('close',()=>{frameSerial++;screen.hidden=true;if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=undefined;}screen.removeAttribute('src');$('tieba-text').value='';if(!['publication','application'].includes(currentStatus?.interaction))void api('tieba/close',{}).catch(()=>{});});
  window.addEventListener('fish-tieba-status',event=>{
   lastAttempt=event.detail.attempt;if(!event.detail.status)return;render(event.detail.status);maybeOpen();void live();
  });
@@ -81,11 +82,11 @@
  async function live(){
   if(!dialog.open||document.hidden||working||drag||refreshing)return;refreshing=true;
   try{
-   let s=currentStatus,w=s?.publicationWork;
+   let s=currentStatus,w=s?.interaction==='application'||s?.moderatorWork?.created>=(s?.publicationWork?.created||Infinity)?null:s?.publicationWork;
    // Late native captcha success only needs one read-only reconciliation.
    const key=w?.requestId+':'+w?.result?.id;
    if(w?.stage==='accepted'&&w.result?.id&&verified!==key){verified=key;s=await call('tieba/publication-check',{});render(s);}
-   if(s?.browserRunning&&(s.state==='waiting_login'||s.interaction==='publication'))await frame();
+   if(s?.browserRunning&&(s.state==='waiting_login'||['publication','application'].includes(s.interaction)))await frame();
   }catch(e){$('tieba-frame-state').textContent='等待当前窗口更新：'+e.message;}
   finally{refreshing=false;}
  }

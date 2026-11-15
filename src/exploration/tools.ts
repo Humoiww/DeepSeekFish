@@ -95,6 +95,10 @@ export class ExplorationTools{
   }
   if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!Object.hasOwn(offered.function.parameters.properties as any,k)))throw new FishError('INVALID_TOOL_ARGS');
   if(name==='get_tieba_account')return out(await new TiebaAccountClient().account());
+  if(name==='apply_tieba_moderator'){
+   const requestId='explore:'+this.run.id+':'+callId;
+   return out(await trackTiebaPublication(store,{action:'moderator_application',forumId:args.forumId,content:args.declaration},requestId,()=>new TiebaAccountClient().moderator(args,requestId)));
+  }
   if(name==='get_tieba_replies')return out(await new TiebaAccountClient().replies(args.page??1));
   if(name==='check_tieba_publication')return out(await new TiebaAccountClient().verify(args.requestId));
   if(name==='finish_exploration'){if(args.note!==undefined&&(typeof args.note!=='string'||args.note.length>4000))throw new FishError('INVALID_TOOL_ARGS');return {result:{finished:true,note:args.note??''},finish:true};}

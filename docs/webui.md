@@ -64,7 +64,7 @@ npm run cli -- web-approve 任务UUID --reviewed
 4. 自画像身份由当前用户原始请求确定，DeepSeek 改写后也不会丢失。代码将本机鲸酱设定图以 `localImage` 附给 Codex，必须在原生完成事件看到匹配的参考路径和 SHA-256；不匹配拒绝发布。
 5. 进程停止后，只接受一张原生 `imageGeneration` 完成的 PNG，校验路径、大小、CRC 和产物清单，再存到 `runtime/outputs/UUID/image.png`。会话只记录自己的图片 ID、方案和清单；预览/下载通过本机鉴权接口，逐次复核归属与 SHA-256。刷新后图片和方案仍能显示，不接受模型声称的文件或成功状态。
 
-正式生图同时占用共享 `fish.sqlite` 的一个 Codex 任务、一次生图及最长执行时长，两项次数原子预留，默认每日 20 张；共享 Codex 任务上限配套为每日 22 次、总时长 6600000 ms，仍保持单个真实任务并发。失败/取消不自动重试，已经预留的次数保留。单次 Codex 默认 300 秒，连同规划有界等待；可用停止按钮取消。普通 Codex 排队仍需要原有 CLI 审核，不因画图请求获得权限。`--mock` 使用固定 1×1 PNG 测试占位，页面明确标记离线演示，不是 AI 作品，不消费正式预算。
+正式生图使用共享 `fish.sqlite` 的每日图片张数额度，默认每日20张；Codex 次数与时长仍记录，但其本地上限不拦截图片。仍保持独立图片任务的并发和回执管理。失败/取消不自动重试，已经预留的次数保留。单次 Codex 默认 300 秒，连同规划有界等待；可用停止按钮取消。普通 Codex 排队仍需要原有 CLI 审核，不因画图请求获得权限。`--mock` 使用固定 1×1 PNG 测试占位，页面明确标记离线演示，不是 AI 作品，不消费正式预算。
 
 项目未登录时运行 `bash scripts/manage.sh codex-login --device-auth`；Windows 对应 `npm run cli -- codex-login --device-auth`。使用项目自己的 ChatGPT 登录，不复制系统现有 Codex 凭据。默认设定集已包含在仓库的 `assets/character/whalechan-reference.png` 中，克隆后直接可用；可选本机覆盖路径为 `runtime/character/whalechan-reference.png`。
 
@@ -86,7 +86,7 @@ npm run cli -- web-approve 任务UUID --reviewed
 
 侧栏「今日 API 费用」显示已用 / 每日人民币额度、已结算和未确认费用；默认 ¥5，在「连接与设置」修改后即时生效。「Reset 今日额度」释放当天已结算与估算的本地费用额度，保留输入/输出/cache token、历史账单、查询次数、生图限额及未确认/进行中的费用。旧 `/api/tokens/reset` 是 `/api/costs/reset` 的兼容入口，均需人机鉴权；不更改上游账单。详见 [计费说明](cny-budget.md)。
 
-正式模式复用 `runtime/data/fish.sqlite` 的全局额度，QQ 与 WebUI 的调用合并统计。会话/任务记录在 `webui.sqlite`；Mock 使用 `webui-mock.sqlite` 和 `webui-mock-budget.sqlite`，不污染正式账本。每轮 API 请求在发送前按序列化消息、工具 schema、输出上限原子预留，按真实 usage 结算；无有效 usage 的失败保留预留，异常超额锁住后续请求。默认全局 120000 tokens、每用户每日 50 次模型请求；工具循环中的每轮也算请求。输出默认 1024，上限可设 128–4096。
+正式模式复用 `runtime/data/fish.sqlite` 的全局额度，QQ 与 WebUI 的调用合并统计。会话/任务记录在 `webui.sqlite`；Mock 使用 `webui-mock.sqlite` 和 `webui-mock-budget.sqlite`，不污染正式账本。每轮 API 请求在发送前按序列化消息、工具 schema、输出上限原子预留，按真实 usage 结算；无有效 usage 的失败保留预留，异常超额锁住后续请求。每日费用按人民币额度判断，默认全局 ¥5；缓存／未缓存输入与输出 token 保留为实际用量统计，工具循环中的每次模型调用分别结算。输出默认 1024，上限可设 128–4096。
 
 普通消息最多 4 次模型请求、6 次工具调用、120 秒；图片流程最多 1 次规划请求、1 次 Codex 生图、配置的 Codex 超时加 90 秒，总并发最多 2 个会话，同一会话只允许 1 条处理中消息。第 4 轮请求禁止再调用工具；若 provider 不遵守，服务器拒绝执行。停止按钮断开流并中止上游 fetch；已经完成的文件写入和已经发生的 API 用量不会回滚。进程重启不自动重放消息/任务，运行状态变为失败；QQ 的恢复不会释放 WebUI 活跃 Codex 预留。
 

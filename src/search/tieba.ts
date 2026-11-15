@@ -95,8 +95,10 @@ export async function tiebaPage(raw:string,poster:PublicPoster,signal?:AbortSign
     const images:{url:string;label:string;kind:string}[]=[],links:{url:string;label:string}[]=[],text:string[]=[],posts:any[]=[];
     const thread=t.kind==='forum'?null:{id:t.tid!,title:str(data.thread.title).slice(0,300),author:author(data.thread.author),replyCount:Number(data.thread.reply_num)||0};
     text.push(forum.name+'吧'+(thread?' / '+thread.title:''));
+    let parentPost:any;
     if(t.kind==='comments'){
       const parent=content(data.post.content,'父楼 '+t.pid);
+      parentPost={id:t.pid,url:web+'/p/'+t.tid+'?pid='+t.pid+'#'+t.pid,author:author(data.post.author),floor:Number(data.post.floor)||null,publishedAt:timestamp(data.post.time),content:parent.text.slice(0,1000),contentTruncated:parent.text.length>1000,parentPostId:null};
       text.push('父楼 '+t.pid+'（'+str(data.post.floor)+'楼），'+(author(data.post.author).name??'未知作者')+'：'+parent.text);
       images.push(...parent.images);links.push(...parent.links);
     }
@@ -120,7 +122,7 @@ export async function tiebaPage(raw:string,poster:PublicPoster,signal?:AbortSign
     if(nextPage)links.push({url:nextPage,label:'下一页'});
     return {...base,title:forum.name+'吧'+(thread?' · '+thread.title:''),status:missingComments?'partial':posts.length?'content':'empty',
       coverage:t.kind==='forum'?'forum_thread_previews':t.kind==='thread'?'thread_floors':'floor_comments',
-      forum,thread,page:current,totalPages,totalReported:Number(t.kind==='comments'?data.subpost_num??p.total_count:p.total_count??p.total_num)||0,returned:posts.length,
+      forum,thread,...(parentPost?{parentPost}:{}),page:current,totalPages,totalReported:Number(t.kind==='comments'?data.subpost_num??p.total_count:p.total_count??p.total_num)||0,returned:posts.length,
       platformNotice:str(data.partial_visible_toast).slice(0,300)||null,
       ...(t.postId?{target:{postId:t.postId,found:posts.some(p=>p.id===t.postId),coverage:'returned_page',order:'reverse_time'}}:{}),
       notice:t.kind==='forum'?'按发帖时间请求，置顶单独标记。列表是摘要，点帖子读取正文；仅当前页，nextPage 继续。':'正文在 text，posts 为作者/楼层/时间索引；textOffset 续读正文，nextPage 翻页，commentsUrl 读楼中楼。仅接口公开返回的内容，删除或隐藏回复可能缺失。',
