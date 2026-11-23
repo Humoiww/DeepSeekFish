@@ -6,9 +6,10 @@ import { FishError,codeOf } from '../types.js';
 import { RpcProcess } from './process.js';
 import { appServerSpec,PERMISSION_PROFILE } from './platform.js';
 
-export async function initialize(rpc:RpcProcess,cwd:string):Promise<void>{
+export async function initialize(rpc:RpcProcess,cwd:string,requireRestrictedProfile=true):Promise<void>{
   await rpc.call('initialize',{clientInfo:{name:'deepseekfish',title:'DeepSeekFish',version:'0.1.0'},capabilities:{experimentalApi:true}});
   rpc.notify('initialized');
+  if(!requireRestrictedProfile)return;
   const profiles=await rpc.call('permissionProfile/list',{cwd});
   if(!profiles.data?.some((p:any)=>p.id===PERMISSION_PROFILE&&p.allowed===true))throw new FishError('CODEX_RESTRICTED_PROFILE_UNAVAILABLE');
 }

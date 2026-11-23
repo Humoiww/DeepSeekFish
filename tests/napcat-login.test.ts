@@ -2,12 +2,14 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {projectRoot} from '../src/config.js';
 const {createLoginMemory}=await import(pathToFileURL(path.join(projectRoot(),'deploy/napcat-login-memory.mjs')).href);
+const testBase=os.tmpdir();
 const md5='a'.repeat(32),account='20002';
 function fixture(){
-  const root=fs.mkdtempSync(path.join(projectRoot(),'runtime/tmp/login-test-')),env:Record<string,string>={},auth=createLoginMemory(root,env);
+  const root=fs.mkdtempSync(path.join(testBase,'fish-login-test-')),env:Record<string,string>={},auth=createLoginMemory(root,env);
   return {root,env,auth,close(){auth.close();fs.rmSync(root,{recursive:true,force:true});}};
 }
 test('verified native password/captcha login persists account and private fallback across process restarts',async()=>{

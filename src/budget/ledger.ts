@@ -9,7 +9,7 @@ export const dayKey = (at = Date.now()): string => new Date(at + 8 * 3600000).to
 /** A direct QQ conversation shares the global daily budget; the per-group cap
  * belongs to groups, not an extra hidden allowance for the owner's private chat. */
 export const conversationCostLimit=(cfg:Config,conversation:string):number=>conversation.startsWith('private:')||conversation.startsWith('web:')||cfg.groupDailyCny===0?cfg.dailyCny:Math.min(cfg.dailyCny,cfg.groupDailyCny);
-type Kind = 'model' | 'search' | 'codex' | 'image' | 'interjection';
+type Kind = 'model' | 'search' | 'codex' | 'developmentCodex' | 'image' | 'interjection';
 interface Reservation { id:string; day:string; grp:string; usr:string; kind:Kind; input:number; output:number; ms:number; state:string;cost_nano:number;cost_status:ChargeReceipt['status'];price_snapshot:string;actual_input:number|null;actual_output:number|null;cached_input:number|null;uncached_input:number|null }
 export class BudgetError extends FishError {
   constructor(public reason:'cost'|'requests'|'output',public remaining:number,public required:number,public scope:'daily'|'conversation'='daily'){super(reason==='cost'?'CNY_BUDGET_EXHAUSTED':reason==='requests'?'DAILY_REQUEST_LIMIT':'OUTPUT_LIMIT_EXCEEDED');}
@@ -33,6 +33,9 @@ export class Ledger {
   reserve(kind: Kind, group: string, user: string, input=0, output=0, ms=0): string {
     return this.store.transaction(()=>this.charge(kind,group,user,input,output,ms));
   }
+  reserveModel(group:string,user:string,input:number,output:number,providerOutputDefault:boolean):string{
+    return this.store.transaction(()=>this.charge('model',group,user,input,output,0,dayKey(),false,providerOutputDefault));
+  }
   receipt(id:string):ChargeReceipt|undefined{
     const r=this.store.db.prepare('SELECT * FROM reservations WHERE id=?').get(id) as unknown as Reservation;
     if(!r?.price_snapshot||r.cost_nano===null)return;
@@ -55,9 +58,13 @@ export class Ledger {
       this.store.db.prepare('INSERT INTO image_jobs VALUES (?,?,?,?,0)').run(codex,image,day,ms);return {codex,image};
     });
   }
+  imageJobRunning():boolean{
+    return !!this.store.db.prepare("SELECT 1 FROM image_jobs j JOIN reservations r ON r.id=j.codex_id WHERE r.state='held' LIMIT 1").get();
+  }
   /** Human-only local reset. Reservations/audit and unrelated Codex/model usage stay intact. */
   resetImages(){return this.store.transaction(()=>{
-    if(this.store.db.prepare("SELECT id FROM reservations WHERE kind IN ('codex','image') AND state IN ('held','unknown')").get())throw new FishError('IMAGE_RESET_BUSY_OR_UNCERTAIN');
+    if(this.store.db.prepare(`SELECT 1 FROM reservations r WHERE r.state IN ('held','unknown') AND
+      (r.kind='image' OR EXISTS(SELECT 1 FROM image_jobs j WHERE j.codex_id=r.id)) LIMIT 1`).get())throw new FishError('IMAGE_RESET_BUSY_OR_UNCERTAIN');
     const day=dayKey(),images=this.value('image','*',day);
     const paired=this.store.db.prepare('SELECT count(*) AS count,coalesce(sum(spent_ms),0) AS ms FROM image_jobs WHERE day=? AND reset=0').get(day) as {count:number;ms:number};
     this.add('image',-images,'*',day);this.add('codex',-Math.min(this.value('codex','*',day),paired.count),'*',day);this.add('codexMs',-Math.min(this.value('codexMs','*',day),paired.ms),'*',day);
@@ -73,10 +80,10 @@ export class Ledger {
     const result={currency:'CNY',day,clearedCny:toCny(cleared),pendingCny:toCny(pending),uncertainCny:toCny(uncertain),retainedCny:toCny(before-cleared)};
     this.store.audit('local-cost-reset','web',JSON.stringify(result));return result;
   });}
-  private charge(kind:Kind,group:string,user:string,input:number,output:number,ms:number,day=dayKey(),imageJob=false):string{
+  private charge(kind:Kind,group:string,user:string,input:number,output:number,ms:number,day=dayKey(),imageJob=false,providerOutputDefault=false):string{
     const cfg=this.config(); const id=randomUUID();
     if (![input,output,ms].every(n => Number.isSafeInteger(n) && n >= 0)) throw new FishError('INVALID_RESERVATION');
-    if (this.store.getMeta('budgetFault')) throw new FishError('BUDGET_USAGE_FAULT');
+    if (kind!=='developmentCodex'&&(kind!=='codex'||imageJob)&&this.store.getMeta('budgetFault')) throw new FishError('BUDGET_USAGE_FAULT');
     if(kind==='search'){input=0;output=0;}
     const total=input+output,priced=kind==='model'||kind==='search',at=Date.now();
     const price=kind==='model'?modelPricing(cfg.model,at):kind==='search'?networkPricing():undefined;
@@ -85,7 +92,7 @@ export class Ledger {
     const globalRemaining=cnyUnits(cfg.dailyCny)-this.value('costNano','*',day),groupRemaining=cnyUnits(conversationCostLimit(cfg,group))-this.value('costNano','g:'+group,day);
     const scope=globalRemaining<=groupRemaining?'daily':'conversation',remaining=Math.max(0,Math.min(globalRemaining,groupRemaining));
     if (kind === 'model') {
-      if(output>cfg.maxOutputTokens)throw new BudgetError('output',toCny(remaining),toCny(cost));
+      if(!providerOutputDefault&&output>cfg.maxOutputTokens)throw new BudgetError('output',toCny(remaining),toCny(cost));
       if(cost>remaining)throw new BudgetError('cost',toCny(remaining),toCny(cost),scope);
       if(this.value('requests','u:'+user,day)>=cfg.userDailyRequests)throw new BudgetError('requests',toCny(remaining),toCny(cost));
       for (const scope of ['*','g:'+group]){this.add('tokens',total,scope,day);this.add('costNano',cost,scope,day);}
@@ -94,15 +101,14 @@ export class Ledger {
       if(cost>remaining)throw new BudgetError('cost',toCny(remaining),toCny(cost),scope);
       for(const scope of ['*','g:'+group])this.add('costNano',cost,scope,day);
       this.add('search',1,'*',day);
+    } else if(kind==='codex'||kind==='developmentCodex'){
+      if(imageJob&&this.imageJobRunning())throw new FishError('CODEX_BUSY');
+      this.add(kind,1,'*',day);
+      this.add(kind+'Ms',ms,'*',day);
     } else {
-      const limits = { codex:cfg.codexDaily, image:cfg.imageDaily, interjection:cfg.dailyInterjections };
+      const limits = { image:cfg.imageDaily, interjection:cfg.dailyInterjections };
       const scope=kind==='interjection'?'g:'+group:'*';
-      if (!(imageJob&&kind==='codex')&&this.value(kind,scope,day)>=limits[kind]) throw new FishError(kind.toUpperCase()+'_BUDGET_EXHAUSTED');
-      if (kind==='codex') {
-        if (!imageJob&&this.value('codexMs','*',day)+ms>cfg.codexDailyMs) throw new FishError('CODEX_TIME_BUDGET');
-        if (this.store.db.prepare("SELECT id FROM reservations WHERE kind='codex' AND state='held'").get()) throw new FishError('CODEX_BUSY');
-        this.add('codexMs',ms,'*',day);
-      }
+      if (this.value(kind,scope,day)>=limits[kind]) throw new FishError(kind.toUpperCase()+'_BUDGET_EXHAUSTED');
       this.add(kind,1,scope,day);
       if(kind==='image')this.add('imageAttempts',1,'*',day);
     }
@@ -131,9 +137,11 @@ export class Ledger {
         const cache=measured?inputCache(usage.input,usage.cachedInput,usage.uncachedInput):{};
         this.store.db.prepare('UPDATE reservations SET cost_nano=?,cost_status=?,actual_input=?,actual_output=?,cached_input=?,uncached_input=? WHERE id=?').run(cost.nano,cost.status,measured?usage.input:null,measured?usage.output:null,cache.cachedInput??null,cache.uncachedInput??null,id);
       }
-      if (r.kind==='codex' && elapsedMs !== undefined){
-        const spent=Math.min(r.ms,Math.max(0,Math.ceil(elapsedMs)));this.add('codexMs',spent-r.ms,'*',r.day);
-        this.store.db.prepare('UPDATE image_jobs SET spent_ms=? WHERE codex_id=?').run(spent,id);
+      if ((r.kind==='codex'||r.kind==='developmentCodex')&&elapsedMs!==undefined){
+        const elapsed=Math.max(0,Math.ceil(elapsedMs));
+        const spent=r.ms>0?Math.min(r.ms,elapsed):elapsed;
+        this.add(r.kind==='codex'?'codexMs':'developmentCodexMs',spent-r.ms,'*',r.day);
+        if(r.kind==='codex')this.store.db.prepare('UPDATE image_jobs SET spent_ms=? WHERE codex_id=?').run(spent,id);
       }
       // Unknown usage remains fully charged, including after network errors/restarts.
       this.store.db.prepare('UPDATE reservations SET state=? WHERE id=?').run(r.kind!=='model'||usage&&[usage.input,usage.output].every(n=>Number.isSafeInteger(n)&&n>=0) ? 'settled' : 'unknown',id);

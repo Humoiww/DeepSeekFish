@@ -20,7 +20,7 @@ test('native GIF attachment is preserved byte for byte through capture, publicat
  const f=fixture(),bytes=await gif(),transport=new MockTransport();let calls=0;
  try{
   const cwd=makeDir(f.root,'runtime/workspace/'+id),source=makeDir(f.root,'runtime/codex-home/generated_images');fs.writeFileSync(source+'/native.gif',bytes);
-  const captured=captureCodexImage(f.root,cwd,[{id:'native',type:'imageGeneration',status:'completed',savedPath:source+'/native.gif'}],10485760);assert.equal(path.basename(captured),'image.gif');assert.deepEqual(fs.readFileSync(captured),bytes);
+  const captured=captureCodexImage(f.root,cwd,[{id:'native',type:'imageGeneration',status:'completed',fileId:'attachment',savedPath:source+'/native.gif'}],10485760);assert.equal(path.basename(captured),'image.gif');assert.deepEqual(fs.readFileSync(captured),bytes);
   const [manifest]=publishCodexImage(f.root,id,10485760);assert.equal(manifest.name,'image.gif');assert.deepEqual(gifInfo(bytes).delay,[200,300]);
   const client=new QQImageClient(f.root);assert.equal(path.basename(client.verifiedImage(id,manifest,10485760)),'image.gif');
   f.store.db.exec('CREATE TABLE qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT)');f.store.db.prepare('INSERT INTO qq_image_requests VALUES (?,?,?,?,?)').run('g','m','completed',id,'');

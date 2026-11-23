@@ -1,0 +1,43 @@
+[Unit]
+Description=DeepSeekFish owner-authorized development supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deepseekfish
+Group=deepseekfish
+SupplementaryGroups=deepseekfish-development
+WorkingDirectory=/srv/deepseekfish/development
+Environment=FISH_DEVELOPMENT_ROOT=/srv/deepseekfish/development
+Environment=PATH=/srv/deepseekfish/app/runtime/tools/node/bin:/usr/bin:/bin
+Environment=NODE_OPTIONS=--max-old-space-size=256
+UnsetEnvironment=FISH_CODEX_IMAGE_ONLY OPENAI_API_KEY DEEPSEEK_API_KEY SSH_AUTH_SOCK SSH_AGENT_PID CODEX_HOME
+ExecStart=/srv/deepseekfish/app/runtime/tools/node/bin/node /srv/deepseekfish/development/dist/src/development/worker.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# A locked submount under /proc prevents bubblewrap from mounting a fresh procfs.
+ReadOnlyPaths=/sys
+SystemCallFilter=~syslog
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+BindReadOnlyPaths=/srv/deepseekfish/app/personas:/srv/deepseekfish/development/personas
+BindReadOnlyPaths=/srv/deepseekfish/app/assets/kaomoji:/srv/deepseekfish/development/assets/kaomoji
+ReadWritePaths=/srv/deepseekfish/development/runtime/data /srv/deepseekfish/development/runtime/workspace /srv/deepseekfish/development/runtime/deploy /srv/deepseekfish/development/runtime/packages /srv/deepseekfish/development/runtime/tmp /srv/deepseekfish/development/runtime/cache /srv/deepseekfish/app/runtime/data /srv/deepseekfish/app/runtime/codex-home
+MemoryMax=1200M
+TasksMax=384
+
+[Install]
+WantedBy=multi-user.target

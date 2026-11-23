@@ -1,3 +1,4 @@
+import {ProviderError} from '../diagnostics.js';
 import { FishError } from '../types.js';
 import { imageMime,responseBytes } from '../memory/people.js';
 import type { OneBotTransport } from './onebot.js';
@@ -6,8 +7,8 @@ const UPLOAD='https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image';
 const PUBLISH='https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6';
 const LIST='https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6';
 export interface UploadedPhoto {richval:string;picBo:string}
-export class QzoneRejected extends FishError {
-  constructor(public stage:string,public providerCode:number){super('QZONE_'+stage.toUpperCase()+'_REJECTED_'+providerCode);}
+export class QzoneRejected extends ProviderError {
+  constructor(public stage:string,public providerCode:number){super('QZONE_'+stage.toUpperCase()+'_REJECTED_'+providerCode,{stage,providerCode});}
 }
 /** JSON / JSONP / upload callback wrapper, never evaluated as JavaScript. */
 export function qzoneResponse(text:string):any{
@@ -63,11 +64,18 @@ export class QzonePublisher {
     return {id,url:'https://user.qzone.qq.com/'+this.self+'/mood/'+id};
   }
   async find(text:string,since:number):Promise<{id:string;url:string}|undefined>{
+    return (await this.matchingPosts(text,since))[0];
+  }
+  async findUnique(text:string,since:number):Promise<{id:string;url:string}|undefined>{
+    const matches=await this.matchingPosts(text,Math.floor(since/1000)*1000);
+    return matches.length===1?matches[0]:undefined;
+  }
+  private async matchingPosts(text:string,since:number):Promise<{id:string;url:string}[]>{
     const a=await this.auth(),url=new URL(LIST);
     for(const [k,v] of Object.entries({uin:this.self,ftype:'0',sort:'0',pos:'0',num:'20',replynum:'0',g_tk:a.bkn,code_version:'1',format:'json'}))url.searchParams.set(k,v);
     const data=checked(qzoneResponse((await responseBytes(await this.http(url,{redirect:'error',headers:this.headers(a.cookies),signal:AbortSignal.timeout(20000)}),2097152)).toString()),'read');
     if(!Array.isArray(data.msglist))throw new FishError('QZONE_RESPONSE_INVALID');
-    const match=data.msglist.find((p:any)=>String(p.uin??this.self)===this.self&&p.content===text&&Number(p.created_time)*1000>=since&&Number(p.pictotal)>0&&typeof p.tid==='string'&&/^[a-zA-Z0-9_-]{1,120}$/.test(p.tid));
-    return match?{id:match.tid,url:'https://user.qzone.qq.com/'+this.self+'/mood/'+match.tid}:undefined;
+    const matches=data.msglist.filter((p:any)=>String(p.uin??this.self)===this.self&&p.content===text&&Number(p.created_time)*1000>=since&&Number(p.pictotal)>0&&typeof p.tid==='string'&&/^[a-zA-Z0-9_-]{1,120}$/.test(p.tid));
+    return matches.map((p:any)=>({id:p.tid,url:'https://user.qzone.qq.com/'+this.self+'/mood/'+p.tid}));
   }
 }

@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import {createHash} from 'node:crypto';
 import {EventEmitter} from 'node:events';
 import dns from 'node:dns/promises';
@@ -15,14 +16,15 @@ import {pbBytes,pbNumber,pbString,parseFields} from '../src/tieba/protobuf.js';
 import {replyRequest,replyPage} from '../src/tieba/replies.js';
 import {tiebaPage} from '../src/search/tieba.js';
 
+const fixtureBase=os.tmpdir();
 const fixture=JSON.parse(fs.readFileSync('tests/fixtures/tieba-app-post.json','utf8'));
 const response=(key:string)=>Buffer.from(fixture.responses[key],'hex');
-const forum={id:'28340562',name:'肥鱼避难所'},who={id:'7129084874',name:'fixture'},policy={mode:'live' as const,accountId:who.id};
+const forum={id:'28340562',name:'肥鱼避难所'},who={id:'1000000001',name:'fixture'},policy={mode:'live' as const,accountId:who.id};
 const input:PublishInput={action:'reply',forumId:forum.id,threadId:'11193581226',content:'离线协议样本，不会发送。'};
-const parent={id:'154137712467',author:{id:'5761543338',name:'离线吧友',portrait:'tb.fixture'}};
+const parent={id:'154137712467',parentPostId:null,author:{id:'5761543338',name:'离线吧友',portrait:'tb.fixture'}};
 const child={id:'154137729422',parentPostId:parent.id,author:{id:'9007199254740993',name:'离线吧友',portrait:'tb.fixture'}};
-const reader:PostingReader={followed:async()=>[forum],read:async url=>({status:'content',forum,thread:{id:input.threadId},posts:url.includes('/comment')?[child]:[parent]}),publicRead:async()=>({status:'empty',forum,posts:[]})};
-function temporary(t:any){const base=path.resolve('runtime/verification');fs.mkdirSync(base,{recursive:true});const dir=fs.mkdtempSync(path.join(base,'tieba-app-'));const db=Object.assign(new TiebaPosting(dir),{fixtureDir:dir});t.after(()=>{db.close();fs.rmSync(dir,{recursive:true,force:true});});return db;}
+const reader:PostingReader={followed:async()=>[forum],read:async url=>({status:'content',forum,thread:{id:input.threadId},parentPost:url.includes('/comment')?parent:undefined,posts:url.includes('/comment')?[child]:[parent]}),publicRead:async()=>({status:'empty',forum,posts:[]})};
+function temporary(t:any){const dir=fs.mkdtempSync(path.join(fixtureBase,'fish-tieba-app-'));const db=Object.assign(new TiebaPosting(dir),{fixtureDir:dir});t.after(()=>{db.close();fs.rmSync(dir,{recursive:true,force:true});});return db;}
 function unpack(body:Buffer){const start=body.indexOf('\r\n\r\n')+4,end=body.lastIndexOf('\r\n--');assert.ok(start>=4&&end>start);return body.subarray(start,end);}
 
 test('three request vectors match the pinned upstream encoders byte for byte',()=>{
@@ -38,7 +40,7 @@ test('driver sends multipart protobuf to cmd 309731 with current session TBS and
   writes++;assert.equal(String(url),APP_POST_URL);assert.equal(options.method,'POST');assert.equal(options.headers['x_bd_data_type'],'protobuf');assert.equal(options.headers['user-agent'],'aiotieba/4.8.1');assert.match(options.headers['content-type'],/^multipart\/form-data; boundary=/);assert.match(options.headers['accept-encoding'],/gzip/);
   const req=new EventEmitter() as any;req.end=(body:Buffer)=>{assert.equal(options.headers['content-length'],body.length);assert.match(body.toString(),/name="data"; filename="file"/);assert.equal(unpack(body).toString('hex'),fixture.requests[0].hex);queueMicrotask(()=>{const res=new EventEmitter() as any;res.statusCode=200;res.headers={'content-type':'application/octet-stream','content-encoding':'gzip'};callback(res);res.emit('data',gzipSync(response('success')));res.emit('end');});};return req;
  });
- const fake={accountPoster:async()=>async(url:string)=>{authReads++;assert.ok(url.endsWith('/c/s/login'));return {bytes:Buffer.from(JSON.stringify({error_code:0,anti:{tbs:'OFFLINE_TBS'},user:{name_show:'离线鱼'}}))};},bduss:async()=>'OFFLINE_BDUSS',request:(...args:any[])=>(TiebaBrowser.prototype as any).request(...args)};
+ const fake={accountPoster:async()=>async(url:string)=>{authReads++;assert.ok(url.endsWith('/c/s/login'));return {bytes:Buffer.from(JSON.stringify({error_code:0,anti:{tbs:'OFFLINE_TBS'},user:{name_show:'离线鱼'}}))};},bduss:async()=>'OFFLINE_BDUSS',lifetime:new AbortController(),request(...args:any[]){return (TiebaBrowser.prototype as any).request.apply(this,args);}};
  const result=await TiebaBrowser.prototype.sendPost.call(fake as any,plan);assert.equal(writes,1);assert.equal(authReads,1);assert.equal(result.id,'9007199254740993');assert.ok(!JSON.stringify(result).includes('OFFLINE_'));assert.equal(result.receipt?.accepted,true);
 });
 test('floor and child reply references come from verified targets, not model-supplied identities',async()=>{
@@ -60,16 +62,29 @@ test('captcha, rejection, missing ID, malformed body and timeout never retry or 
  const auth=fixture.requests[0].args,message='请输入验证码 BDUSS='+auth.bduss+' tbs='+auth.tbs+' https://example.invalid/verify?token=private';
  for(const bytes of [pbBytes(1,Buffer.concat([pbNumber(1,5),pbString(2,message)])),Buffer.from(JSON.stringify({error_code:5,error_msg:message}))])await assert.rejects(sendAppReply(plan,auth,async()=>({bytes})),(e:any)=>{assert.equal(e.code,'TIEBA_PUBLICATION_CHALLENGE');assert.equal(e.receipt.errorCode,5);assert.match(e.receipt.errorMessage,/请输入验证码/);assert.ok(!JSON.stringify(e.receipt).includes('OFFLINE_'));assert.ok(!JSON.stringify(e.receipt).includes('example.invalid'));return true;});
 });
-test('uncertain and rejected outbox outcomes block identical submissions under a new call ID',async t=>{
+test('uncertain receipts deduplicate, platform rejections apply to their own request',async t=>{
  for(const key of ['acceptedNoId','rejected','captcha','timeout']){
   const db=temporary(t);let writes=0;
   const send=(plan:any)=>sendAppReply(plan,fixture.requests[0].args,async()=>{writes++;if(key==='timeout')throw new FishError('TIEBA_READ_NETWORK_FAILED');return {bytes:response(key)};});
   const a=await db.publish(input,'first',who,policy,reader,send);
   (db as any).db.prepare('UPDATE tieba_actions SET fingerprint=?').run(createHash('sha256').update(JSON.stringify([who.id,input])).digest('hex'));
   (db as any).db.exec('PRAGMA user_version=0');
-  const reopened=new TiebaPosting(db.fixtureDir);let b:any;try{b=await reopened.publish({content:input.content,threadId:input.threadId,forumId:input.forumId,action:input.action},'second',who,policy,reader,send);}finally{reopened.close();}
-  assert.equal(writes,1);assert.equal(a.published,false);assert.equal(b.reused,true);assert.equal(b.retryScheduled,false);
-  if(key==='acceptedNoId'){assert.equal(a.submitted,true);assert.equal(a.deliveryStatus,'unconfirmed');}
+  const reopened=new TiebaPosting(db.fixtureDir);
+  let b:any;
+  try{
+   const retry={content:input.content,threadId:input.threadId,forumId:input.forumId,action:input.action};
+   assert.equal((await reopened.publish(retry,'first',who,policy,reader,send)).reused,true);
+   b=await reopened.publish(retry,'second',who,policy,reader,send);
+  }finally{reopened.close();}
+  const rejected=key==='rejected'||key==='captcha';
+  assert.equal(writes,rejected?2:1);
+  assert.equal(a.published,false);
+  assert.equal(b.reused===true,!rejected);
+  assert.equal(b.retryScheduled,false);
+  if(key==='acceptedNoId'){
+   assert.equal(a.submitted,true);
+   assert.equal(a.deliveryStatus,'accepted');
+  }
   if(key==='captcha')assert.equal(a.error,'TIEBA_PUBLICATION_CHALLENGE');
   if(key==='timeout'){assert.equal(a.submitted,null);assert.equal(a.deliveryStatus,'unconfirmed');}
  }

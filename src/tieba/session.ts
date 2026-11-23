@@ -1,32 +1,46 @@
+import {ProviderError} from '../diagnostics.js';
+import {toolFailure} from '../agent/tool-feedback.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
-import {TiebaPosting,type FollowedForum,type PostingPolicy,type PublishInput,type SystemDeletion,publishInput,postingTarget,postingRequest} from './posting.js';
+import {randomUUID,createHash} from 'node:crypto';
+import {TiebaPosting,type FollowedForum,type PostingPolicy,type PublishInput,type SystemDeletion,publishInput,postingTarget,postingRequest,tiebaHistoryPage} from './posting.js';
+import {tiebaImagePaths} from './images.js';
 import {FishError,codeOf} from '../types.js';
 import type {TiebaReplyPage} from './replies.js';
+import type {mentionPage} from './mentions.js';
 import {tiebaPage} from '../search/tieba.js';
 import {postPublic} from '../search/public-web.js';
 import type {WebOutcome} from './web-post.js';
 import {moderatorInput,ModeratorJournal,type ModeratorWork} from './moderator.js';
+import {AsyncLocalStorage} from 'node:async_hooks';
+import {TiebaReplyTargets} from './reply-target.js';
+import {AppPostFailure} from './app-post.js';
 
 export interface TiebaIdentity {id:string;name:string}
 export type AccountState='unconfigured'|'needs_check'|'waiting_login'|'logged_in'|'expired'|'check_failed';
-interface PublicationWork {accountId:string;requestId:string;sourceId?:string;input:PublishInput;created:number;updatedAt?:number;stage:string;result?:any}
-export interface SessionStatus {state:AccountState;browserRunning:boolean;profileSaved:boolean;verifiedAt:number|null;identity:TiebaIdentity|null;lastIdentity:TiebaIdentity|null;lastError:{code:string;stage:string;at:number}|null;waitingUntil:number|null;verificationRequired:boolean;publication?:{needsHuman:boolean;detectedAt:number|null;error:string|null};interaction?:'login'|'publication'|'application'|null;publicationWork?:PublicationWork;moderatorWork?:ModeratorWork;loginPage?:{title:string;origin:string;qrVisible:boolean;challenge:boolean;blocked:boolean;bodyCharacters?:number;inputCount?:number;frameCount?:number;blockedOrigins?:string[]}}
-export interface LoginInput {kind:'click'|'drag'|'text'|'key'|'scroll';x?:number;y?:number;toX?:number;toY?:number;text?:string;key?:string;delta?:number}
+interface PublicationWork {accountId:string;requestId:string;sourceId?:string;input:PublishInput;created:number;updatedAt?:number;stage:string;result?:any;evidence?:{id:string;stage:string;at:number}[]}
+export interface SessionStatus {browserScene?:string|null;workerBusy?:boolean;state:AccountState;browserRunning:boolean;profileSaved:boolean;verifiedAt:number|null;identity:TiebaIdentity|null;lastIdentity:TiebaIdentity|null;lastError:{code:string;stage:string;at:number}|null;waitingUntil:number|null;verificationRequired:boolean;moderatorAuthorized?:boolean;publication?:{needsHuman:boolean;detectedAt:number|null;error:string|null};interaction?:'login'|'publication'|'application'|null;publicationWork?:PublicationWork;moderatorWork?:ModeratorWork;loginPage?:{title:string;origin:string;qrVisible:boolean;challenge:boolean;blocked:boolean;bodyCharacters?:number;inputCount?:number;frameCount?:number;blockedOrigins?:string[];notice?:string;composer?:Record<string,unknown>}}
+export interface LoginInput {kind:'click'|'drag'|'pointer_down'|'pointer_move'|'pointer_up'|'text'|'key'|'scroll';x?:number;y?:number;toX?:number;toY?:number;text?:string;key?:string;delta?:number}
 export interface AccountBrowser {
- login():Promise<void>;loginInfo?():Promise<NonNullable<SessionStatus['loginPage']>>;identity():Promise<TiebaIdentity|null>;frame():Promise<Buffer>;input(value:LoginInput):Promise<void>;
- read(url:string):Promise<any>;deletion?(postId:string,threadId:string):Promise<SystemDeletion|null>;replies?(page:number):Promise<TiebaReplyPage>;followed?(userId:string):Promise<FollowedForum[]>;sendPost?(request:ReturnType<typeof postingRequest>):Promise<{id:string;url:string;receipt?:Record<string,unknown>}>;close():Promise<void>;
- prepareWebPost?(request:ReturnType<typeof postingRequest>):Promise<unknown>;submitWebPost?(beforeWrite:()=>void,onOutcome:(outcome:WebOutcome)=>void):Promise<{id:string;url:string;receipt:Record<string,unknown>}>;
+ bindOperationSignal?(signal?:AbortSignal):void;cancel?(reason?:unknown):void;operationInfo?():Record<string,unknown>;
+ login():Promise<void>;loginInfo?():Promise<NonNullable<SessionStatus['loginPage']>>;identity():Promise<TiebaIdentity|null>;frame(format?:'png'|'jpeg',quality?:number):Promise<Buffer>;input(value:LoginInput):Promise<void>;
+ read(url:string):Promise<any>;deletion?(postId:string,threadId:string):Promise<SystemDeletion|null>;replies?(page:number):Promise<TiebaReplyPage>;mentions?(page:number):Promise<ReturnType<typeof mentionPage>>;followed?(userId:string):Promise<FollowedForum[]>;sendPost?(request:ReturnType<typeof postingRequest>):Promise<{id:string;url:string;receipt?:Record<string,unknown>}>;close():Promise<void>;
+ prepareWebPost?(request:ReturnType<typeof postingRequest>):Promise<unknown>;submitWebPost?(beforeWrite:()=>void,onOutcome:(outcome:WebOutcome)=>void,onProgress?:(receipt:Record<string,unknown>)=>void):Promise<{id:string;url:string;receipt:Record<string,unknown>}>;
  isWebPublishInput?(input:LoginInput):Promise<boolean>;
  holdForInteraction?():void;
  moderatorApplication?(forum:FollowedForum,account:TiebaIdentity,declaration?:string,before?:()=>void,outcome?:(result:any)=>void):Promise<any>;
 }
 export function loginInput(v:any):LoginInput{
  if(!v||typeof v!=='object'||Array.isArray(v))throw new FishError('TIEBA_INPUT_INVALID');
- const keys:Record<string,string[]>={click:['kind','x','y'],drag:['kind','x','y','toX','toY'],text:['kind','text'],key:['kind','key'],scroll:['kind','delta']};
+ const keys:Record<string,string[]>={click:['kind','x','y'],drag:['kind','x','y','toX','toY'],pointer_down:['kind','x','y','toX','toY'],pointer_move:['kind','x','y'],pointer_up:['kind','x','y'],text:['kind','text'],key:['kind','key'],scroll:['kind','delta']};
  if(!keys[v.kind]||Object.keys(v).some(k=>!keys[v.kind].includes(k)))throw new FishError('TIEBA_INPUT_INVALID');
- for(const [k,limit] of [['x',1000],['toX',1000],['y',800],['toY',800]] as const)if(keys[v.kind].includes(k)&&(!Number.isFinite(v[k])||v[k]<0||v[k]>=limit))throw new FishError('TIEBA_INPUT_INVALID');
+ const requiredCoords=v.kind==='drag'?['x','y','toX','toY']:['click','pointer_down','pointer_move','pointer_up'].includes(v.kind)?['x','y']:[];
+ if(v.kind==='pointer_down'&&(v.toX!==undefined)!==(v.toY!==undefined))throw new FishError('TIEBA_INPUT_INVALID');
+ for(const [k,limit] of [['x',1000],['toX',1000],['y',800],['toY',800]] as const){
+  if(requiredCoords.includes(k)||v[k]!==undefined){
+   if(!Number.isFinite(v[k])||v[k]<0||v[k]>=limit)throw new FishError('TIEBA_INPUT_INVALID');
+  }
+ }
  if(v.kind==='text'&&(typeof v.text!=='string'||!v.text.length||v.text.length>1000||/[\0\r\n]/.test(v.text)))throw new FishError('TIEBA_INPUT_INVALID');
  if(v.kind==='key'&&!['Enter','Tab','Backspace','Escape','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','SelectAll'].includes(v.key))throw new FishError('TIEBA_INPUT_INVALID');
  if(v.kind==='scroll'&&(!Number.isInteger(v.delta)||Math.abs(v.delta)>700))throw new FishError('TIEBA_INPUT_INVALID');return v;
@@ -34,11 +48,18 @@ export function loginInput(v:any):LoginInput{
 /** Lifecycle/state only. All login material stays in the private driver/profile.
  * The reply watcher may read a saved session; challenges require a human. */
 export class TiebaSessionManager {
- private browser?:AccountBrowser;private busy=false;private timer?:NodeJS.Timeout;private locked=false;
+ private operationSignal=new AsyncLocalStorage<AbortSignal>();private operationStage='';
+ withOperationSignal<T>(signal:AbortSignal,work:()=>Promise<T>){return this.operationSignal.run(signal,work);}
+ timeoutInfo(){return {operation:this.operationStage,...(['publish','publication_submit','publication_prepare','publication_check','verify_publication'].includes(this.operationStage)?this.browser?.operationInfo?.():{})};}
+ async cancelTimedOutOperation(){this.browser?.cancel?.(new FishError('TIEBA_QUEUE_EXECUTION_TIMEOUT'));await this.stop();}
+ private checkActive(){this.operationSignal.getStore()?.throwIfAborted();}
+ private sceneId:string|null=null;private browser?:AccountBrowser;private busy=false;private timer?:NodeJS.Timeout;private locked=false;
  private current:SessionStatus;private lock:string;
  private publicationOpen=false;private publicationWork?:PublicationWork;
  private applicationOpen=false;private moderatorWork?:ModeratorWork;
- constructor(private dir:string,private open:(profile:string)=>Promise<AccountBrowser>,private now=Date.now,private idleMs=5*60000){
+ private idleClose?:()=>Promise<void>;
+ setIdleClose(close:()=>Promise<void>){this.idleClose=close;}
+ constructor(private dir:string,private open:(profile:string,signal?:AbortSignal)=>Promise<AccountBrowser>,private now=Date.now,private idleMs=5*60000){
   this.lock=path.join(dir,'manager.lock');
   let saved:any={};try{saved=JSON.parse(fs.readFileSync(path.join(dir,'status.json'),'utf8'));}catch{}
   const installed=fs.existsSync(path.join(dir,'installed.json'));
@@ -52,7 +73,12 @@ export class TiebaSessionManager {
   return {needsHuman,detectedAt:needsHuman?work.updatedAt??null:null,error:needsHuman?work.result.error:null};
  }
  private interactiveOpen(){return this.publicationOpen||this.applicationOpen;}
- status():SessionStatus{return structuredClone({...this.current,browserRunning:!!this.browser,publication:this.publicationStatus(),interaction:this.applicationOpen&&this.browser?'application':this.publicationOpen&&this.browser?'publication':this.browser&&this.current.state==='waiting_login'?'login':null,...(this.publicationWork?{publicationWork:this.publicationWork}:{}),...(this.moderatorWork?{moderatorWork:this.moderatorWork}:{})});}
+ status():SessionStatus{if(this.publicationWork)this.publicationWork.evidence=this.evidenceIndex(this.publicationWork.requestId);return structuredClone({...this.current,browserScene:this.sceneId,browserRunning:!!this.browser,workerBusy:this.busy,moderatorAuthorized:this.moderatorAuthorized(),publication:this.publicationStatus(),interaction:this.applicationOpen&&this.browser?'application':this.publicationOpen&&this.browser?'publication':this.browser&&this.current.state==='waiting_login'?'login':null,...(this.publicationWork?{publicationWork:this.publicationWork}:{}),...(this.moderatorWork?{moderatorWork:this.moderatorWork}:{})});}
+ private evidenceIndex(requestId:string){try{const dir=path.join(this.dir,'evidence',createHash('sha256').update(requestId).digest('hex')),v=JSON.parse(fs.readFileSync(path.join(dir,'index.json'),'utf8'));return v.requestId===requestId&&Array.isArray(v.images)?v.images:[];}catch{return [];}}
+ publicationEvidence(requestId:string,id:string){
+  if(typeof requestId!=='string'||requestId.length>240||typeof id!=='string'||!/^[a-z_]{1,40}$/.test(id)||!this.evidenceIndex(requestId).some((s:any)=>s.id===id))throw new FishError('TIEBA_EVIDENCE_NOT_FOUND');
+  const file=path.join(this.dir,'evidence',createHash('sha256').update(requestId).digest('hex'),id+'.png'),stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size>8*1024*1024)throw new FishError('TIEBA_EVIDENCE_NOT_FOUND');return fs.readFileSync(file);
+ }
  private saveWork(){if(!this.publicationWork)return;const p=path.join(this.dir,'publication-work.json');fs.writeFileSync(p+'.tmp',JSON.stringify(this.publicationWork),{mode:0o600});fs.renameSync(p+'.tmp',p);}
  private save(){const p=path.join(this.dir,'status.json'),tmp=p+'.tmp';fs.writeFileSync(tmp,JSON.stringify(this.current),{mode:0o600});fs.renameSync(tmp,p);}
  private acquire(){
@@ -68,20 +94,24 @@ export class TiebaSessionManager {
   fs.writeFileSync(path.join(this.lock,'pid'),String(process.pid),{mode:0o600});this.locked=true;
  }
  private release(){if(this.locked){fs.rmSync(this.lock,{recursive:true,force:true});this.locked=false;}}
- private async ensure(){this.acquire();if(!this.browser){this.browser=await this.open(path.join(this.dir,'profile'));this.current.profileSaved=true;}}
- private async stop(){clearTimeout(this.timer);this.timer=undefined;try{await this.browser?.close();}finally{this.browser=undefined;this.publicationOpen=false;this.applicationOpen=false;this.current.browserRunning=false;this.current.waitingUntil=null;this.release();}}
- private touch(){clearTimeout(this.timer);if(this.interactiveOpen()){this.browser?.holdForInteraction?.();this.current.waitingUntil=null;return;}this.current.waitingUntil=this.now()+this.idleMs;this.timer=setTimeout(()=>{if(this.busy){this.touch();return;}void this.close().catch(()=>{});},this.idleMs);this.timer.unref();}
+ private async ensure(){this.checkActive();this.acquire();if(!this.browser){this.browser=await this.open(path.join(this.dir,'profile'),this.operationSignal.getStore());this.sceneId=randomUUID();this.current.profileSaved=true;}this.browser.bindOperationSignal?.(this.operationSignal.getStore());this.checkActive();}
+ private async stop(){clearTimeout(this.timer);this.timer=undefined;try{await this.browser?.close();}finally{this.browser=undefined;this.sceneId=null;this.publicationOpen=false;this.applicationOpen=false;this.current.browserRunning=false;this.current.waitingUntil=null;this.release();}}
+ private touch(){clearTimeout(this.timer);if(this.interactiveOpen()){this.browser?.holdForInteraction?.();this.current.waitingUntil=null;return;}this.current.waitingUntil=this.now()+this.idleMs;this.timer=setTimeout(()=>{if(this.busy){this.touch();return;}void (this.idleClose?this.idleClose():this.close()).catch(()=>{});},this.idleMs);this.timer.unref();}
  private async operation<T>(stage:string,work:()=>Promise<T>):Promise<T>{
   if(this.current.state==='unconfigured')throw new FishError('TIEBA_NOT_CONFIGURED');
-  if(this.busy)throw new FishError('TIEBA_BUSY');this.busy=true;
-  try{return await work();}catch(e){
-   const code=codeOf(e),safe=/^TIEBA_[A-Z_0-9]+$/.test(code)?code:'TIEBA_BROWSER_FAILED';
+  if(this.busy)throw new FishError('TIEBA_BUSY');this.busy=true;this.operationStage=stage;
+  try{this.checkActive();const value=await work();this.checkActive();return value;}catch(e){
+   if(this.operationSignal.getStore()?.aborted){this.current.lastError={code:'TIEBA_QUEUE_EXECUTION_TIMEOUT',stage,at:this.now()};this.save();throw this.operationSignal.getStore()!.reason;}
+   const code=e instanceof Error&&e.message==='CAPTURE_PROTOCOL_TIMEOUT'?'TIEBA_BROWSER_COMMAND_TIMEOUT':codeOf(e),safe=/^TIEBA_[A-Z_0-9]+$/.test(code)?code:'TIEBA_BROWSER_FAILED';
    this.current.lastError={code:safe,stage,at:this.now()};
    // Method/stack locations only: never login text, cookie values or CDP params.
    console.error(JSON.stringify({component:'tieba-account',stage,code:safe,name:e instanceof Error?e.name:'Error',protocol:(e as any)?.protocol,reason:e instanceof Error&&/^CAPTURE_[A-Z_]+$/.test(e.message)?e.message:undefined,frames:e instanceof Error?e.stack?.split('\n').slice(1,4):undefined}));
-   if(!['TIEBA_NOT_CONFIGURED','TIEBA_INPUT_INVALID','TIEBA_LOGIN_NOT_OPEN','TIEBA_PROFILE_BUSY','TIEBA_LOGIN_IN_PROGRESS','TIEBA_LOGIN_REQUIRED'].includes(safe)){this.current.state='check_failed';this.current.identity=null;this.current.verificationRequired=true;await this.stop().catch(()=>{});}
-   this.save();throw new FishError(safe);
-  }finally{this.busy=false;}
+   const timeoutPhase=this.timeoutInfo(),feedback=toolFailure(e,stage);
+   const keepPublication=this.publicationOpen&&!!this.browser&&['publication_prepare','publication_submit','publication_check','input','frame'].includes(stage)&&!['TIEBA_BROWSER_FAILED','TIEBA_ACCOUNT_CHANGED','TIEBA_LOGIN_REQUIRED'].includes(safe);
+   if(keepPublication)this.touch();
+   else if(!/^TIEBA_MENTIONS_/.test(safe)&&!['TIEBA_NOT_CONFIGURED','TIEBA_INPUT_INVALID','TIEBA_LOGIN_NOT_OPEN','TIEBA_PROFILE_BUSY','TIEBA_LOGIN_IN_PROGRESS','TIEBA_LOGIN_REQUIRED'].includes(safe)){this.current.state='check_failed';this.current.identity=null;this.current.verificationRequired=true;await this.stop().catch(()=>{});}
+   this.save();throw Object.assign(new ProviderError(safe,feedback),{timeoutPhase});
+  }finally{this.busy=false;this.operationStage='';}
  }
  async start(){return this.operation('login',async()=>{if(this.publicationOpen)throw new FishError('TIEBA_PUBLICATION_IN_PROGRESS');await this.ensure();await this.browser!.login();this.current.loginPage=await this.browser!.loginInfo?.();this.current.state='waiting_login';this.current.identity=null;this.current.verificationRequired=true;this.current.lastError=null;this.touch();this.save();return this.status();});}
  async frame(){return this.operation('frame',async()=>{if(!this.browser||this.current.state!=='waiting_login'&&!this.interactiveOpen())throw new FishError('TIEBA_LOGIN_NOT_OPEN');this.touch();this.current.loginPage=await this.browser.loginInfo?.();this.save();return this.browser.frame();});}
@@ -95,7 +125,18 @@ export class TiebaSessionManager {
  async input(value:unknown){const v=loginInput(value);return this.operation('input',async()=>{
   if(!this.browser||this.current.state!=='waiting_login'&&!this.interactiveOpen())throw new FishError('TIEBA_LOGIN_NOT_OPEN');
   if(this.publicationOpen&&this.publicationWork?.stage==='prepared'&&await this.browser.isWebPublishInput?.(v))return this.submitPreparedPublication();
-  await this.browser.input(v);this.touch();return this.status();
+  await this.browser.input(v);
+  this.touch();
+  if(v.kind==='pointer_down'||v.kind==='pointer_move'){
+   const bytes=await this.browser.frame('jpeg',55);
+   return {...this.status(),frameImage:bytes.toString('base64'),frameMime:'image/jpeg'};
+  }
+  if(v.kind==='pointer_up'){
+   this.current.loginPage=await this.browser.loginInfo?.();
+   const bytes=await this.browser.frame('jpeg',75);
+   return {...this.status(),frameImage:bytes.toString('base64'),frameMime:'image/jpeg'};
+  }
+  return this.status();
  });}
  async check(){return this.operation('verify',async()=>{
   if(this.interactiveOpen())throw new FishError('TIEBA_USE_PUBLICATION_CHECK');
@@ -132,8 +173,16 @@ export class TiebaSessionManager {
  async account(){return this.usingAccount('account',async(browser,who)=>{
   if(!browser.followed)throw new FishError('TIEBA_FOLLOW_LIST_UNAVAILABLE');
   const following=await browser.followed(who.id);let mode='unconfigured';try{mode=this.policy().mode;}catch{}
-  return {account:who,verifiedAt:this.current.verifiedAt,following,capabilities:{replyNotifications:true,privateMessages:{read:false,send:false,reason:'not_integrated'},smallModeratorApplication:{authorizedForums:this.moderatorForums(who.id)}},posting:{mode,scope:'followed_forums',otherForums:'read_only',replyTransport:this.webEnabled(who)?'official_web':'app_protobuf',...this.publicationStatus()}};
+  return {account:who,verifiedAt:this.current.verifiedAt,following,capabilities:{replyNotifications:true,privateMessages:{read:false,send:false,reason:'not_integrated'},smallModeratorApplication:{authorizedForums:this.moderatorForums(who.id)}},posting:{mode,scope:'followed_forums',otherForums:'read_only',threadTransport:'official_web',replyTransport:this.webEnabled(who)?'official_web':'app_protobuf',...this.publicationStatus()}};
  });}
+ private moderatorAuthorized(){
+  const id=this.current.identity?.id??this.current.lastIdentity?.id;
+  if(!id || this.current.state==='expired' || this.current.state==='waiting_login')return false;
+  try{
+   const policy=this.policy();
+   return policy.accountId===id && policy.mode==='live' && this.moderatorForums(id).length>0;
+  }catch{return false;}
+ }
  private moderatorForums(accountId:string):string[]{try{const p=JSON.parse(fs.readFileSync(path.join(this.dir,'moderator-permission.json'),'utf8'));return p.accountId===accountId&&Array.isArray(p.forumIds)?p.forumIds.filter((v:unknown)=>typeof v==='string'&&/^[1-9]\d{0,19}$/.test(v)):[];}catch{return [];}}
  private saveModerator(){if(!this.moderatorWork)return;const file=path.join(this.dir,'moderator-work.json');fs.writeFileSync(file+'.tmp',JSON.stringify(this.moderatorWork),{mode:0o600});fs.renameSync(file+'.tmp',file);}
  async moderator(raw:unknown,requestId:string){
@@ -160,13 +209,35 @@ export class TiebaSessionManager {
   if(!Number.isSafeInteger(page)||page<1||page>10000)throw new FishError('TIEBA_PAGE_INVALID');
   return this.usingAccount('replies',async(browser,who)=>{
    if(!browser.replies)throw new FishError('TIEBA_REPLIES_UNAVAILABLE');
-   return {account:who,source:'reply_notifications',privateMessages:{read:false,send:false,reason:'not_integrated'},...await browser.replies(page)};
+   const result=await browser.replies(page),posting=new TiebaPosting(this.dir);
+   try{
+    const targets=new TiebaReplyTargets(url=>browser.read(url),(thread,id)=>posting.savedParent(who.id,thread,id));
+    for(const reply of result.replies){
+     if(!reply.isFloor)continue;
+     const reference=reply.replyToPostId??reply.parentPostId;
+     try{
+      if(!reference)throw new FishError('TIEBA_REPLY_PARENT_UNRESOLVED');
+      const target=await targets.resolve(reply.threadId,reference,reply.id);
+      reply.floor=target.floor??null;reply.replyTo=target.replyTo??null;
+      reply.parentPostId=target.parentPostId;reply.replyTarget=target.replyTarget;reply.targetStatus='verified';delete reply.targetError;
+     }catch(e){this.checkActive();reply.parentPostId=null;reply.targetStatus='unresolved';reply.targetError=codeOf(e);delete reply.replyTarget;}
+    }
+    return {account:who,source:'reply_notifications',privateMessages:{read:false,send:false,reason:'not_integrated'},...result};
+   }finally{posting.close();}
+  });
+ }
+ async mentions(page=1){
+  if(!Number.isSafeInteger(page)||page<1||page>10000)throw new FishError('TIEBA_PAGE_INVALID');
+  return this.usingAccount('mentions',async(browser,who)=>{
+   if(!browser.mentions)throw new FishError('TIEBA_MENTIONS_UNAVAILABLE');
+   const result=await browser.mentions(page);
+   return {account:who,source:'mention_notifications',returned:result.mentions.length,...result};
   });
  }
  async verifyPublication(requestId:string){
   const verify=async(browser:AccountBrowser,who:TiebaIdentity)=>{
    const posting=new TiebaPosting(this.dir);try{
-    const result=await posting.verify(requestId,who,{followed:async()=>[],read:url=>browser.read(url),publicRead:url=>tiebaPage(url,postPublic),...(browser.deletion?{deletion:(id:string,tid:string)=>browser.deletion!(id,tid)}:{})});
+    const result=await posting.verify(requestId,who,{followed:async()=>[],read:url=>browser.read(url),publicRead:url=>tiebaPage(url,postPublic,this.operationSignal.getStore()),...(browser.deletion?{deletion:(id:string,tid:string)=>browser.deletion!(id,tid)}:{})});
     if(this.publicationWork?.requestId===requestId)await this.finishWeb(result);return result;
    }finally{posting.close();}
   };
@@ -176,33 +247,51 @@ export class TiebaSessionManager {
   });
   return this.usingAccount('verify_publication',verify);
  }
- private browserReads(browser:AccountBrowser){return {followed:(id:string)=>browser.followed!(id),read:(url:string)=>browser.read(url),publicRead:(url:string)=>tiebaPage(url,postPublic)};}
+ private browserReads(browser:AccountBrowser){return {followed:(id:string)=>browser.followed!(id),read:(url:string)=>browser.read(url),publicRead:(url:string)=>tiebaPage(url,postPublic,this.operationSignal.getStore())};}
  private webEnabled(who:TiebaIdentity){try{const p=JSON.parse(fs.readFileSync(path.join(this.dir,'publishing-web.json'),'utf8'));return p.accountId===who.id&&p.enabled===true;}catch{return false;}}
- private webCallbacks(work:PublicationWork){return {
-  before:()=>{const p=new TiebaPosting(this.dir);try{p.webAttempt(work.requestId);work.stage='started';this.saveWork();}finally{p.close();}},
+ private webCallbacks(work:PublicationWork){const signal=this.operationSignal.getStore();return {
+  progress:(receipt:Record<string,unknown>={})=>{const p=new TiebaPosting(this.dir);try{p.webProgress(work.requestId,receipt);}finally{p.close();}},
+  before:()=>{signal?.throwIfAborted();const p=new TiebaPosting(this.dir);try{p.webAttempt(work.requestId);work.stage='started';this.saveWork();}finally{p.close();}},
   outcome:(outcome:WebOutcome)=>{const p=new TiebaPosting(this.dir);try{work.result=p.webOutcome(work.requestId,outcome);work.stage=outcome.id?'accepted':outcome.error==='TIEBA_PUBLICATION_CHALLENGE'?'challenge':outcome.error==='TIEBA_PUBLICATION_REJECTED'?'rejected':'unknown';work.updatedAt=this.now();this.saveWork();}finally{p.close();}}
  };}
  private async finishWeb(result:any){
-  const work=this.publicationWork!;work.result=result;if(result.publicVerified&&result.deliveryStatus==='confirmed'){
+  const keepOpen=this.publicationOpen&&!!this.browser,work=this.publicationWork!;work.result=result;if(result.publicVerified&&result.deliveryStatus==='confirmed'){
    work.stage='confirmed';if(work.sourceId)fs.writeFileSync(path.join(this.dir,'publishing-web.json'),JSON.stringify({accountId:work.accountId,enabled:true,verifiedAt:this.now(),requestId:work.requestId}),{mode:0o600});
-   this.saveWork();await this.stop();
-  }else{work.stage=result.error==='TIEBA_PUBLICATION_CHALLENGE'?'challenge':result.deliveryStatus==='accepted'?'accepted':result.deliveryStatus==='failed'?'rejected':'unknown';this.saveWork();
-   // Accepted/unknown sends can only be checked, never resubmitted. Keep an
-   // interactive browser only when the platform actually requested a human.
-   if(work.stage==='challenge'){this.publicationOpen=true;this.touch();}else await this.stop();
-  }this.save();
+  }else work.stage=result.error==='TIEBA_PUBLICATION_CHALLENGE'?'challenge':result.deliveryStatus==='accepted'?'accepted':result.deliveryStatus==='failed'?'rejected':'unknown';
+  this.saveWork();
+  // A human-opened page remains visible after every receipt, including a local
+  // preparation error. Background calls still release their ordinary browser.
+  // Keeping a page visible does not arm another submit or change its receipt.
+  if(keepOpen||work.stage==='challenge'){this.publicationOpen=true;this.touch();}else await this.stop();
+  this.save();
  }
  /** Human-only recovery: prepare the exact rejected intent on the official
   * page, without submitting it. */
- async startPublication(){return this.operation('publication_prepare',async()=>{
-  if(this.publicationOpen&&this.browser)return this.status();if(this.browser)throw new FishError('TIEBA_LOGIN_IN_PROGRESS');
-  if(this.publicationWork&&['started','accepted','unknown'].includes(this.publicationWork.stage))throw new FishError('TIEBA_CHECK_PENDING_PUBLICATION_FIRST');
-  await this.ensure();const who=await this.browser!.identity();if(!who)throw new FishError('TIEBA_LOGIN_REQUIRED');this.current.state='logged_in';this.current.identity=who;this.current.lastIdentity=who;this.current.verifiedAt=this.now();this.current.verificationRequired=false;this.current.lastError=null;
+ async startPublication(requestId?:string){return this.operation('publication_prepare',async()=>{
+  const prior=this.publicationWork;
+  const matches=!!prior&&(!requestId||requestId===prior.requestId||requestId===prior.sourceId);
+  if(this.publicationOpen&&this.browser&&matches&&prior!.stage!=='prepare_failed')return this.status();
+  if(this.browser&&!this.publicationOpen)throw new FishError('TIEBA_LOGIN_IN_PROGRESS');
+  if(matches&&['started','accepted','unknown','confirmed'].includes(prior!.stage))throw new FishError('TIEBA_CHECK_PENDING_PUBLICATION_FIRST');
+  await this.ensure();const who=await this.browser!.identity();if(!who)throw new FishError('TIEBA_LOGIN_REQUIRED');
+  this.current.state='logged_in';this.current.identity=who;this.current.lastIdentity=who;this.current.verifiedAt=this.now();this.current.verificationRequired=false;this.current.lastError=null;
   const p=new TiebaPosting(this.dir);try{
-   const source=p.recoverySource(who),input=publishInput(source.request),policy=this.policy();if(policy.mode!=='live')throw new FishError('TIEBA_PUBLISH_DISABLED');
-   const target=await postingTarget(input,who,policy,this.browserReads(this.browser!));if(!this.browser!.prepareWebPost)throw new FishError('TIEBA_WEB_UNAVAILABLE');
-   await this.browser!.prepareWebPost(postingRequest(input,target,'official_web'));
-   this.publicationWork={accountId:who.id,requestId:'human-web:'+randomUUID(),sourceId:source.id,input,created:this.now(),stage:'prepared'};this.publicationOpen=true;this.saveWork();this.touch();return this.status();
+   const resumeDraft=matches&&!!prior?.sourceId&&['preparing','prepared','prepare_failed'].includes(prior.stage);
+   const source=p.recoverySource(who,resumeDraft?prior!.sourceId:requestId??prior?.requestId);
+   const input=publishInput(source.request),policy=this.policy();if(policy.mode!=='live')throw new FishError('TIEBA_PUBLISH_DISABLED');
+   if(this.publicationOpen){await this.stop();await this.ensure();const actual=await this.browser!.identity();if(actual?.id!==who.id)throw new FishError('TIEBA_ACCOUNT_CHANGED');}
+   this.publicationWork={accountId:who.id,requestId:resumeDraft?prior!.requestId:'human-web:'+randomUUID(),sourceId:source.id,input,created:resumeDraft?prior!.created:this.now(),stage:'preparing'};
+   this.publicationOpen=true;this.saveWork();this.touch();
+   try{
+    const target=await postingTarget(input,who,policy,this.browserReads(this.browser!));if(!this.browser!.prepareWebPost)throw new FishError('TIEBA_WEB_UNAVAILABLE');
+    const imagePaths=tiebaImagePaths(this.dir,source.id,input.imageIds??[]);
+    await this.browser!.prepareWebPost({...postingRequest(input,target,'official_web'),traceId:this.publicationWork.requestId,imagePaths});this.publicationWork.stage='prepared';
+   }catch(e){
+    this.publicationWork.stage='prepare_failed';this.publicationWork.updatedAt=this.now();
+    this.publicationWork.result={submitted:false,published:false,error:codeOf(e),stage:'preparation',deliveryStatus:'failed',receipt:{...((e as any)?.receipt??{}),transport:'official_web',notSubmitted:true,httpAttempts:0},retryScheduled:false};
+    this.current.lastError={code:codeOf(e),stage:'publication_prepare',at:this.now()};
+   }
+   this.current.loginPage=await this.browser!.loginInfo?.();this.saveWork();this.touch();this.save();return this.status();
   }finally{p.close();}
  });}
  /** Authenticated human button. Not registered as a model tool. */
@@ -210,20 +299,35 @@ export class TiebaSessionManager {
  private async submitPreparedPublication(){
   const work=this.publicationWork,browser=this.browser;if(!work||!browser||!this.publicationOpen||work.stage!=='prepared'||!browser.submitWebPost)throw new FishError('TIEBA_PUBLICATION_NOT_PREPARED');
   const who=await browser.identity();if(who?.id!==work.accountId)throw new FishError('TIEBA_ACCOUNT_CHANGED');const p=new TiebaPosting(this.dir),callbacks=this.webCallbacks(work);
-  work.stage='started';this.saveWork();
-  try{const result=await p.publish(work.input,work.requestId,who,this.policy(),this.browserReads(browser),()=>browser.submitWebPost!(callbacks.before,callbacks.outcome),work.sourceId);work.result=result;await this.finishWeb(result);return this.status();}finally{p.close();}
+  try{
+   if(work.sourceId)p.recoverySource(who,work.sourceId);
+   work.stage='started';this.saveWork();
+   const result=await p.publish(work.input,work.requestId,who,this.policy(),this.browserReads(browser),()=>{callbacks.progress();return browser.submitWebPost!(callbacks.before,callbacks.outcome,callbacks.progress);},work.sourceId);work.result=result;await this.finishWeb(result);return this.status();}finally{p.close();}
  }
  async checkPublication(){return this.operation('publication_check',async()=>{
   const work=this.publicationWork;if(!work)throw new FishError('TIEBA_PUBLICATION_NOT_FOUND');await this.ensure();const who=await this.browser!.identity();if(who?.id!==work.accountId)throw new FishError('TIEBA_ACCOUNT_CHANGED');
   const p=new TiebaPosting(this.dir);try{const result=await p.verify(work.requestId,who,this.browserReads(this.browser!));await this.finishWeb(result);return this.status();}finally{p.close();}
  });}
- async publish(raw:PublishInput,requestId:string){const input=publishInput(raw);return this.usingAccount('publish',async(browser,who)=>{
+ async publish(raw:PublishInput,requestId:string,authorizedRetryOf?:string){let input=publishInput(raw);if(authorizedRetryOf!==undefined&&(typeof authorizedRetryOf!=='string'||!authorizedRetryOf||authorizedRetryOf.length>240))throw new FishError('TIEBA_REQUEST_ID_INVALID');return this.usingAccount('publish',async(browser,who)=>{
   if(!browser.followed||!browser.sendPost)throw new FishError('TIEBA_PUBLISH_UNAVAILABLE');
-  if(this.publicationWork?.requestId!==requestId){this.publicationWork={accountId:who.id,requestId,input,created:this.now(),stage:'preparing'};this.saveWork();}
   const policy=this.policy();
-  const useWeb=input.action!=='thread'&&this.webEnabled(who),reader={...this.browserReads(browser),...(!useWeb&&browser.deletion?{deletion:(id:string,tid:string)=>browser.deletion!(id,tid)}:{})},posting=new TiebaPosting(this.dir);
+  const useWeb=input.action==='thread'||!!input.imageIds?.length||this.webEnabled(who),reader={...this.browserReads(browser),...(!useWeb&&browser.deletion?{deletion:(id:string,tid:string)=>browser.deletion!(id,tid)}:{})},posting=new TiebaPosting(this.dir);
   try{
-   const result=await posting.publish(input,requestId,who,policy,reader,async request=>{
+   if(policy.accountId!==who.id)throw new FishError('TIEBA_ACCOUNT_NOT_AUTHORIZED');
+   const known=posting.knownIntent(input,requestId,who.id,authorizedRetryOf);
+   if(known){this.publicationWork={accountId:who.id,requestId:known.id,input:known.input,created:known.created,stage:'started'};await this.finishWeb(known.result);return known.result;}
+   if(this.publicationWork?.requestId!==requestId){this.publicationWork={accountId:who.id,requestId,input,created:this.now(),stage:'preparing'};this.saveWork();}
+   let resolvedTarget:any;
+   if(input.action==='comment'){
+    let target;
+    try{target=await new TiebaReplyTargets(reader.read,(thread,id)=>posting.savedParent(who.id,thread,id)).resolve(input.threadId!,input.postId!,input.subPostId??input.postId!);}
+    catch(e){this.publicationWork!.stage='rejected';const info={...toolFailure(e,'target_resolution'),requestId,local:true,submitted:false,published:false,requestSent:false,submissionStatus:'not_submitted',deliveryStatus:'failed'};this.publicationWork!.result=info;this.saveWork();throw new ProviderError(info.error,info,e);}
+    if(input.postId!==target.parentPostId||input.subPostId!==target.subPostId)resolvedTarget={...target,previousParentPostId:input.postId};
+    const {page:_page,commentPage:_commentPage,subPostId:_subPostId,...original}=input;
+    input={...original,postId:target.parentPostId,...(target.subPostId?{subPostId:target.subPostId}:{}),commentPage:target.commentPage};
+   }
+   this.publicationWork!.input=input;this.saveWork();
+   let result=await posting.publish(input,requestId,who,policy,reader,async request=>{
     const current=await browser.identity();if(!current||current.id!==who.id)throw new FishError('TIEBA_ACCOUNT_CHANGED');
     // Re-check membership immediately before the write, after target reads.
     const target=await postingTarget(input,current,policy,reader);
@@ -231,17 +335,21 @@ export class TiebaSessionManager {
      if(!browser.prepareWebPost||!browser.submitWebPost)throw new FishError('TIEBA_WEB_UNAVAILABLE');
      // The editor takes plain text; the site's own sub-reply handler adds
      // the verified recipient prefix to the outgoing request.
-     await browser.prepareWebPost(postingRequest(input,target,'official_web'));this.publicationWork={accountId:who.id,requestId,input,created:this.now(),stage:'started'};this.saveWork();
-     const callbacks=this.webCallbacks(this.publicationWork);return browser.submitWebPost(callbacks.before,callbacks.outcome);
+     this.publicationWork={accountId:who.id,requestId,input,created:this.now(),stage:'preparing'};this.saveWork();const callbacks=this.webCallbacks(this.publicationWork);callbacks.progress();
+     let imagePaths:string[];
+     try{imagePaths=tiebaImagePaths(this.dir,requestId,input.imageIds??[]);}catch(e){throw new AppPostFailure(codeOf(e),{transport:'official_web',stage:'preparation',notSubmitted:true,httpAttempts:0});}
+     await browser.prepareWebPost({...postingRequest(input,target,'official_web'),traceId:requestId,imagePaths});this.publicationWork.stage='started';this.saveWork();
+     return browser.submitWebPost(callbacks.before,callbacks.outcome,callbacks.progress);
     }
     return browser.sendPost!(request);
-   });
+   },authorizedRetryOf);
+   if(resolvedTarget)result={...result,resolvedTarget};
    if(!useWeb){this.publicationWork={accountId:who.id,requestId,input,created:this.now(),updatedAt:this.now(),stage:result.error==='TIEBA_PUBLICATION_CHALLENGE'?'challenge':result.publicVerified?'confirmed':result.deliveryStatus==='accepted'?'accepted':result.deliveryStatus==='failed'?'rejected':'unknown',result};this.saveWork();}
    if(useWeb&&this.publicationWork?.requestId===requestId)await this.finishWeb(result);
    return result;
   }finally{posting.close();}
  },requestId);}
- postingHistory(){if(!fs.existsSync(path.join(this.dir,'actions.sqlite')))return [];const p=new TiebaPosting(this.dir);try{return p.history();}finally{p.close();}}
+ postingHistory(offset=0){return tiebaHistoryPage(this.dir,offset);}
  async logout(){return this.operation('logout',async()=>{this.acquire();await this.stop();this.acquire();try{fs.rmSync(path.join(this.dir,'profile'),{recursive:true,force:true});this.current={state:'waiting_login',browserRunning:false,profileSaved:false,verifiedAt:null,identity:null,lastIdentity:null,lastError:null,waitingUntil:null,verificationRequired:true};this.save();return this.status();}finally{this.release();}});}
  async close(force=false){if(this.busy&&!force)throw new FishError('TIEBA_BUSY');await this.stop();if(this.current.state!=='unconfigured')this.save();}
 }

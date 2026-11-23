@@ -52,7 +52,7 @@ test('QQ can remember a preference alongside its reply in one model call; overlo
     const f=fixture({dailyCny:5,groupDailyCny:0,bufferMs:10000});let calls=0;
     const provider:Model={kind:'fixture',async complete(messages,_max,options){
       calls++;assert.ok((options?.tools?.find(t=>t.function.name==='reply')?.function.parameters.properties as any).memory);
-      if(oversized&&calls===2){assert.equal(transport.sent.length,0);assert.match(String(messages.at(-1)!.content),/KNOWLEDGE_TOO_LONG/);}
+      if(oversized&&calls===2){assert.equal(transport.sent.length,0);assert.match(String(messages.findLast(message=>message.role==='tool')!.content),/KNOWLEDGE_TOO_LONG/);}
       return {text:'',tool_calls:[{id:'reply-'+calls,type:'function',function:{name:'reply',arguments:JSON.stringify({text:'下次给你挑点有意思的。',memory:{version:0,changes:[{action:'add',text:oversized&&calls===1?' x'.repeat(6000):'主人喜欢聊游戏更新和鲸鱼。'}]}})}}],usage:{input:100,output:50}};
     }};
     const transport=new MockTransport(),tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner());

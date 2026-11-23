@@ -17,10 +17,13 @@ export class Store {
       CREATE TABLE IF NOT EXISTS counters(day TEXT,scope TEXT,metric TEXT,value INTEGER,PRIMARY KEY(day,scope,metric));
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,at INTEGER,kind TEXT,grp TEXT,detail TEXT);
       CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,grp TEXT,usr TEXT,request TEXT,brief TEXT,state TEXT,created INTEGER,started INTEGER,result TEXT,manifest TEXT,reservation TEXT,source TEXT);
-      CREATE TABLE IF NOT EXISTS cache(key TEXT PRIMARY KEY,expires INTEGER,value TEXT);`);
+      CREATE TABLE IF NOT EXISTS qq_generated_videos(id TEXT PRIMARY KEY,conversation TEXT NOT NULL,seconds INTEGER NOT NULL,bytes INTEGER NOT NULL,created INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS qq_generated_videos_conversation ON qq_generated_videos(conversation,created);
+      CREATE TABLE IF NOT EXISTS cache(key TEXT PRIMARY KEY,expires INTEGER,value TEXT);
+      CREATE TABLE IF NOT EXISTS exploration_public_links(url TEXT PRIMARY KEY);`);
     this.transaction(()=>{
       const columns=this.db.prepare('PRAGMA table_info(messages)').all() as any[];
-      for(const name of ['sender','reply_to'])if(!columns.some(c=>c.name===name))this.db.exec('ALTER TABLE messages ADD COLUMN '+name+' TEXT');
+      for(const name of ['sender','reply_to','quoted_message_id'])if(!columns.some(c=>c.name===name))this.db.exec('ALTER TABLE messages ADD COLUMN '+name+' TEXT');
     });
   }
   transaction<T>(fn: () => T): T {
@@ -34,7 +37,7 @@ export class Store {
     return this.transaction(() => {
       const fresh = this.db.prepare('INSERT OR IGNORE INTO seen VALUES (?,?,?)').run(m.group, m.id, Date.now()).changes;
       if (!fresh) return false;
-      this.db.prepare('INSERT OR IGNORE INTO messages(id,grp,usr,text,at,mentioned,event,sender,reply_to) VALUES (?,?,?,?,?,?,?,?,?)').run(m.id, m.group, m.user, redact(m.text).slice(0, 2000), m.at, Number(m.mentioned), m.event,JSON.stringify(senderNames(m.sender)??null),m.replyTo??null);
+      this.db.prepare('INSERT OR IGNORE INTO messages(id,grp,usr,text,at,mentioned,event,sender,reply_to,quoted_message_id) VALUES (?,?,?,?,?,?,?,?,?,?)').run(m.id, m.group, m.user, redact(m.text).slice(0, 2000), m.at, Number(m.mentioned), m.event,JSON.stringify(senderNames(m.sender)??null),m.replyTo??null,m.quotedMessageId??null);
       this.prune(hours, max);
       return true;
     });
@@ -46,11 +49,10 @@ export class Store {
     this.db.exec(`DELETE FROM messages WHERE rowid IN (SELECT rowid FROM (SELECT rowid,row_number() OVER (PARTITION BY grp ORDER BY at DESC,rowid DESC) AS rn FROM messages) WHERE rn>${Math.max(1, Math.min(100, Math.floor(max)))});
       DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT 200);
       DELETE FROM cache WHERE expires<strftime('%s','now')*1000;
-      UPDATE tasks SET request='',brief='',source='' WHERE created<(strftime('%s','now')-86400)*1000 AND state NOT IN ('running','waiting');
-      UPDATE tasks SET state='cancelled',request='',brief='',source='',result='EXPIRED' WHERE created<(strftime('%s','now')-86400)*1000 AND state='waiting';`);
+      UPDATE tasks SET request='',brief='',source='' WHERE created<(strftime('%s','now')-86400)*1000 AND state NOT IN ('running','waiting');`);
   }
   history(group: string, count: number): Message[] {
-    return (this.db.prepare('SELECT * FROM messages WHERE grp=? ORDER BY at DESC,rowid DESC LIMIT ?').all(group, count) as any[]).reverse().map(r => ({ id:r.id, group:r.grp, user:r.usr, text:r.text, at:r.at, mentioned:!!r.mentioned, event:r.event,...(r.sender?{sender:senderNames(JSON.parse(r.sender))}:{}),...(r.reply_to?{replyTo:r.reply_to}:{}) }));
+    return (this.db.prepare('SELECT * FROM messages WHERE grp=? ORDER BY at DESC,rowid DESC LIMIT ?').all(group, count) as any[]).reverse().map(r => ({ id:r.id, group:r.grp, user:r.usr, text:r.text, at:r.at, mentioned:!!r.mentioned, event:r.event,...(r.sender?{sender:senderNames(JSON.parse(r.sender))}:{}),...(r.reply_to?{replyTo:r.reply_to}:{}),...(r.quoted_message_id?{quotedMessageId:r.quoted_message_id}:{}) }));
   }
   clear(group: string): void { this.db.prepare('DELETE FROM messages WHERE grp=?').run(group); }
   audit(kind: string, group = '', detail = ''): void {

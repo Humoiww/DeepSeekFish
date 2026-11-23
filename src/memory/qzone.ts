@@ -92,7 +92,7 @@ export class QzoneMemory {
   }
   context(snapshot:QzoneSnapshot,identity?:{self?:string;speaker:string}){
     return {source:'QQ空间说说列表',spaceOwner:{qq:snapshot.person,relation:snapshot.person===identity?.self?'self':snapshot.person===identity?.speaker?'speaker':'other'},observedAt:snapshot.observedAt,status:snapshot.posts.length?'ok':'empty',requestedIndex:snapshot.index,total:snapshot.total,nextIndex:snapshot.nextIndex,confirmedPosts:snapshot.posts.length,
-      posts:snapshot.posts.map(p=>({id:p.id,position:p.position,owner:p.owner,text:p.text,published:memoryDay(p.publishedAt||snapshot.observedAt),source:p.source,
+      posts:snapshot.posts.map(p=>({id:p.id,position:p.position,owner:p.owner,text:p.text,published:p.publishedAt?memoryDay(p.publishedAt):null,publishedAt:p.publishedAt||null,source:p.source,
         imageCount:p.imageCount,videoCount:p.videoCount,media:p.media.map(({path,...m})=>m)})),errors:snapshot.errors.filter(e=>e.stage!=='screenshot')};
   }
   images(snapshot:QzoneSnapshot):ChatPart[]{

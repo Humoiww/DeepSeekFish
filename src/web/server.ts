@@ -1,4 +1,6 @@
+import {createHash} from 'node:crypto';
 import {imageMime} from '../memory/people.js';
+import {AffectSettingsError} from '../affect.js';
 import fs from 'node:fs';
 import { createServer,type IncomingMessage } from 'node:http';
 import { randomBytes,timingSafeEqual } from 'node:crypto';
@@ -13,6 +15,18 @@ async function body(req:IncomingMessage):Promise<any>{
   catch{throw new FishError('INVALID_JSON');}
 }
 const equal=(a:string,b:string)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);};
+function sendTiebaFrame(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, bytes: Buffer){
+  const etag='"'+createHash('sha256').update(bytes).digest('hex')+'"';
+  res.setHeader('ETag',etag);
+  res.setHeader('Cache-Control','private, no-cache');
+  const tags=req.headers['if-none-match']?.split(',').map(tag=>tag.trim().replace(/^W\//,''));
+  if(tags?.includes(etag)||tags?.includes('*')){
+    res.writeHead(304).end();
+    return;
+  }
+  res.setHeader('Content-Type',imageMime(bytes));
+  res.end(bytes);
+}
 export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
   let bootstrap=randomBytes(32).toString('hex'),expires=Date.now()+300000;
   const origin=`http://127.0.0.1:${port}`;
@@ -25,10 +39,31 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         res.statusCode=403;throw new FishError('LOCAL_ONLY');
       }
       const url=new URL(req.url??'/',origin);
-      const assets:Record<string,[string,string]>={'/':['index.html','text/html'],'/web.css':['web.css','text/css'],'/web.js':['web.js','text/javascript'],'/activity.js':['activity.js','text/javascript'],'/exploration.js':['exploration.js','text/javascript'],'/tieba.js':['tieba.js','text/javascript'],'/fish.svg':['fish.svg','image/svg+xml']};
-      if(req.method==='GET'&&assets[url.pathname]){
-        const [name,type]=assets[url.pathname];res.setHeader('Content-Type',type+'; charset=utf-8');
+      const assets:Record<string,[string,string]>={'/':['index.html','text/html'],'/web.css':['web.css','text/css'],'/appearance.js':['appearance.js','text/javascript'],'/web.js':['web.js','text/javascript'],'/portrait-motion.js':['portrait-motion.js','text/javascript'],'/activity.js':['activity.js','text/javascript'],'/neon.js':['neon.js','text/javascript'],'/exploration.js':['exploration.js','text/javascript'],'/tieba.js':['tieba.js','text/javascript'],'/fish.svg':['fish.svg','image/svg+xml']};
+      // The independently running Tailscale gateway may have an older pathname allowlist.
+      // Serve the fixed portrait assets under a read-only path older gateways already forward.
+      const webAsset=url.pathname==='/web.js'?url.searchParams.get('asset'):null;
+      if(req.method==='GET'&&(url.pathname==='/portrait.webp'||url.pathname==='/portrait-parts.webp'||webAsset==='portrait-parts')){
+        const name=url.pathname==='/portrait.webp'?'portrait.webp':'portrait-parts.webp';
+        res.setHeader('Content-Type','image/webp');
         res.end(fs.readFileSync(safePath(app.root,'src/web/public/'+name)));return;
+      }
+      if(req.method==='GET'&&assets[url.pathname]){
+        const [defaultName,type]=assets[url.pathname];
+        const name=webAsset==='portrait-motion'?'portrait-motion.js':defaultName;
+        res.setHeader('Content-Type',type+'; charset=utf-8');
+        const contents=fs.readFileSync(safePath(app.root,'src/web/public/'+name));
+        if(url.pathname==='/'){
+          // The homepage also needs to work through gateways that predate the portrait asset route.
+          const html=contents.toString('utf8'),marker='src="/portrait.webp"';
+          if(html.includes(marker)){
+            try{
+              const portrait=fs.readFileSync(safePath(app.root,'src/web/public/portrait.webp'));
+              res.end(html.replace(marker,'src="data:image/webp;base64,'+portrait.toString('base64')+'"'));return;
+            }catch{/* A missing portrait must not prevent the homepage from loading. */}
+          }
+        }
+        res.end(contents);return;
       }
       res.setHeader('Content-Type','application/json; charset=utf-8');
       if(req.method==='POST'&&url.pathname==='/api/bootstrap'){
@@ -39,18 +74,37 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       if(!equal(req.headers.authorization??'','Bearer '+app.token)){res.statusCode=401;throw new FishError('LOCAL_AUTH_REQUIRED');}
       let value:unknown;
       if(req.method==='GET'&&url.pathname==='/api/tieba')value=await app.tieba.status();
-      else if(req.method==='GET'&&url.pathname==='/api/tieba/actions')value=await app.tieba.history();
+      else if(req.method==='GET'&&url.pathname==='/api/tieba/sections')value=await app.tiebaSections();
+      else if(req.method==='GET'&&['/api/tieba/actions','/api/tieba/queue'].includes(url.pathname)){
+        const offset=Number(url.searchParams.get('offset')??0);if(!Number.isSafeInteger(offset)||offset<0||offset>100000)throw new FishError('TIEBA_INPUT_INVALID');
+        const activeOnly=url.searchParams.get('activeOnly')==='1';
+        const selectedId=url.searchParams.get('selectedId')??undefined;
+        if(selectedId!==undefined&&(!selectedId||selectedId.length>240))throw new FishError('TIEBA_INPUT_INVALID');
+        value=url.pathname==='/api/tieba/actions'?await app.tieba.history(offset):
+          url.searchParams.get('replies')==='1'?await app.tieba.replyQueue(offset,activeOnly,selectedId):await app.tieba.queue(offset,activeOnly);
+      }
       else if(req.method==='GET'&&url.pathname==='/api/tieba/frame'){
-        res.setHeader('Content-Type','image/png');res.end(await app.tieba.frame());return;
+        sendTiebaFrame(req,res,await app.tieba.frame());return;
       }
       else if(req.method==='GET'&&url.pathname==='/api/tieba/publication-frame'){
-        const frame=await app.tieba.publicationFrame(url.searchParams.get('requestId')??'');
+        const requestId=url.searchParams.get('requestId')??'',evidence=url.searchParams.get('evidence');
+        const frame=evidence?await app.tieba.publicationEvidence(requestId,evidence):await app.tieba.publicationFrame(requestId);
         res.setHeader('Content-Type','image/png');res.setHeader('X-Tieba-Frame-At',String(frame.at));res.setHeader('X-Tieba-Frame-Live',String(frame.live));res.setHeader('X-Tieba-Frame-Request',frame.requestId);res.end(frame.bytes);return;
       }
       else if(req.method==='GET'&&url.pathname==='/api/status')value={...app.status(),tieba:await app.tieba.status(),tiebaAttempt:app.tiebaAttempt()};
       else if(req.method==='GET'&&url.pathname==='/api/exploration')value=app.exploration.status();
+      else if(req.method==='GET'&&url.pathname==='/api/companion')value=app.companion();
       else if(req.method==='GET'&&url.pathname==='/api/exploration/journal')value=app.exploration.journal({...Object.fromEntries(url.searchParams),offset:Number(url.searchParams.get('offset')??0),removed:url.searchParams.get('removed')==='true'});
-      else if(req.method==='GET'&&url.pathname==='/api/activity')value=await app.activity(url.searchParams);
+      else if(req.method==='GET'&&url.pathname==='/api/activity'){
+        const abort=new AbortController();
+        const disconnected=()=>abort.abort();
+        res.once('close',disconnected);
+        try{value=await app.activity(url.searchParams,abort.signal);}
+        finally{res.removeListener('close',disconnected);}
+      }
+      else if(req.method==='GET'&&url.pathname==='/api/neon')value=app.neon();
+      else if(req.method==='GET'&&url.pathname==='/api/neon/record')value=app.neonRecord(url.searchParams.get('kind'),url.searchParams.get('id'));
+      else if(req.method==='GET'&&url.pathname==='/api/activity/active')value=app.activityActive();
       else if(req.method==='GET'&&url.pathname==='/api/activity/detail')value=await app.activityDetail(url.searchParams.get('id'));
       else if(req.method==='GET'&&url.pathname==='/api/activity/image'){
         const bytes=await app.activityImage(url.searchParams.get('id'));
@@ -73,16 +127,20 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         res.setHeader('Content-Security-Policy',"default-src 'none'; sandbox");res.end(content);return;
       }else if(req.method==='POST'){
         const b=await body(req);
-        if(url.pathname.startsWith('/api/tieba/')){
+        if(url.pathname==='/api/tieba/sections')value=app.saveTiebaSections(b);
+        else if(url.pathname.startsWith('/api/tieba/')){
           const action=url.pathname.slice(11);
           try{
-            if(!['input','read'].includes(action)&&Object.keys(b).length)throw new FishError('TIEBA_INPUT_INVALID');
+            const specificCheck=action==='publication-check'&&Object.hasOwn(b,'requestId');
+            if(['publication-start','publication-submit','publication-check'].includes(action)&&Object.hasOwn(b,'requestId')){
+              if(Object.keys(b).length!==1||typeof b.requestId!=='string'||!b.requestId.length||b.requestId.length>240)throw new FishError('TIEBA_REQUEST_ID_INVALID');
+            }else if(!['input','read'].includes(action)&&Object.keys(b).length)throw new FishError('TIEBA_INPUT_INVALID');
             if(action==='account')value=await app.tieba.account();
             else if(action==='start')value=await app.tieba.start();
             else if(action==='check')value=await app.tieba.check();
-            else if(action==='publication-start')value=await app.tieba.startPublication();
-            else if(action==='publication-submit')value=await app.tieba.submitPublication();
-            else if(action==='publication-check')value=await app.tieba.checkPublication();
+            else if(action==='publication-start')value=await app.tieba.startPublication(b.requestId);
+            else if(action==='publication-submit')value=await app.tieba.submitPublication(b.requestId);
+            else if(action==='publication-check')value=specificCheck?await app.tieba.verify(b.requestId):await app.tieba.checkPublication();
             else if(action==='logout')value=await app.tieba.logout();
             else if(action==='close')value=await app.tieba.close();
             else if(action==='input')value=await app.tieba.input(b);
@@ -98,9 +156,21 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         }
         else if(url.pathname==='/api/persona')value=app.savePersona(b);
         else if(url.pathname==='/api/exploration/settings')value=app.exploration.save(b);
+        else if(url.pathname==='/api/exploration/daily-post')value=app.exploration.setDailyPost(b);
         else if(url.pathname==='/api/exploration/run')value=app.exploration.manual();
-        else if(url.pathname==='/api/exploration/cancel')value=app.exploration.cancel();
-        else if(url.pathname==='/api/settings')value=app.configure(b);
+        else if(url.pathname==='/api/exploration/cancel')value=app.exploration.cancel(b.runId);
+        else if(url.pathname==='/api/neon/reset-conversation')value=app.neonResetConversation(b);
+        else if(url.pathname==='/api/neon/interrupt')value=app.neonInterrupt(b);
+        else if(url.pathname==='/api/activity/interrupt')value=app.activityInterrupt(b);
+        else if(url.pathname==='/api/settings'){
+          if(!Object.hasOwn(b,'companion'))value=app.configure(b);
+          else{
+            const patch=b.companion;
+            if(Object.keys(b).length!==1||!patch||typeof patch!=='object'||Array.isArray(patch))throw new FishError('AFFECT_SETTINGS_INVALID');
+            value=app.configureCompanion(patch);
+          }
+        }
+        else if(url.pathname==='/api/companion')value=app.configureCompanion(b);
         else if(url.pathname==='/api/qq')value=app.configureQQ(b);
         else if(url.pathname==='/api/codex-quota/refresh')value=await app.refreshQuota();
         else if(url.pathname==='/api/images/reset')value=app.resetImages();
@@ -128,10 +198,12 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       }else{res.statusCode=404;throw new FishError('NOT_FOUND');}
       res.end(JSON.stringify(value));
     }catch(e){
-      if(res.headersSent){if(!res.destroyed)res.end(JSON.stringify({type:'error',error:codeOf(e)})+'\n');return;}
-      if(res.statusCode===200)res.statusCode=400;res.setHeader('Content-Type','application/json; charset=utf-8');res.end(JSON.stringify({error:codeOf(e)}));
+      if(res.destroyed)return;
+      if(res.headersSent){res.end(JSON.stringify({type:'error',error:codeOf(e)})+'\n');return;}
+      if(res.statusCode===200)res.statusCode=400;res.setHeader('Content-Type','application/json; charset=utf-8');
+      res.end(JSON.stringify({error:codeOf(e),...(e instanceof AffectSettingsError?{detail:e.detail}:{})}));
     }
   });
-  server.requestTimeout=150000;server.headersTimeout=10000;
+  server.requestTimeout=330000;server.headersTimeout=15000;
   return {server,url:origin,launchUrl:origin+'/#bootstrap='+bootstrap};
 }

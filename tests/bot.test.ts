@@ -10,6 +10,9 @@ import { MockSearchProvider, SearchService } from '../src/search/provider.js';
 import { MockImageProvider, CodexImageProvider } from '../src/image/provider.js';
 import { Bot } from '../src/agent/bot.js';
 import { SocialGate } from '../src/social/gate.js';
+import {cacheGroupNames} from '../src/memory/group-names.js';
+import {writeCuriosity} from '../src/exploration/state.js';
+import type {Model} from '../src/types.js';
 function setup(){
   const f=fixture({codex:true,search:true,images:true,bufferMs:10000});
   const provider=new MockModel(),model=new BudgetedModel(provider,f.ledger,f.cfg),tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),transport=new MockTransport();
@@ -17,6 +20,41 @@ function setup(){
   const bot=new Bot(f.root,f.cfg,f.store,f.ledger,model,tasks,search,new MockImageProvider(),transport);
   return {...f,bot,provider,tasks,transport};
 }
+
+test('QQ private group retrieval and public curiosity share tools while groups cannot cross-read',async()=>{
+ const f=fixture({qqTransport:'onebot',privateUsers:['11223344'],admins:['11223344'],groups:['88776655','88776666'],bufferMs:10000}),transport=new MockTransport();
+ let name='',args:unknown={},issued=false,output:any,offered:string[]=[];
+ const provider:Model={kind:'offline',async complete(messages,_max,options){
+  if(!issued){issued=true;offered=options?.tools?.map(t=>t.function.name)??[];return {text:'',tool_calls:[{id:'read',type:'function',function:{name,arguments:JSON.stringify(args)}}],usage:{input:20,output:10}};}
+  output=JSON.parse(String(messages.findLast(m=>m.role==='tool')?.content));return {text:'看完啦。',usage:{input:20,output:10}};
+ }};
+ const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport);
+ const run=async(tool:string,input:unknown,group='private:11223344')=>{
+  name=tool;args=input;issued=false;output=undefined;
+  await bot.receive(message('看看记录',{group,user:'11223344'}));await bot.flush();return output;
+ };
+ try{
+  cacheGroupNames(f.store,[{group_id:'88776655',group_name:'鲸鱼研究会'},{group_id:'88776666',group_name:'小猫茶室'}]);
+  bot.memory.record({id:'group-event',conversation:'88776666',actor:'55667788',sender:{nickname:'小猫'},role:'user',text:'鲸鱼很有趣',at:Date.now()});
+  writeCuriosity(f.store,'offline',{title:'鲸鱼的想法',content:'鲸鱼研究会的交流很有启发。QQ 55667788，群号 88776655。'},Date.now(),{originKind:'group',groupName:'鲸鱼研究会',conversation:'88776655'});
+  const list=await run('list_conversations',{});assert.equal(list.private,'private:11223344');assert.equal(list.groups[1].groupName,'小猫茶室');
+  const recall=await run('recall_chat',{conversation:'88776666',query:'鲸鱼'});assert.equal(recall.groupName,'小猫茶室');assert.equal(recall.events[0].speakerLabel,'小猫');
+  const found=await run('search_memory',{kind:'group',query:'鲸鱼'});assert.equal(found.items[0].groupName,'小猫茶室');
+  const read=await run('read_memory',{id:found.items[0].id});assert.equal(read.text,'鲸鱼很有趣');
+  for(const group of ['private:11223344','88776655']){
+   const journal=await run('read_curiosity',{},group),encoded=JSON.stringify(journal);
+   assert.match(encoded,/鲸鱼研究会/);for(const secret of ['88776655','55667788','private:','conversation'])assert.ok(!encoded.includes(secret));
+   assert.ok(offered.includes('read_curiosity'));assert.ok(!offered.includes('write_curiosity'));
+   if(group==='88776655')for(const tool of ['list_conversations','search_memory','read_memory','remember_memory'])assert.ok(!offered.includes(tool));
+  }
+  for(const tool of ['list_conversations','search_memory','read_memory'])assert.equal((await run(tool,tool==='search_memory'?{query:'鲸鱼'}:tool==='read_memory'?{id:'group:88776666:group-event'}:{},'88776655')).error,'TOOL_NOT_ALLOWED');
+  assert.equal((await run('recall_chat',{conversation:'88776666',query:'鲸鱼'},'88776655')).error,'CONVERSATION_NOT_ALLOWED');
+  f.set({groupChatSearch:false,curiosityPublicSearch:false});
+  assert.equal((await run('list_conversations',{})).error,'TOOL_NOT_ALLOWED');assert.ok(!offered.includes('list_conversations'));
+  assert.equal((await run('read_curiosity',{},'88776655')).error,'TOOL_NOT_ALLOWED');assert.ok(!offered.includes('read_curiosity'));
+  assert.equal((await run('recall_chat',{conversation:'88776666',query:'鲸鱼'})).error,'CONVERSATION_NOT_ALLOWED');
+ }finally{await bot.stop();f.cleanup();}
+});
 test('ordinary messages cost zero model calls; mentions coalesce; groups isolate; dedup and self echo',async()=>{
   const f=setup();try{
     await f.bot.receive(message('讨论普通消息',{mentioned:false,event:'ordinary'}));await f.bot.flush();assert.equal(f.provider.calls,0);

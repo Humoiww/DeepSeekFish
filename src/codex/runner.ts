@@ -9,7 +9,7 @@ import { initialize,probeIsolation } from './probe.js';
 import { verifyPng } from '../image/provider.js';
 import { rateLimitFailure } from './rate-limit.js';
 import { CodexDiagnostics } from './diagnostics.js';
-import { readReference } from '../image/references.js';
+import { readReference,prepareReferenceVision } from '../image/references.js';
 export { childEnvironment,codexEntry,permissionArgs,PERMISSION_PROFILE } from './platform.js';
 
 export interface TaskRunner { run(cwd:string,brief:string,signal:AbortSignal):Promise<string> }
@@ -31,7 +31,7 @@ export class AppServerRunner implements TaskRunner {
     const diagnostic=new CodexDiagnostics(this.root,path.basename(cwd),brief,imageGeneration,referencePath);
     diagnostic.record.request.gif=gif;
     diagnostic.record.request.referencePaths=[...(referencePath?[referencePath]:[]),...additionalReferences];
-    let processRpc:RpcProcess|undefined,final='',fallback='',failureCode:string|undefined,nativeGifDenied=false,stderrTail='';
+    let processRpc:RpcProcess|undefined,final='',fallback='',failureCode:string|undefined,nativeGifDenied=false,stderrTail='';const visionPreviews:string[]=[];
     try{
     if(referencePath){
       if(referencePath!==safePath(cwd,'character-reference.png'))throw new FishError('CODEX_IMAGE_REFERENCE_INVALID');
@@ -43,6 +43,8 @@ export class AppServerRunner implements TaskRunner {
       if(!/^selected-reference-[1-3]\.(?:png|jpg|gif|webp)$/.test(relative)||file!==safePath(cwd,relative))throw new FishError('CODEX_IMAGE_REFERENCE_INVALID');
       readReference(cwd,relative);
     }
+    const vision=await prepareReferenceVision(cwd,[...(referencePath?[referencePath]:[]),...additionalReferences],signal);visionPreviews.push(...vision.previews);
+    diagnostic.event('reference-vision-prepared',{inputs:vision.inputs});
     if(!fs.existsSync(safePath(this.root,'runtime/codex-home/auth.json')))throw new FishError('CODEX_PROJECT_LOGIN_REQUIRED');
     const features=executionFeatures(imageGeneration),images:CodexImageItem[]=[],seenImages=new Set<string>();
     const rpc=new RpcProcess(appServerSpec(this.root,cwd,process.platform,imageGeneration),signal);
@@ -93,17 +95,17 @@ export class AppServerRunner implements TaskRunner {
       });
       // Observe a rejection even if turn/start itself fails first.
       void done.catch(()=>{});
-      diagnostic.event('turn-requested',{referenceAttached:!!referencePath||!!additionalReferences.length,referenceCount:Number(!!referencePath)+additionalReferences.length});
+      diagnostic.event('turn-requested',{referenceAttached:!!referencePath||!!additionalReferences.length,referenceCount:Number(!!referencePath)+additionalReferences.length,visionInputBytes:vision.inputs.reduce((n,i)=>n+i.inputBytes,0)});
       await rpc.call('turn/start',{threadId:thread.id,cwd,approvalPolicy:'never',permissions:PERMISSION_PROFILE,
         input:[{type:'text',text:imageGeneration?
-          'Use your built-in image generation tool to generate exactly one image for this prompt, PNG or animated GIF as requested. Do not call any separate Image API or create a replacement with code. No retries.\n'+(gif!==undefined?'Use the native image_gen.imagegen gif argument '+JSON.stringify(gif)+'. Return native GIF, not a static sprite sheet.\n':'')+brief:
+          'Use your built-in image generation tool to generate exactly one image for this prompt, PNG or animated GIF as requested. Do not call any separate Image API or create a replacement with code. No retries.\n'+(visionPreviews.length?'Attached vision images may be reduced inspection previews. The image generation tool must use the ORIGINAL reference paths listed in the prompt, not these previews.\n':'')+(gif!==undefined?'Use the native image_gen.imagegen gif argument '+JSON.stringify(gif)+'. Return native GIF, not a static sprite sheet.\n':'')+brief:
           '只处理以下有限任务。仅在当前目录创建产物；不访问私人文件、凭据、网络或其他项目。\n'+brief},
-          ...[...(referencePath?[referencePath]:[]),...additionalReferences].map(path=>({type:'localImage',path}))]});
+          ...vision.inputs.map(({path})=>({type:'localImage',path}))]});
       const result=await done;
       if(nativeGifDenied)throw new FishError('CODEX_NATIVE_GIF_NOT_ENABLED');
       return result;
     }catch(e){failureCode=codeOf(e);throw e;}
-    finally{try{await processRpc?.stop();}catch(e){failureCode=codeOf(e);throw e;}finally{diagnostic.finish(final||fallback,failureCode);}}
+    finally{try{await processRpc?.stop();}catch(e){failureCode=codeOf(e);throw e;}finally{if(failureCode!=='CODEX_PROCESS_NOT_TERMINATED')for(const file of visionPreviews)fs.rmSync(file,{force:true});diagnostic.finish(final||fallback,failureCode);}}
   }
 }
 export class MockTaskRunner implements TaskRunner {

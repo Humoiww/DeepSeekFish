@@ -4,14 +4,29 @@ import { makeDir,safePath } from '../paths.js';
 import { Store,redact,senderNames } from '../storage/db.js';
 import { FishError,type Message,type ModelTool } from '../types.js';
 import { PROJECT_TIMEZONE } from '../time.js';
+import {ProviderError} from '../diagnostics.js';
 
 const DAY=86400000,OFFSET=8*3600000;
 export function memoryDay(at=Date.now()):string{return new Date(at+OFFSET).toISOString().slice(0,10);}
 export function dayStart(at=Date.now()):number{return Math.floor((at+OFFSET)/DAY)*DAY-OFFSET;}
-export interface MemoryEvent {id:string;conversation:string;actor:string;role:'user'|'assistant';text:string;at:number;source?:string;sender?:Message['sender'];replyTo?:string}
-function storedEvent(row:any){const {sender,reply_to,...event}=row;return {...event,...(sender?{sender:senderNames(JSON.parse(sender))}:{}),...(reply_to?{replyTo:reply_to}:{})};}
+export interface MemoryEvent {id:string;conversation:string;actor:string;role:'user'|'assistant';text:string;at:number;source?:string;sender?:Message['sender'];replyTo?:string;quotedMessageId?:string;nativeMessageId?:string}
+const eventColumns='event_id AS id,actor,role,text,observed AS at,source,sender,reply_to,quoted_message_id';
+function storedEvent(row:any){
+  const {sender,reply_to,quoted_message_id,...event}=row;
+  return {...event,...(sender?{sender:senderNames(JSON.parse(sender))}:{}),...(reply_to?{replyTo:reply_to}:{}),...(quoted_message_id?{quotedMessageId:quoted_message_id}:{})} as Omit<MemoryEvent,'conversation'>;
+}
 export interface RecallScope {mode:'recent'|'date'|'search';since:number;until?:number;term?:string;needsReference?:boolean}
 export const recallTools:ModelTool[]=[{type:'function',function:{name:'recall_chat',description:'需要回看旧聊天时检索当前会话。默认今天和昨天；query 关键词或 date 香港日期 YYYY-MM-DD 可查更早记录。offset 翻更早的6条，messageId/textOffset 续读单条全文。',parameters:{type:'object',properties:{query:{type:'string',maxLength:100},date:{type:'string'},offset:{type:'integer',minimum:0},messageId:{type:'string'},textOffset:{type:'integer',minimum:0}},additionalProperties:false}}}];
+export function crossConversationRecallTools(){
+ const tools=structuredClone(recallTools);
+ (tools[0].function.parameters.properties as Record<string,unknown>).conversation={type:'string',description:'默认当前私聊；可填 list_conversations 中实时授权的群会话'};
+ return tools;
+}
+const recallFields=['query','date','offset','messageId','textOffset'];
+export function invalidRecall(field:string,reason:string):never{
+  const name=/^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(field)?field:'arguments';
+  throw new ProviderError('INVALID_TOOL_ARGS',{stage:'recall_chat',field:name,reason});
+}
 export function recallScope(query:string,now=Date.now()):RecallScope{
   const recent:RecallScope={mode:'recent',since:dayStart(now)-DAY};
   const date=/(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?/.exec(query);
@@ -45,13 +60,14 @@ export class MemoryJournal {
       CREATE INDEX IF NOT EXISTS person_scope_time ON person_observations(conversation,person,observed);`);
     store.transaction(()=>{
       const columns=store.db.prepare('PRAGMA table_info(memory_events)').all() as any[];
-      for(const name of ['sender','reply_to'])if(!columns.some(c=>c.name===name))store.db.exec('ALTER TABLE memory_events ADD COLUMN '+name+' TEXT');
+      for(const name of ['sender','reply_to','quoted_message_id','native_message_id'])if(!columns.some(c=>c.name===name))store.db.exec('ALTER TABLE memory_events ADD COLUMN '+name+' TEXT');
+      store.db.exec('CREATE INDEX IF NOT EXISTS memory_native_message ON memory_events(conversation,native_message_id) WHERE native_message_id IS NOT NULL');
     });
   }
   record(event:MemoryEvent):void{
     const clean={...event,sender:senderNames(event.sender),text:redact(event.text).slice(0,16000)},day=memoryDay(event.at);
-    const changed=this.store.db.prepare('INSERT OR IGNORE INTO memory_events(event_id,conversation,actor,role,text,observed,day,source,sender,reply_to) VALUES (?,?,?,?,?,?,?,?,?,?)')
-      .run(clean.id,clean.conversation,clean.actor,clean.role,clean.text,clean.at,day,clean.source??'qq',JSON.stringify(clean.sender??null),clean.replyTo??null).changes;
+    const changed=this.store.db.prepare('INSERT OR IGNORE INTO memory_events(event_id,conversation,actor,role,text,observed,day,source,sender,reply_to,quoted_message_id,native_message_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(clean.id,clean.conversation,clean.actor,clean.role,clean.text,clean.at,day,clean.source??'qq',JSON.stringify(clean.sender??null),clean.replyTo??null,clean.quotedMessageId??null,clean.nativeMessageId??null).changes;
     if(!changed)return;
     const folder=makeDir(this.root,'runtime/memory/days/'+day),name=createHash('sha256').update(event.conversation).digest('hex').slice(0,24)+'.jsonl';
     const file=safePath(folder,name),fd=fs.openSync(file,fs.constants.O_APPEND|fs.constants.O_CREAT|fs.constants.O_WRONLY|fs.constants.O_NOFOLLOW,0o600);
@@ -59,39 +75,59 @@ export class MemoryJournal {
   }
   backfill():void{
     for(const row of this.store.db.prepare('SELECT * FROM messages ORDER BY at,rowid').all() as any[])
-      this.record({id:row.id,conversation:row.grp,actor:row.usr,role:row.usr==='DeepSeekFish'?'assistant':'user',text:row.text,at:row.at,source:'existing-chat-window',sender:row.sender?senderNames(JSON.parse(row.sender)):undefined,replyTo:row.reply_to??undefined});
+      this.record({id:row.id,conversation:row.grp,actor:row.usr,role:row.usr==='DeepSeekFish'?'assistant':'user',text:row.text,at:row.at,source:'existing-chat-window',sender:row.sender?senderNames(JSON.parse(row.sender)):undefined,replyTo:row.reply_to??undefined,quotedMessageId:row.quoted_message_id??undefined});
+  }
+  quotedMessage(conversation:string,id:string){
+    const rows=this.store.db.prepare(`SELECT ${eventColumns} FROM memory_events WHERE conversation=? AND (event_id=? OR native_message_id=?) LIMIT 2`)
+      .all(conversation,id,id);
+    return rows.length===1?storedEvent(rows[0]):undefined;
+  }
+  around(conversation:string,eventId:string){
+    const anchor=this.store.db.prepare('SELECT observed,seq FROM memory_events WHERE conversation=? AND event_id=?').get(conversation,eventId);
+    if(!anchor)return {before:[],after:[]};
+    const before=this.store.db.prepare(`SELECT ${eventColumns} FROM memory_events WHERE conversation=? AND (observed,seq)<(?,?) ORDER BY observed DESC,seq DESC LIMIT 3`)
+      .all(conversation,anchor.observed,anchor.seq).reverse().map(storedEvent);
+    const after=this.store.db.prepare(`SELECT ${eventColumns} FROM memory_events WHERE conversation=? AND (observed,seq)>(?,?) ORDER BY observed,seq LIMIT 3`)
+      .all(conversation,anchor.observed,anchor.seq).map(storedEvent);
+    return {before,after};
   }
   read(conversation:string,args:any,now=Date.now()){
-    if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!['query','date','offset','messageId','textOffset'].includes(k))||
-      args.query!==undefined&&(typeof args.query!=='string'||args.query.length>100)||
-      !Number.isSafeInteger(args.offset??0)||(args.offset??0)<0||!Number.isSafeInteger(args.textOffset??0)||(args.textOffset??0)<0)
-      throw new FishError('INVALID_TOOL_ARGS');
-    const columns='event_id AS id,actor,role,text,observed AS at,source,sender,reply_to';
+    if(!args||typeof args!=='object'||Array.isArray(args))invalidRecall('arguments','expected_object');
+    const extra=Object.keys(args).find(key=>!recallFields.includes(key));
+    if(extra!==undefined)invalidRecall(extra,'unknown_field');
+    if(args.query!==undefined&&typeof args.query!=='string')invalidRecall('query','expected_string');
+    if(args.query?.length>100)invalidRecall('query','maximum_100_characters');
+    for(const field of ['offset','textOffset']){
+      const value=args[field]??0;
+      if(!Number.isSafeInteger(value)||value<0)invalidRecall(field,'expected_nonnegative_integer');
+    }
     if(args.messageId!==undefined){
-      if(typeof args.messageId!=='string'||args.query!==undefined||args.date!==undefined||args.offset!==undefined)throw new FishError('INVALID_TOOL_ARGS');
-      const row=this.store.db.prepare(`SELECT ${columns} FROM memory_events WHERE conversation=? AND event_id=?`).get(conversation,args.messageId) as any;
+      if(typeof args.messageId!=='string')invalidRecall('messageId','expected_string');
+      const conflict=['query','date','offset'].find(field=>args[field]!==undefined);
+      if(conflict)invalidRecall(conflict,'incompatible_with_messageId');
+      const row=this.store.db.prepare(`SELECT ${eventColumns} FROM memory_events WHERE conversation=? AND event_id=?`).get(conversation,args.messageId) as any;
       if(!row)throw new FishError('MEMORY_NOT_FOUND');
       const offset=args.textOffset??0,text=String(row.text).slice(offset,offset+2000);
       return {timezone:PROJECT_TIMEZONE,events:[{...storedEvent(row),text}],textOffset:offset,nextTextOffset:offset+text.length<row.text.length?offset+text.length:null};
     }
-    if(args.textOffset!==undefined)throw new FishError('INVALID_TOOL_ARGS');
+    if(args.textOffset!==undefined)invalidRecall('textOffset','requires_messageId');
     const params:any[]=[conversation];let where='conversation=?';
     if(args.date!==undefined){
-      if(typeof args.date!=='string'||!/^20\d{2}-\d{2}-\d{2}$/.test(args.date))throw new FishError('INVALID_TOOL_ARGS');
+      if(typeof args.date!=='string'||!/^20\d{2}-\d{2}-\d{2}$/.test(args.date))invalidRecall('date','expected_yyyy_mm_dd');
       const start=Date.parse(args.date+'T00:00:00+08:00');
-      if(!Number.isFinite(start)||memoryDay(start)!==args.date)throw new FishError('INVALID_TOOL_ARGS');
+      if(!Number.isFinite(start)||memoryDay(start)!==args.date)invalidRecall('date','invalid_calendar_date');
       where+=' AND observed>=? AND observed<?';params.push(start,start+DAY);
     }else if(!args.query?.trim()){where+=' AND observed>=?';params.push(dayStart(now)-DAY);}
     if(args.query?.trim()){where+=' AND instr(lower(text),lower(?))>0';params.push(args.query.trim());}
     const offset=args.offset??0;
-    const rows=this.store.db.prepare(`SELECT ${columns} FROM memory_events WHERE ${where} ORDER BY observed DESC,seq DESC LIMIT 7 OFFSET ?`).all(...params,offset) as any[];
+    const rows=this.store.db.prepare(`SELECT ${eventColumns} FROM memory_events WHERE ${where} ORDER BY observed DESC,seq DESC LIMIT 7 OFFSET ?`).all(...params,offset) as any[];
     return {timezone:PROJECT_TIMEZONE,events:rows.slice(0,6).reverse().map(row=>({...storedEvent(row),text:String(row.text).slice(0,1500),...(row.text.length>1500?{nextTextOffset:1500}:{})})),offset,nextOffset:rows.length>6?offset+6:null};
   }
   recall(conversation:string,query:string,exclude:Pick<Message,'id'>[]=[],now=Date.now()){
     const scope=recallScope(query,now),params:any[]=[conversation,scope.since];let where='conversation=? AND observed>=?';
     if(scope.until!==undefined){where+=' AND observed<?';params.push(scope.until);}
     if(scope.term){where+=' AND instr(lower(text),lower(?))>0';params.push(scope.term);}
-    const rows=this.store.db.prepare(`SELECT event_id AS id,actor,role,text,observed AS at,source,sender,reply_to FROM memory_events WHERE ${where} ORDER BY observed DESC,seq DESC LIMIT 80`).all(...params) as any[];
+    const rows=this.store.db.prepare(`SELECT ${eventColumns} FROM memory_events WHERE ${where} ORDER BY observed DESC,seq DESC LIMIT 80`).all(...params) as any[];
     const skipped=new Set(exclude.map(m=>m.id)),selected:any[]=[];let bytes=0;
     for(const row of rows){if(skipped.has(row.id))continue;const text=String(row.text).slice(0,2000),cost=Buffer.byteLength(text)+160;if(bytes+cost>12000)continue;bytes+=cost;selected.push({...storedEvent(row),text});}
     return {timezone:PROJECT_TIMEZONE,...scope,events:selected.reverse(),archiveRetained:true};

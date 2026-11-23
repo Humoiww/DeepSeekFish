@@ -41,9 +41,23 @@ export function writePrivate(root: string, relative: string, contents: string): 
   if (fs.existsSync(p) && fs.lstatSync(p).nlink !== 1) throw new FishError('PATH_HARDLINK');
   fs.writeFileSync(p, contents, { mode: 0o600 });
 }
-/** Readers keep either the previous complete trace or the next complete trace. */
-export function writePrivateAtomic(root:string,relative:string,contents:string):void{
+/** Readers keep either the previous complete file or the next complete file. */
+function writeAtomic(root:string,relative:string,contents:string,shareActivityLog:boolean):void{
   const p=safePath(root,relative),tmp=safePath(root,relative+'.'+randomUUID()+'.tmp');
   if(fs.existsSync(p)&&fs.lstatSync(p).nlink!==1)throw new FishError('PATH_HARDLINK');
-  try{fs.writeFileSync(tmp,contents,{mode:0o600,flag:'wx'});fs.renameSync(tmp,p);}finally{fs.rmSync(tmp,{force:true});}
+  try{
+    fs.writeFileSync(tmp,contents,{mode:0o600,flag:'wx'});
+    if(shareActivityLog&&process.platform!=='win32')fs.chmodSync(tmp,0o640);
+    fs.renameSync(tmp,p);
+  }finally{
+    fs.rmSync(tmp,{force:true});
+  }
+}
+export function writePrivateAtomic(root:string,relative:string,contents:string):void{
+  writeAtomic(root,relative,contents,false);
+}
+/** Share only complete activity records with the log directory's owning group. */
+export function writeActivityLogAtomic(root:string,relative:string,contents:string):void{
+  if(!relative.startsWith('runtime/logs/'))throw new FishError('ACTIVITY_LOG_PATH_INVALID');
+  writeAtomic(root,relative,contents,true);
 }

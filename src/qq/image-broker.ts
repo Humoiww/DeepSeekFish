@@ -1,3 +1,4 @@
+import {toolFailure} from '../agent/tool-feedback.js';
 import {generatedInfo} from '../image/generated.js';
 import fs from 'node:fs';
 import { createServer } from 'node:http';
@@ -17,6 +18,7 @@ import { CodexRateLimitError } from '../codex/rate-limit.js';
 import { QQImageLibrary } from './image-library.js';
 import {QQFileLibrary} from './file-library.js';
 import { ExplorationState } from '../exploration/state.js';
+import {ProviderError} from '../diagnostics.js';
 
 /** Only the trusted QQ process can reach this private socket. No shell, paths,
  * login data, quota resets or ordinary Codex tasks are accepted. */
@@ -25,7 +27,7 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
   const ledger=new Ledger(store,cfg),socket=qqBrokerSocket(root),active=new Set<Promise<void>>(),controllers=new Set<AbortController>();
   store.db.exec('CREATE TABLE IF NOT EXISTS qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT,PRIMARY KEY(conversation,message_id))');
   const library=new QQImageLibrary(root,store);
-  const files=new QQFileLibrary(root,store,library);
+  const files=new QQFileLibrary(root,store,library,{bundledCountdown:true});
   const exploration=new ExplorationState(store,cfg);
   makeDir(root,'runtime/broker');
   if(fs.existsSync(socket)){const st=fs.lstatSync(socket);if(!st.isSocket()||st.uid!==process.getuid?.())throw new FishError('QQ_BROKER_PATH_OCCUPIED');fs.unlinkSync(socket);}
@@ -60,13 +62,15 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
           const run=exploration.get(id);exploration.guard(id,run.lock??'');
           if(run.owner!==body.user||body.conversation!=='private:'+run.owner)throw new FishError('QQ_BROKER_TARGET_DENIED');
         };checkBackground();
+        const failureKey='qq-image-failure:'+JSON.stringify([body.conversation,body.messageId]);
         const existing=()=>store.db.prepare('SELECT state,image_id AS imageId,error FROM qq_image_requests WHERE conversation=? AND message_id=?').get(body.conversation,body.messageId);
         const previous=existing();
+        if(previous?.state==='failed')throw new ProviderError(String(previous.error),JSON.parse(store.getMeta(failureKey)??'{}'));
         if(previous){res.end(JSON.stringify({...previous,alreadyRequested:true,resources:qqResources(c,ledger,body.conversation,body.user)}));return;}
         const plan=validateImagePlan(body.plan);
         const selected=library.select(body.conversation,body.user,body.referenceIds??[]);
         const claimed=store.db.prepare('INSERT OR IGNORE INTO qq_image_requests VALUES (?,?,?,?,?)').run(body.conversation,body.messageId,'claimed','','').changes;
-        if(!claimed){res.end(JSON.stringify({...existing(),alreadyRequested:true,resources:qqResources(c,ledger,body.conversation,body.user)}));return;}
+        if(!claimed){const record=existing();if(record?.state==='failed')throw new ProviderError(String(record.error),JSON.parse(store.getMeta(failureKey)??'{}'));res.end(JSON.stringify({...record,alreadyRequested:true,resources:qqResources(c,ledger,body.conversation,body.user)}));return;}
         try{
           const before=await quota.beforeImage();
           checkBackground();
@@ -77,12 +81,12 @@ export async function startQQImageBroker(root:string,store:Store,quota:CodexQuot
           const result=await runCodexImage(root,prompt,{cfg:c,ledger,group:body.conversation,signal:controller.signal,mock,character:false,references:selected,runner,gif:plan.gif});
           if(result.error==='CODEX_RATE_LIMITED')quota.limited(new CodexRateLimitError(result.retryAt));
           await quota.afterImage(result.id,before);
-          if(!result.ok||result.manifest?.length!==1)throw new FishError(result.error??'CODEX_IMAGE_GENERATION_FAILED');
+          if(!result.ok||result.manifest?.length!==1)throw new ProviderError(result.error??'CODEX_IMAGE_GENERATION_FAILED',{...(result.failure??{}),elapsedMs:result.elapsedMs,nativeImageCompletions:result.nativeImageCompletions??0});
           store.db.prepare("UPDATE qq_image_requests SET state='completed',image_id=? WHERE conversation=? AND message_id=?").run(result.id,body.conversation,body.messageId);
           store.audit('qq-image',body.conversation,result.id);
           res.end(JSON.stringify({imageId:result.id,manifest:result.manifest[0],...generatedInfo(result.outputDir+'/'+result.manifest[0].name),mock,references:selected.map(({path,...image})=>image),characterReference:character,resources:qqResources(c,ledger,body.conversation,body.user)}));
-        }catch(e){store.db.prepare("UPDATE qq_image_requests SET state='failed',error=? WHERE conversation=? AND message_id=?").run(codeOf(e),body.conversation,body.messageId);throw e;}
-      }catch(e){if(!res.destroyed){res.statusCode=400;res.end(JSON.stringify({error:codeOf(e)}));}}
+        }catch(e){store.setMeta(failureKey,JSON.stringify(toolFailure(e,'generate_image')));store.db.prepare("UPDATE qq_image_requests SET state='failed',error=? WHERE conversation=? AND message_id=?").run(codeOf(e),body.conversation,body.messageId);throw e;}
+      }catch(e){if(!res.destroyed){res.statusCode=400;res.end(JSON.stringify({error:codeOf(e),...(e instanceof ProviderError?{diagnostic:e.diagnostic}:{})}));}}
       finally{res.off('close',disconnected);controllers.delete(controller);}
     })();active.add(work);void work.finally(()=>active.delete(work));
   });

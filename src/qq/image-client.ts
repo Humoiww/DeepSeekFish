@@ -7,6 +7,7 @@ import { verifyArtifact } from '../codex/verify.js';
 import type { Artifact } from '../codex/artifacts.js';
 import type { ImageSource } from './image-library.js';
 import {catalogPath,type CatalogFile} from './file-library.js';
+import {ProviderError} from '../diagnostics.js';
 
 export const qqBrokerSocket=(root:string)=>safePath(root,'runtime/broker/qq.sock');
 export class QQImageClient {
@@ -17,7 +18,7 @@ export class QQImageClient {
         headers:{'content-type':'application/json','content-length':Buffer.byteLength(data)}},res=>{
         let text='',bytes=0;res.on('data',b=>{bytes+=b.length;if(bytes>maxBytes){res.destroy();return;}text+=b;});
         res.on('error',()=>reject(new FishError('QQ_IMAGE_BROKER_UNAVAILABLE')));
-        res.on('end',()=>{try{const value=JSON.parse(text);if(res.statusCode!==200)throw new FishError(value.error??'QQ_IMAGE_BROKER_FAILED');resolve(value);}catch(e){reject(e instanceof FishError?e:new FishError('QQ_IMAGE_BROKER_FAILED'));}});
+        res.on('end',()=>{try{const value=JSON.parse(text);if(res.statusCode!==200)throw new ProviderError(value.error??'QQ_IMAGE_BROKER_FAILED',value.diagnostic??{});resolve(value);}catch(e){reject(e instanceof FishError?e:new FishError('QQ_IMAGE_BROKER_FAILED'));}});
       });
       req.setTimeout(timeout,()=>req.destroy());req.on('error',()=>reject(new FishError('QQ_IMAGE_BROKER_UNAVAILABLE')));req.end(data);
     });

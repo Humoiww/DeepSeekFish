@@ -16,8 +16,8 @@
 | userDailyRequests / maxOutputTokens | 1000 / 256 | 每用户模型调用次数 / 每回合最大输出 |
 | search | false | 自主联网开关；搜索费用直接计入共享人民币额度，无独立次数上限 |
 | searchCount / searchTimeoutMs | 3 / 10000 | 结果数（最多 5）/ 超时 |
-| codex / codexDaily | false / 22 | 接受管理员任务 / 共享每日执行尝试数（为 20 次生图和其他任务保留空间） |
-| codexTimeoutMs / codexDailyMs | 300000 / 6600000 | 每任务执行超时 / 每日总执行时长上限 |
+| codex | false | 接受管理员提交的普通 Codex 任务 |
+| codexTimeoutMs | 300000 | Codex 生图超时 |
 | maxFiles / maxArtifactBytes | 20 / 10485760 | 产物数量与总大小 |
 | images / imageDaily | false / 20 | 群聊生图实验入口 / 每日本地尝试数 |
 | port | 17861 | 管理 loopback 端口，修改后重启 |

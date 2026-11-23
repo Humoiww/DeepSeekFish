@@ -9,6 +9,7 @@ import {QzonePublisher,QzoneRejected,qzoneResponse} from '../src/qq/qzone-publis
 import {MockImageProvider} from '../src/image/provider.js';
 import {FishError,type ChatMessage} from '../src/types.js';
 import type {BudgetedModel} from '../src/agent/model.js';
+import {personaSettings} from '../src/character.js';
 import {PROJECT_TIMEZONE,projectDay,projectDayStart} from '../src/time.js';
 import sharp from 'sharp';
 import {QQImageLibrary} from '../src/qq/image-library.js';
@@ -26,7 +27,7 @@ async function setup(){
   const contexts:ChatMessage[][]=[],keys:string[]=[];
   const model:Pick<BudgetedModel,'complete'>={async complete(_g,_u,m,options){
     calls++;contexts.push(structuredClone(m));assert.equal(options?.toolChoice,undefined);assert.equal(options?.requireTool,undefined);
-    const phase=JSON.parse(String(m[1].content)).phase,last=m.at(-1),previous=last?.role==='tool'?JSON.parse(typeof last.content==='string'?last.content:(last.content[0] as any).text):undefined;
+    const phase=JSON.parse(String(m[1].content)).phase,last=m.findLast(message=>message.role==='tool'),previous=last?.role==='tool'?JSON.parse(typeof last.content==='string'?last.content:(last.content[0] as any).text):undefined;
     const name=phase==='prepare'?(previous?.created?'draft_daily_post':'generate_image'):(previous?.images?'publish_qzone':'view_images');
     const args=name==='generate_image'?plan:name==='view_images'?{imageIds:['generated-'+imageId]}:{text:phase==='prepare'?'又是热闹的一天。':'深夜还笑出了声。',imageId:'generated-'+imageId};
     return {text:'',tool_calls:[{id:'choice-'+calls,type:'function',function:{name,arguments:JSON.stringify(args)}}],usage:{input:100,output:100}};
@@ -54,7 +55,16 @@ test('prepares one image, refreshes the last minutes at midnight, publishes once
     await f.daily().run();assert.deepEqual(f.counts(),{calls:2,generations:1,uploads:0,publishes:0});
     f.memory.record({id:'late',conversation:'private:20002',actor:'20002',role:'user',text:'最后五分钟还在笑',at:midnight-60000});
     f.clock(midnight);assert.equal((await f.daily().run()).state,'published');await f.daily().run();
-    assert.deepEqual(f.counts(),{calls:4,generations:1,uploads:1,publishes:1});assert.match(String(f.contexts[2][1].content),/最后五分钟/);assert.equal(Array.isArray(f.contexts[3].at(-1)?.content),true);
+    assert.deepEqual(f.counts(),{calls:4,generations:1,uploads:1,publishes:1});assert.match(String(f.contexts[2][1].content),/最后五分钟/);assert.equal(Array.isArray(f.contexts[3].findLast(message=>message.role==='tool')?.content),true);
+    for(const messages of f.contexts){
+      assert.equal(messages.at(-1)?.role,'system');
+      const identity=personaSettings(f.root).blocks.find(block=>block.kind!=='kaomoji')!.text.trim();
+      assert.ok(String(messages.at(-1)?.content).includes(identity.replace('，正用 QQ 跟熟人闲聊','')));
+      assert.doesNotMatch(String(messages.at(-1)?.content),/正用 QQ 跟熟人闲聊/);
+      assert.match(String(messages.at(-2)?.content),/当前香港时间/);
+    }
+    assert.deepEqual(f.contexts[1].slice(0,2),f.contexts[0].slice(0,2));
+
     assert.equal(f.contexts[3].filter(m=>m.role==='user').length,0,'viewed files stay attached to their native tool result');
     assert.equal(dailyStatus(f.root,f.store,midnight).last?.state,'published');
   }finally{f.cleanup();}
@@ -114,7 +124,7 @@ test('DeepSeek may pick an existing file and publish with image generation disab
  f.model.complete=async(_g,_u,m,options)=>{
   assert.equal(options?.toolChoice,undefined);assert.ok(!options?.tools?.some(t=>t.function.name==='generate_image'));
   if(++n===1)return chosen('list_images',{source:'generated'});
-  const files=JSON.parse(String(m.at(-1)?.content));assert.equal(files.images[0].id,'generated-'+imageId);return chosen('publish_qzone',{text:'这张旧图又翻出来了。',imageId:files.images[0].id});
+  const files=JSON.parse(String(m.findLast(message=>message.role==='tool')?.content));assert.equal(files.images[0].id,'generated-'+imageId);return chosen('publish_qzone',{text:'这张旧图又翻出来了。',imageId:files.images[0].id});
  };
  try{assert.equal((await f.daily().run()).state,'published');assert.equal(n,2);assert.equal(f.counts().generations,0);assert.equal(f.counts().publishes,1);}
  finally{f.cleanup();}
@@ -123,8 +133,8 @@ test('Codex result stays in its output folder until DeepSeek chooses its catalog
  const f=await setup();f.clock(midnight);let n=0;
  f.model.complete=async(_g,_u,m)=>{
   n++;if(n===1)return chosen('generate_image',{...plan,referenceIds:[]});
-  if(n===2){const generated=JSON.parse(String(m.at(-1)?.content));assert.equal(generated.saved,true);assert.ok(fs.existsSync(f.root+'/runtime/outputs/'+imageId+'/image.png'));assert.equal(f.counts().publishes,0);assert.equal(f.counts().uploads,0);return chosen('view_images',{imageIds:[generated.catalogId]});}
-  assert.equal(m.at(-1)?.role,'tool');assert.ok(Array.isArray(m.at(-1)?.content));assert.equal(f.counts().publishes,0);return chosen('publish_qzone',{text:'这一张我自己挑的。',imageId:'generated-'+imageId});
+  if(n===2){const generated=JSON.parse(String(m.findLast(message=>message.role==='tool')?.content));assert.equal(generated.saved,true);assert.ok(fs.existsSync(f.root+'/runtime/outputs/'+imageId+'/image.png'));assert.equal(f.counts().publishes,0);assert.equal(f.counts().uploads,0);return chosen('view_images',{imageIds:[generated.catalogId]});}
+  assert.equal(m.findLast(message=>message.role==='tool')?.role,'tool');assert.ok(Array.isArray(m.findLast(message=>message.role==='tool')?.content));assert.equal(f.counts().publishes,0);return chosen('publish_qzone',{text:'这一张我自己挑的。',imageId:'generated-'+imageId});
  };
  try{
   assert.equal((await f.daily().run()).state,'published');assert.deepEqual(f.counts(),{calls:0,generations:1,uploads:1,publishes:1});
@@ -139,7 +149,7 @@ test('failed Codex login is a tool result: the model may download another origin
  f.images.generate=async()=>{generationAttempts++;throw new FishError('CODEX_CHATGPT_PROJECT_LOGIN_REQUIRED');};
  f.model.complete=async(_g,_u,m)=>{
   if(++n===1)return chosen('generate_image',plan);
-  const result=m.at(-1)!;const data=JSON.parse(typeof result.content==='string'?result.content:(result.content[0] as any).text);
+  const result=m.findLast(message=>message.role==='tool')!;const data=JSON.parse(typeof result.content==='string'?result.content:(result.content[0] as any).text);
   if(n===2){assert.equal(data.error,'CODEX_CHATGPT_PROJECT_LOGIN_REQUIRED');return chosen('download_image',{url:'https://example.com/choice.jpg'});}
   if(n===3){downloaded=data.image.id;return chosen('publish_qzone',{text:'今天换这张。',imageId:downloaded});}
   throw Error('unexpected extra model request');
@@ -159,7 +169,7 @@ test('cross-conversation file IDs are refused and the model can change its selec
  const f=await setup();f.clock(midnight);let n=0;seedImage(f,'private:30003');
  f.model.complete=async(_g,_u,m)=>{
   if(++n===1)return chosen('publish_qzone',{text:'错图',imageId:'generated-'+imageId});
-  assert.equal(JSON.parse(String(m.at(-1)?.content)).error,'IMAGE_REFERENCE_NOT_AVAILABLE');assert.equal(f.counts().publishes,0);seedImage(f);return chosen('publish_qzone',{text:'这张才是。',imageId:'generated-'+imageId});
+  assert.equal(JSON.parse(String(m.findLast(message=>message.role==='tool')?.content)).error,'IMAGE_REFERENCE_NOT_AVAILABLE');assert.equal(f.counts().publishes,0);seedImage(f);return chosen('publish_qzone',{text:'这张才是。',imageId:'generated-'+imageId});
  };
  try{assert.equal((await f.daily().run()).state,'published');assert.equal(f.counts().publishes,1);}
  finally{f.cleanup();}
@@ -184,7 +194,7 @@ test('daily model-selected Search/Fetch use the shared CNY ledger and retain eac
  const f=await setup();f.clock(midnight);f.set({search:true});seedImage(f);let n=0;
  f.model.complete=async(_g,_u,m)=>{
   if(++n===1)return chosen('search_web',{query:'model-selected image source'});
-  const result=JSON.parse(String(m.at(-1)?.content));assert.equal(result.error,undefined,JSON.stringify(result));assert.equal(result.billing.chargedCny,0.005);
+  const result=JSON.parse(String(m.findLast(message=>message.role==='tool')?.content));assert.equal(result.error,undefined,JSON.stringify(result));assert.equal(result.billing.chargedCny,0.005);
   if(n===2)return chosen('fetch_page',{url:result.results[0].url});
   return chosen('publish_qzone',{text:'看了一会儿再挑图。',imageId:'generated-'+imageId});
  };
@@ -194,4 +204,82 @@ test('daily model-selected Search/Fetch use the shared CNY ledger and retain eac
   const file=fs.readdirSync(f.root+'/runtime/logs/daily-qzone').find(n=>n.startsWith('decision-'))!,trace=JSON.parse(fs.readFileSync(f.root+'/runtime/logs/daily-qzone/'+file,'utf8')).trace;
   assert.deepEqual(trace.filter((e:any)=>['search_web','fetch_page'].includes(e.tool)).map((e:any)=>e.result.billing.chargedCny),[0.005,0.005]);
  }finally{f.cleanup();}
+});
+
+for(const phase of ['prepare','publish'] as const)test(`daily ${phase} reminds after text-only turns while the model still chooses the tool`,async()=>{
+ const f=await setup();if(phase==='publish')f.clock(midnight);seedImage(f);let n=0;
+ const finalName=phase==='publish'?'publish_qzone':'draft_daily_post';
+ let persona:ChatMessage|undefined;
+ f.model.complete=async(_g,_u,m,options)=>{
+  n++;assert.equal(options?.toolChoice,undefined);assert.equal(options?.requireTool,undefined);
+  if(n===1)persona=structuredClone(m.at(-1));else assert.deepEqual(m.at(-1),persona);
+  if(n<=2){
+   if(n===2)assert.ok(m.some(message=>message.role==='system'&&String(message.content).includes(finalName)&&String(message.content).includes('纯文字不会保存草稿或发布动态')));
+   return {text:'先写一点想法。',usage:{input:10,output:5}};
+  }
+  if(n===3){
+   assert.match(String(m.at(-2)?.content),/纯文字不会保存草稿或发布动态/);
+   return chosen('list_images',{source:'generated'});
+  }
+  assert.equal(n,4);return chosen(finalName,{text:'选好啦。',imageId:'generated-'+imageId});
+ };
+ try{
+  assert.equal((await f.daily().run()).state,phase==='publish'?'published':'ready');
+  assert.equal(n,4);assert.equal(f.counts().generations,0);assert.equal(f.counts().publishes,phase==='publish'?1:0);
+ }finally{f.cleanup();}
+});
+
+test('daily text-only decision records a failure after three turns without an action',async()=>{
+ const f=await setup();let n=0;
+ f.model.complete=async(_g,_u,m,options)=>{
+  n++;assert.equal(options?.toolChoice,undefined);assert.equal(options?.requireTool,undefined);
+  assert.equal(m.at(-1)?.role,'system');return {text:'还只是文字。',usage:{input:10,output:5}};
+ };
+ try{await assert.rejects(f.daily().run(),/DAILY_QZONE_DECISION_INCOMPLETE/);assert.equal(n,3);assert.equal(f.counts().publishes,0);}
+ finally{f.cleanup();}
+});
+
+test('a definitive broker failure can retry with a fresh daily image key in the same run',async()=>{
+ const f=await setup(),generate=f.images.generate;let attempts=0;
+ f.images.generate=async m=>{
+  if(++attempts===1){
+   f.keys.push(m.id);f.store.db.prepare('INSERT INTO qq_image_requests VALUES (?,?,?,?,?)').run(m.group,m.id,'failed','','CODEX_CHATGPT_PROJECT_LOGIN_REQUIRED');
+   throw new FishError('CODEX_CHATGPT_PROJECT_LOGIN_REQUIRED');
+  }
+  return generate(m);
+ };
+ try{
+  assert.equal((await f.daily().run()).state,'ready');
+  assert.deepEqual(f.keys,['daily-qzone:2026-10-31:1','daily-qzone:2026-10-31:2']);
+  assert.equal(f.counts().generations,1);assert.equal(attempts,2);
+ }finally{f.cleanup();}
+});
+
+test('persisted failed keys advance through numeric suffixes without reusing a failed broker request',async()=>{
+ const f=await setup();f.daily();
+ try{
+  f.store.db.prepare("INSERT INTO daily_qzone(day,self,state,image_key,updated) VALUES (?,?,'failed',?,?)").run('2026-10-31','10001','daily-qzone:2026-10-31:1',before);
+  for(const suffix of [1,2])f.store.db.prepare('INSERT INTO qq_image_requests VALUES (?,?,?,?,?)').run('private:20002','daily-qzone:2026-10-31:'+suffix,'failed','','CODEX_FAILED');
+  assert.equal((await f.daily().run()).state,'ready');assert.deepEqual(f.keys,['daily-qzone:2026-10-31:3']);assert.equal(f.counts().generations,1);
+ }finally{f.cleanup();}
+});
+
+for(const state of ['completed','claimed'] as const)test(`daily retry retains a ${state} image key and never starts another generation`,async()=>{
+ const f=await setup();f.daily();seedImage(f);let n=0;
+ const key='daily-qzone:2026-10-31:1';
+ f.store.db.prepare("INSERT INTO daily_qzone(day,self,state,image_key,updated) VALUES (?,?,'failed',?,?)").run('2026-10-31','10001',key,before);
+ f.store.db.prepare('INSERT INTO qq_image_requests VALUES (?,?,?,?,?)').run('private:20002',key,state,state==='completed'?imageId:'','');
+ f.images.generate=async m=>{
+  f.keys.push(m.id);assert.equal(m.id,key);
+  return {imageId:state==='completed'?imageId:'',state,alreadyRequested:true};
+ };
+ f.model.complete=async(_g,_u,m)=>{
+  if(++n===1)return chosen('generate_image',plan);
+  assert.equal(n,2);
+  const result=JSON.parse(String(m.findLast(message=>message.role==='tool')?.content));
+  if(state==='claimed')assert.equal(result.error,'DAILY_QZONE_IMAGE_UNCONFIRMED');else assert.equal(result.created,true);
+  return chosen('draft_daily_post',{text:'用现成图收尾。',imageId:'generated-'+imageId});
+ };
+ try{assert.equal((await f.daily().run()).state,'ready');assert.deepEqual(f.keys,[key]);assert.equal(f.counts().generations,0);}
+ finally{f.cleanup();}
 });

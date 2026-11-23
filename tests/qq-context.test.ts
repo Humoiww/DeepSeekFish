@@ -51,9 +51,15 @@ test('old web results and images shrink without losing native pairs, exact full 
   const result=ctx.result('browse_page','web',raw,0),picture=ctx.images({role:'user',content:[{type:'text',text:'{"imageId":"media-one"}'},{type:'image_url',image_url:{url:'data:image/png;base64,AAAA'}}]},0);
   const receipt={created:true,delivered:true,imageId:'done',references:['character'],description:'长'.repeat(2000)};
   const delivered=ctx.result('generate_image','delivery',receipt,0),messages=[call,result,picture,delivered];
-  const before=contextMetrics(messages,[]);ctx.compact(1);assert.deepEqual(JSON.parse(String(result.content)),raw);
-  ctx.compact(3);const after=contextMetrics(messages,[]);
-  assert.equal(after.images,0);assert.ok(after.totalTextTokens<before.totalTextTokens/2);
+  const initial=String(result.content);
+  assert.ok(JSON.parse(initial).resultId);
+  ctx.compact(4,messages);
+  assert.equal(String(result.content),initial);
+  assert.equal(contextMetrics(messages,[]).images,1);
+  const longHistory:ChatMessage={role:'system',content:'测试高水位。'.repeat(8000)};
+  ctx.compact(5,[longHistory,...messages]);
+  assert.equal(contextMetrics(messages,[]).images,0);
+  assert.ok(String(result.content).length<initial.length);
   assert.equal(result.tool_call_id,call.tool_calls![0].id);assert.equal(call.tool_calls![0].function.name,'browse_page');
   assert.deepEqual(JSON.parse(String(delivered.content)),receipt);
   assert.ok(JSON.stringify(picture).includes('media-one'));
@@ -66,10 +72,10 @@ test('QQ offers recall autonomously and only adds old chat after the native tool
   const f=fixture({bufferMs:10000}),transport=new MockTransport();let rounds=0;
   const provider:Model={kind:'fixture',async complete(messages,_max,options){
     rounds++;assert.ok(options?.tools?.some(t=>t.function.name==='recall_chat'));assert.equal(options?.toolChoice,undefined);
-    if(rounds===1){assert.ok(!JSON.stringify(messages).includes('海边露营'));assert.equal(messages.length,8);
+    if(rounds===1){assert.ok(!JSON.stringify(messages).includes('海边露营'));assert.equal(messages.filter(message=>message.role==='user').length,6);
       return {text:'',tool_calls:[{id:'recall',type:'function',function:{name:'recall_chat',arguments:'{"query":"海边露营"}'}}],usage:{input:100,output:20}};
     }
-    const result=JSON.parse(String(messages.at(-1)!.content));assert.equal(result.events[0].text,'海边露营');
+    const result=JSON.parse(String(messages.findLast(message=>message.role==='tool')!.content));assert.equal(result.events[0].text,'海边露营');
     return {text:'想起来了。',usage:{input:100,output:20}};
   }};
   const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport);
@@ -97,13 +103,17 @@ test('two read pages keep their exact story text across rounds while bulky metad
  let full='',offset=0;do{const chunk=ctx.read({resultId:'page0',section:'raw',offset});full+=chunk.content;offset=chunk.nextOffset!;}while(offset!==null);
  assert.deepEqual(JSON.parse(full),pages[0]);assert.throws(()=>ctx.read({resultId:'page0',section:'private'}),/INVALID_TOOL_ARGS/);
  const slice=ctx.result('read_tool_result','slice',ctx.read({resultId:'page0',section:'raw'}),3);ctx.compact(5);
- assert.equal(JSON.parse(String(slice.content)).resultId,'page0');assert.equal(JSON.parse(String(slice.content)).previouslyRead,true);assert.ok(String(slice.content).length<250);
+ assert.equal(JSON.parse(String(slice.content)).resultId,'page0');assert.equal(JSON.parse(String(slice.content)).section,'raw');
+ assert.equal(JSON.parse(String(slice.content)).previouslyRead,undefined);
 });
 
-test('many read pages share a bounded text window, with exact omitted text and provider pagination recoverable',()=>{
+test('each page is clipped on arrival, with exact omitted text and provider pagination recoverable',()=>{
  const ctx=new TurnContext(),pages=Array.from({length:4},(_,i)=>({url:'https://example.com/'+i,content:('长篇叙述第'+i+'节。').repeat(1800),source:'DeepSeek Fetch',offset:0,nextOffset:6000,totalCharacters:19000,truncated:true}));
- const messages=pages.map((p,i)=>ctx.result('fetch_page','p'+i,p,i));ctx.compact(4);
- const views=messages.map(m=>JSON.parse(String(m.content)));assert.ok(views.reduce((sum,v)=>sum+knowledgeTokens(v.content),0)<=4000);assert.equal(views[3].source,'DeepSeek Fetch');
+ const messages=pages.map((p,i)=>ctx.result('fetch_page','p'+i,p,i));
+ const prefix=messages.map(message=>message.content);
+ ctx.compact(4,messages);
+ assert.deepEqual(messages.map(message=>message.content),prefix);
+ const views=messages.map(m=>JSON.parse(String(m.content)));assert.ok(views.every(v=>knowledgeTokens(v.content)<=4000));assert.equal(views[3].source,'DeepSeek Fetch');
  assert.ok(views[0].retainedText);assert.equal(views[3].nextOffset,6000);assert.equal(views[3].truncated,true);
  let text='',offset=0;do{const r=ctx.read({resultId:'p0',offset});text+=r.content;offset=r.nextOffset!;}while(offset!==null);
  assert.equal(text,pages[0].content);
@@ -117,13 +127,13 @@ test('QQ ends a long tool turn through native reply even if the closing response
  const f=fixture({bufferMs:10000}),transport=new MockTransport();let rounds=0,closingCalls=0;
  const provider:Model={kind:'fixture',async complete(_messages,_max,options){
   rounds++;assert.equal(options?.final,undefined);
-  if(rounds<=15){assert.equal(options?.toolChoice,undefined);return {text:'',tool_calls:[{id:'recall-'+rounds,type:'function',function:{name:'recall_chat',arguments:'{}'}}],usage:{input:100,output:20}};}
+  if(rounds<=23){assert.equal(options?.toolChoice,undefined);return {text:'',tool_calls:[{id:'recall-'+rounds,type:'function',function:{name:'recall_chat',arguments:'{}'}}],usage:{input:100,output:20}};}
   closingCalls++;assert.deepEqual(options?.tools?.map(t=>t.function.name),['reply']);assert.equal(options?.toolChoice,'reply');
   if(closingCalls===1)return {text:'<｜｜DSML｜｜ invoke name="read_tool_result">not a native call',usage:{input:100,output:20}};
   return {text:'',tool_calls:[{id:'done',type:'function',function:{name:'reply',arguments:JSON.stringify({text:'先聊聊已经读到的这段。'})}}],usage:{input:100,output:20}};
  }};
  const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport);
- try{await bot.receive(message('从头讲一部分'));await bot.flush();assert.equal(rounds,17);assert.equal(closingCalls,2);assert.deepEqual(transport.sent.map(x=>x.text),['先聊聊已经读到的这段。']);}
+ try{await bot.receive(message('从头讲一部分'));await bot.flush();assert.equal(rounds,25);assert.equal(closingCalls,2);assert.deepEqual(transport.sent.map(x=>x.text),['先聊聊已经读到的这段。']);}
  finally{await bot.stop();f.cleanup();}
 });
 
@@ -158,8 +168,8 @@ test('QQ preserves overnight speaker roles and current question without creating
   assert.match(String(messages[2].content),/昨天的小说问题/);assert.equal(messages[2].role,'user');
   assert.equal(messages[3].role,'assistant');assert.match(String(messages[3].content),/昨天的回复/);
   assert.equal(messages[4].role,'assistant');assert.match(String(messages[4].content),/早间新闻/);
-  assert.equal(messages.at(-1)!.role,'user');
-  assert.match(String(messages.at(-1)!.content),rounds===1?/本轮消息.*早，辛苦了/:/本轮消息.*？/);
+  assert.equal(messages.at(-1)!.role,'system','personality remains the final message');
+  assert.match(String(messages.findLast(m=>m.role==='user')!.content),rounds===1?/本轮消息.*早，辛苦了/:/本轮消息.*？/);
   return {text:rounds===1?'早呀。':'怎么啦？',usage:{input:100,output:20}};
  }};
  const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),new SearchService(new MockSearchProvider(),f.ledger,f.cfg),new MockImageProvider(),transport,undefined,undefined,undefined,media,forwards);
@@ -184,13 +194,14 @@ test('tool images retain their own call IDs through text compaction and image re
  const ctx=new TurnContext();
  const make=(id:string)=>ctx.result('read_forward',id,{text:'旧转发'.repeat(600)},0,[{type:'text',text:'转发图片 '+id},{type:'image_url',image_url:{url:'data:image/png;base64,AA=='}}]);
  const one=make('forward-one'),two=make('forward-two');
- for(const round of [0,2,3]){
-  ctx.compact(round);
+ for(const round of [0,4,5]){
+  const highWater:ChatMessage={role:'system',content:'测试高水位。'.repeat(8000)};
+  ctx.compact(round,[highWater,one,two]);
   for(const [m,id] of [[one,'forward-one'],[two,'forward-two']] as const){
    assert.equal(m.role,'tool');assert.equal(m.tool_call_id,id);assert.ok(Array.isArray(m.content));
    assert.ok(m.content.some(p=>p.type==='text'&&p.text.includes('转发图片 '+id)));
-   assert.equal(m.content.filter(p=>p.type==='image_url').length,round<3?1:0);
-   const data=JSON.parse((m.content[0] as {text:string}).text);assert.ok(round<2?data.text:data.resultId===id);
+   assert.equal(m.content.filter(p=>p.type==='image_url').length,round<=4?1:0);
+   const data=JSON.parse((m.content[0] as {text:string}).text);assert.ok(round<=4?data.text:data.resultId===id);
   }
  }
 });

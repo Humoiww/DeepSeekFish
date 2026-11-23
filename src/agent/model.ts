@@ -1,4 +1,4 @@
-import type { ChatMessage, Model, ModelResult,CompletionOptions } from '../types.js';
+import type { ChatMessage, Model, ModelResult,CompletionOptions,ToolCall } from '../types.js';
 import { FishError,type Usage } from '../types.js';
 import { Ledger,BudgetError } from '../budget/ledger.js';
 import type { Config } from '../config.js';
@@ -7,17 +7,24 @@ import { recordPrompt } from '../prompt-record.js';
 import { knowledgeTokens } from '../memory/knowledge.js';
 import { deepSeekUsage } from '../usage.js';
 import {ProviderError,diagnosticSafe} from '../diagnostics.js';
-export const modelPayload=(cfg:Config,messages:ChatMessage[],maxTokens:number,options:CompletionOptions={})=>({model:cfg.model,messages,max_tokens:maxTokens,stream:false,thinking:{type:'disabled'},
+import {isPromptNumberBlocked,PromptNumberGuard,privateQQNumbers} from './prompt-numbers.js';
+import {toolFailure} from './tool-feedback.js';
+// DeepSeek's documented non-thinking default when max_tokens is absent.
+const deepSeekDefaultOutputTokens=8192;
+export const modelPayload=(cfg:Config,messages:ChatMessage[],maxTokens:number,options:CompletionOptions={})=>({model:cfg.model,messages,stream:false,thinking:{type:'disabled'},
+  ...(options.maxOutputTokens===null?{}:{max_tokens:maxTokens}),
   ...(options.tools?.length?{tools:options.tools,tool_choice:options.final?'none':options.toolChoice?{type:'function',function:{name:options.toolChoice}}:options.requireTool?'required':'auto'}:{})});
 
 export function messageText(message:ChatMessage):string{return typeof message.content==='string'?message.content:message.content.filter(p=>p.type==='text').map(p=>p.text).join('\n');}
+export const maxVisionInputTokens=1024;
+
 export function inputBound(messages:ChatMessage[],tools:CompletionOptions['tools']=[]):number{
   let imageTokens=0;
   const text=messages.map(m=>({...m,content:typeof m.content==='string'?m.content:m.content.map(p=>{
     if(p.type==='text')return p;
     // DeepSeek documents a maximum of 1024 input tokens per image. Base64 is
     // transport encoding, not text tokens: counting it blocks ordinary vision.
-    imageTokens+=1024;return {type:'image_url',image_url:{url:'[image]',detail:p.image_url.detail}};
+    imageTokens+=maxVisionInputTokens;return {type:'image_url',image_url:{url:'[image]',detail:p.image_url.detail}};
   })}));
   // Use the pinned official tokenizer, plus framing/template margin. Counting
   // Chinese UTF-8 bytes as tokens caused otherwise affordable turns to fail.
@@ -41,7 +48,7 @@ export async function boundedJson(response: Response, limit=1048576): Promise<an
 export class ModelResponseError extends FishError {
   constructor(code:string,public usage:Usage|undefined,public diagnostic:Record<string,unknown>){super(code);}
 }
-async function errorBody(response:Response){
+export async function errorBody(response:Response){
   if(!response.body)return null;
   const reader=response.body.getReader(),chunks:Uint8Array[]=[];let size=0,truncated=false;
   try{for(;;){const part=await reader.read();if(part.done)break;const remaining=8192-size;chunks.push(part.value.subarray(0,remaining));size+=Math.min(part.value.length,remaining);if(part.value.length>remaining||size===8192){truncated=true;break;}}}
@@ -49,9 +56,10 @@ async function errorBody(response:Response){
   const text=Buffer.concat(chunks).toString('utf8');if(truncated)return {text,truncated:true};try{return JSON.parse(text);}catch{return {text};}
 }
 /** Shared provider transport; HTTP errors, timeouts and network causes stay distinguishable. */
-export async function deepSeekRequest(http:typeof fetch,key:string,payload:unknown,signal?:AbortSignal){
+export async function deepSeekRequest(http:typeof fetch,key:string,payload:unknown,signal?:AbortSignal,providerOutputDefault=false){
   const started=Date.now(),timeoutMs=30000,endpoint='https://api.deepseek.com/chat/completions';
-  const timeout=AbortSignal.timeout(timeoutMs),joined=AbortSignal.any([timeout,...(signal?[signal]:[])]);
+  const timeout=providerOutputDefault?undefined:AbortSignal.timeout(timeoutMs);
+  const joined=timeout&&signal?AbortSignal.any([timeout,signal]):timeout??signal;
   let phase='request',status:number|undefined,requestId:string|undefined;
   try{
     const res=await http(endpoint,{method:'POST',redirect:'error',signal:joined,headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify(payload)});
@@ -60,11 +68,11 @@ export async function deepSeekRequest(http:typeof fetch,key:string,payload:unkno
       let body:unknown;try{body=await errorBody(res);}catch(e){body={unavailable:true,reason:e instanceof Error?e.message:String(e)};}
       throw new ProviderError('DEEPSEEK_HTTP_'+res.status,diagnosticSafe({endpoint,httpStatus:status,requestId,elapsedMs:Date.now()-started,phase,provider:body}));
     }
-    return await boundedJson(res);
+    return await (providerOutputDefault?res.json():boundedJson(res));
   }catch(e){
     if(e instanceof ProviderError)throw e;
-    const details={endpoint,httpStatus:status,requestId,phase,elapsedMs:Date.now()-started,timeoutMs};
-    if(timeout.aborted||(e as any)?.name==='TimeoutError')throw new ProviderError('DEEPSEEK_TIMEOUT',details,e);
+    const details={endpoint,httpStatus:status,requestId,phase,elapsedMs:Date.now()-started,timeoutMs:timeout?timeoutMs:undefined};
+    if(timeout?.aborted||(e as any)?.name==='TimeoutError')throw new ProviderError('DEEPSEEK_TIMEOUT',details,e);
     if(signal?.aborted||(e as any)?.name==='AbortError')throw new ProviderError('DEEPSEEK_CANCELLED',details,e);
     if(e instanceof FishError)throw new ProviderError(e.code,details,e);
     throw new ProviderError(e instanceof SyntaxError?'DEEPSEEK_INVALID_JSON':'DEEPSEEK_NETWORK_ERROR',details,e);
@@ -75,7 +83,8 @@ export class DeepSeekModel implements Model {
   constructor(private key: string, private cfg: ()=>Config, private http: typeof fetch=fetch) {}
   async complete(messages: ChatMessage[], maxTokens: number,options:CompletionOptions={}): Promise<ModelResult> {
     if (!this.key) throw new FishError('DEEPSEEK_KEY_MISSING');
-    const data=await deepSeekRequest(this.http,this.key,modelPayload(this.cfg(),messages,maxTokens,options),options.signal);
+    const providerOutputDefault=options.maxOutputTokens===null;
+    const data=await deepSeekRequest(this.http,this.key,modelPayload(this.cfg(),messages,maxTokens,options),options.signal,providerOutputDefault);
     const message=data.choices?.[0]?.message,text=message?.content??'',calls=message?.tool_calls;
     const usage=deepSeekUsage(data.usage);
     if(typeof text!=='string'||!usage) throw new FishError('DEEPSEEK_INVALID_RESPONSE');
@@ -83,7 +92,7 @@ export class DeepSeekModel implements Model {
       const issues:string[]=[];
       if(!Array.isArray(calls))issues.push('tool_calls is not an array');
       else for(const [i,c] of calls.entries()){
-        if(typeof c?.id!=='string'||!c.id||c.id.length>200||c.type!=='function'||typeof c.function?.name!=='string'||typeof c.function?.arguments!=='string'||c.function.arguments.length>131072)issues.push('call '+i+': invalid fields');
+        if(typeof c?.id!=='string'||!c.id||c.id.length>200||c.type!=='function'||typeof c.function?.name!=='string'||typeof c.function?.arguments!=='string'||!providerOutputDefault&&c.function.arguments.length>131072)issues.push('call '+i+': invalid fields');
         else {try{JSON.parse(c.function.arguments);}catch{issues.push('call '+i+': incomplete or invalid argument JSON');}}
       }
       if(issues.length)throw new ModelResponseError(data.choices?.[0]?.finish_reason==='length'?'DEEPSEEK_TOOL_OUTPUT_TRUNCATED':'DEEPSEEK_INVALID_TOOL_CALL',usage,
@@ -94,25 +103,68 @@ export class DeepSeekModel implements Model {
 }
 export class MockModel implements Model {
   readonly kind='mock'; calls=0;
-  async complete(messages: ChatMessage[], maxTokens:number): Promise<ModelResult> {
+  private countdownCall(messages:ChatMessage[],userIndex:number,text:string,options:CompletionOptions):ToolCall|undefined {
+    // The offline model can demonstrate the private attachment exchange without a real provider.
+    if(userIndex<0||!/倒计时(?:小)?视频/.test(text)||!/发(?:送)?(?:给)?我/.test(text)||
+      !['list_files','send_file','reply'].every(name=>options.tools?.some(tool=>tool.function.name===name)))return;
+    const call=(name:string,args:Record<string,unknown>):ToolCall=>({
+      id:'mock-'+this.calls,type:'function',function:{name,arguments:JSON.stringify(args)},
+    });
+    const turn=messages.slice(userIndex+1),result=turn.findLast(message=>message.role==='tool');
+    if(!result)return call('list_files',{});
+    const tool=turn.flatMap(message=>message.tool_calls??[]).find(item=>item.id===result.tool_call_id);
+    let data:{files?:{id:string}[];deliveryStatus?:string}|undefined;
+    try{data=JSON.parse(messageText(result));}catch{}
+    if(tool?.function.name==='list_files'){
+      const file=Array.isArray(data?.files)?data.files.find(item=>item?.id==='countdown-video'):undefined;
+      if(file)return call('send_file',{fileId:file.id});
+      return call('reply',{text:'【Mock】当前对话没有可发送的倒计时视频。'});
+    }
+    if(tool?.function.name==='send_file')return call('reply',{text:data?.deliveryStatus==='confirmed'
+      ?'【Mock】视频已作为附件发送。':'【Mock】视频附件送达未获确认。'});
+  }
+  async complete(messages: ChatMessage[], maxTokens:number,options:CompletionOptions={}): Promise<ModelResult> {
     this.calls++;
+    const userIndex=messages.findLastIndex(message=>message.role==='user');
+    const input=messageText(messages[userIndex]??messages.at(-1)!);
+    const inputTokens=Math.ceil(Buffer.byteLength(JSON.stringify(messages))/4);
+    const tool=this.countdownCall(messages,userIndex,input,options);
+    if(tool)return {text:'',usage:{input:inputTokens,output:Math.min(maxTokens,Math.ceil(Buffer.byteLength(JSON.stringify(tool))/3))},tool_calls:[tool]};
     const planner=messageText(messages[0]).includes('TASK_PLANNER');
-    let request:any;try{request=JSON.parse(messageText(messages.at(-1)!));}catch{request={messages:[{text:messageText(messages.at(-1)!)}]};}
+    const body=input.replace(/^\[[^\]\n]+ · 本轮消息\] (?:\[说话人：[^\]\n]+\] )?\[QQ [^\]\n]+\] (?:\[引用 QQ 消息 ID [^\]\n]+\] )?/u,'');
+    let request:any;try{request=JSON.parse(input);}catch{request={messages:[{text:body}]};}
     const text=planner ? JSON.stringify({useCodex:true,task:'在当前工作目录创建任务要求的文件：'+String(request.request).slice(0,160)}) :
       messageText(messages[0]).includes('TASK_RESULT') ? '【Mock】任务已完成，产物已通过独立校验。' : '【Mock 小鱼】收到啦。'+String(request.messages?.at(-1)?.text??request.result??'').slice(0,60);
-    return {text,usage:{input:Math.ceil(Buffer.byteLength(JSON.stringify(messages))/4),output:Math.min(maxTokens,Math.ceil(Buffer.byteLength(text)/3))}};
+    return {text,usage:{input:inputTokens,output:Math.min(maxTokens,Math.ceil(Buffer.byteLength(text)/3))}};
   }
 }
 export class BudgetedModel {
   constructor(public provider:Model, private ledger:Ledger, private cfg:()=>Config) {}
   async call(group:string,user:string,messages:ChatMessage[]):Promise<string> {
-    return (await this.complete(group,user,messages)).text;
+    let input=messages;
+    for(let attempt=0;;attempt++){
+      const {text}=await this.complete(group,user,input);
+      const privacy=new PromptNumberGuard(input,this.ledger.store,true,privateQQNumbers(this.cfg(),group,user));
+      try{
+        privacy.text(text);
+        // Check decoded JSON replies as well as their literal text.
+        if(text.trimStart().startsWith('{')){
+          let parsed:unknown;try{parsed=JSON.parse(text);}catch{}
+          if(parsed!==undefined)privacy.text(JSON.stringify(parsed));
+        }
+        return text;
+      }catch(e){
+        if(!isPromptNumberBlocked(e)||attempt)throw e;
+        input=[...messages,{role:'system',content:JSON.stringify(toolFailure(e,'reply'))}];
+      }
+    }
   }
   async complete(group:string,user:string,messages:ChatMessage[],options:CompletionOptions={}):Promise<ModelResult> {
-    const max=this.cfg().maxOutputTokens;
+    const providerOutputDefault=options.maxOutputTokens===null;
+    const max=providerOutputDefault?deepSeekDefaultOutputTokens:options.maxOutputTokens??this.cfg().maxOutputTokens;
     const bound=inputBound(messages,options.tools);
     let id:string;
-    try{id=this.ledger.reserve('model',group,user,bound,max);}
+    try{id=this.ledger.reserveModel(group,user,bound,max,providerOutputDefault);}
     catch(e){
       if(e instanceof BudgetError){
         this.ledger.store.audit('budget-denied',group,JSON.stringify({reason:e.reason,scope:e.scope,currency:'CNY',remainingCny:e.remaining,requiredCny:e.required,inputReservation:bound,outputReservation:max,budget:this.ledger.costSummary(group)}));

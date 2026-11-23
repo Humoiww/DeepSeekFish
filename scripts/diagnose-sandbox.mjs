@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { prepare } from '../dist/src/config.js';
-import { makeDir } from '../dist/src/paths.js';
+import { makeDir, writeActivityLogAtomic } from '../dist/src/paths.js';
 import { appServerSpec, linuxExecutable, PERMISSION_PROFILE, childEnvironment } from '../dist/src/codex/platform.js';
 import { RpcProcess } from '../dist/src/codex/process.js';
 import { initialize, probeIsolation } from '../dist/src/codex/probe.js';
@@ -73,8 +73,7 @@ try {
     report.tests.childEnvironment={inheritedForbiddenKeys:forbidden.filter(k=>k in childEnvironment(root))};
   }finally{for(const k of forbidden)original[k]===undefined?delete process.env[k]:process.env[k]=original[k];}
   console.log(JSON.stringify(report,null,2));
-  const out=makeDir(root,'runtime/logs');
-  fs.writeFileSync(path.join(out,'sandbox-diagnosis.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
+  writeActivityLogAtomic(root,'runtime/logs/sandbox-diagnosis.json',JSON.stringify(report,null,2)+'\n');
 }finally {
   fs.rmSync(cwd,{recursive:true,force:true});
   fs.rmSync(path.join(root,'runtime/tmp/codex-'+id),{recursive:true,force:true});

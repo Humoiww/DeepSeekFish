@@ -1,3 +1,4 @@
+import {sendFailure} from '../agent/tool-feedback.js';
 import fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import type {Store} from '../storage/db.js';
@@ -7,12 +8,13 @@ import {imageMime} from '../memory/people.js';
 import {catalogPath,type FileResolver} from './file-library.js';
 import {sendGeneratedImage} from './image-delivery.js';
 
-type Options={signal?:AbortSignal;guard?:()=>void;diagnostic?:(value:Record<string,any>)=>void};
+type Options={onDispatch?:()=>void;signal?:AbortSignal;guard?:()=>void;checkFilename?:(name:string)=>void;diagnostic?:(value:Record<string,any>)=>void};
 /** Images and ordinary attachments share scope and durable submission handling.
  * Repeated calls in one turn read receipts; an uncertain send blocks reupload
  * across turns and process restarts. No network action is guessed successful. */
 export async function sendCatalogFile(root:string,store:Store,transport:Transport,resolver:FileResolver,message:Message,fileId:string,mode:'image'|'file',options:Options={}){
  const file=await resolver.resolveFile(message,fileId,options.signal);
+ if(mode==='file')options.checkFilename?.(file.name);
  if(mode==='image'&&file.kind!=='image')throw new FishError('FILE_IS_NOT_IMAGE');
  const send=mode==='image'?transport.image:transport.attachment;
  if(!send)throw new FishError(mode==='image'?'QQ_IMAGE_TRANSPORT_UNAVAILABLE':'QQ_FILE_TRANSPORT_UNAVAILABLE');
@@ -25,15 +27,15 @@ export async function sendCatalogFile(root:string,store:Store,transport:Transpor
  options.signal?.throwIfAborted();options.guard?.();
  let result:Record<string,any>={fileId,name:file.name,bytes:original.length,mode,deliveryStatus:'unconfirmed',retryScheduled:false};
  store.db.prepare("INSERT INTO qq_file_deliveries VALUES (?,?,?,?,?,'unconfirmed',?,NULL,?)").run(key,message.group,fileId,mode,message.id,JSON.stringify(result),Date.now());
- store.audit('qq-file-send',message.group,JSON.stringify({...result,phase:'submitted',messageId:message.id}));
- let diagnostic:Record<string,any>|undefined;
+ store.audit('qq-file-send',message.group,JSON.stringify({...result,phase:'dispatch_started',messageId:message.id}));
+ let diagnostic:Record<string,any>|undefined,dispatched=false;
  try{
+  options.onDispatch?.();dispatched=true;
   const receipt=mode==='image'?await transport.image!(message,original):await transport.attachment!(message,original,file.name);
-  result={...result,delivered:true,deliveryStatus:'confirmed',...(receipt?.messageId?{qqMessageId:receipt.messageId}:{})};
+  result={...result,delivered:true,deliveryStatus:'confirmed',submissionStatus:'accepted',...(receipt?.messageId?{qqMessageId:receipt.messageId}:{})};
  }catch(e){
   diagnostic=errorDiagnostic(e);options.diagnostic?.(diagnostic);
-  const error=codeOf(e),uncertain=['ONEBOT_SEND_UNCONFIRMED','ONEBOT_ACTION_TIMEOUT','ONEBOT_DISCONNECTED','ONEBOT_STOPPED','ONEBOT_SEND_FAILED'].includes(error);
-  result={...result,error,deliveryStatus:uncertain?'unconfirmed':'failed'};
+  result={...result,...sendFailure(e,'send_qq_'+mode,dispatched?'dispatch':'before')};
  }
  store.db.prepare('UPDATE qq_file_deliveries SET state=?,result=?,diagnostic=? WHERE id=?').run(result.deliveryStatus,JSON.stringify(result),diagnostic?JSON.stringify(diagnostic):null,key);
  if(mode==='file'&&/^generated-[0-9a-f-]{36}$/.test(fileId)){
@@ -45,6 +47,6 @@ export async function sendCatalogFile(root:string,store:Store,transport:Transpor
  store.audit('qq-file-send',message.group,JSON.stringify(result));return result;
 }
 export async function sendLibraryImage(root:string,store:Store,transport:Transport,resolver:FileResolver,message:Message,imageId:string,maxBytes:number,options:Options={}){
- if(/^generated-[0-9a-f-]{36}$/.test(imageId))return sendGeneratedImage(root,store,transport,message,imageId,maxBytes);
+ if(/^generated-[0-9a-f-]{36}$/.test(imageId))return sendGeneratedImage(root,store,transport,message,imageId,maxBytes,options.onDispatch);
  return sendCatalogFile(root,store,transport,resolver,message,imageId,'image',options);
 }

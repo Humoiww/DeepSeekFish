@@ -1,0 +1,8 @@
+[Unit]
+Description=DeepSeekFish development release switch and rollback
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /srv/deepseekfish/development/deploy.py
+TimeoutStartSec=12min
+UMask=0027

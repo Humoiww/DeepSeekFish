@@ -11,7 +11,7 @@ import { executionFeatures } from '../src/codex/platform.js';
 import { CHARACTER_REFERENCE,BUNDLED_CHARACTER_REFERENCE,characterPrompt } from '../src/character.js';
 import { isCharacterPortrait,prepareCharacterPortrait,verifyCharacterReference,resolveCharacterReference } from '../src/image/character-reference.js';
 
-test('image smoke requires native completion and valid PNG, never an assistant claim or fileId alone',async()=>{
+test('image smoke accepts a saved native completion with a fileId and checks inline PNG bytes',async()=>{
   const f=fixture();try{
     const generated=makeDir(f.root,'runtime/codex-home/generated_images');
     await new MockImageProvider().generate('fixture only',generated);
@@ -20,6 +20,9 @@ test('image smoke requires native completion and valid PNG, never an assistant c
     assert.throws(()=>captureCodexImage(f.root,cwd,[],10000),/UNSUPPORTED_OR_MISSING/);
     assert.throws(()=>captureCodexImage(f.root,cwd,[{id:'x',type:'imageGeneration',status:'completed',fileId:'unknown'}],10000),/ATTACHMENT_UNAVAILABLE/);
     assert.throws(()=>captureCodexImage(f.root,cwd,[{id:'x',type:'imageGeneration',status:'failed',savedPath:source}],10000),/GENERATION_FAILED/);
+    const nativeCwd=makeDir(f.root,'runtime/workspace/image-file');
+    const native=captureCodexImage(f.root,nativeCwd,[{id:'x',type:'imageGeneration',status:'completed',fileId:'attachment',savedPath:source,result:''}],10000);
+    assert.deepEqual(fs.readFileSync(native),bytes);
     const result=captureCodexImage(f.root,cwd,[{id:'x',type:'imageGeneration',status:'completed',result:bytes.toString('base64')}],10000);
     assert.deepEqual(fs.readFileSync(result),bytes);
     // A native tool that already saved the correct destination needs no self-copy.

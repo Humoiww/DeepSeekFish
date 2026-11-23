@@ -1,6 +1,8 @@
+import {ProviderError} from '../diagnostics.js';
+import {sendFailure} from '../agent/tool-feedback.js';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { safePath,makeDir,writePrivateAtomic } from '../paths.js';
+import { safePath,makeDir,writeActivityLogAtomic } from '../paths.js';
 import { Store,redact } from '../storage/db.js';
 import { type Config,conversationAllowed } from '../config.js';
 import { type BudgetedModel } from '../agent/model.js';
@@ -12,7 +14,7 @@ import {dailyQzoneAgent,type DailySelection,type DailyAgentServices} from './dai
 import {QQImageLibrary} from './image-library.js';
 import { QQImageClient } from './image-client.js';
 import { QzonePublisher,QzoneRejected,type UploadedPhoto } from './qzone-publish.js';
-import { PROJECT_TIMEZONE,projectDay,projectDayStart,DAY_MS } from '../time.js';
+import { projectTime,PROJECT_TIMEZONE,projectDay,projectDayStart,DAY_MS } from '../time.js';
 
 export interface DailySettings {enabled:boolean;owner:string;startsOn:string;timezone:typeof PROJECT_TIMEZONE}
 interface DailyRow {day:string;self:string;state:string;draft:string|null;image_key:string|null;image_id:string|null;catalog_id:string|null;photo:string|null;post_id:string|null;url:string|null;error:string|null;updated:number;lease:number;lock:string|null;refreshed:number;attempts:number}
@@ -41,7 +43,7 @@ export function dailyMemory(store:Store,cfg:Config,day:string,now=Date.now()){
   const total=(store.db.prepare('SELECT count(*) AS n FROM memory_events WHERE '+where).get(...params) as any).n;
   const events=store.db.prepare(`SELECT role,text,observed FROM (SELECT role,text,observed,seq,row_number() OVER (PARTITION BY cast((observed-?)/3600000 AS INTEGER) ORDER BY observed DESC,seq DESC) AS rank FROM memory_events WHERE ${where}) WHERE rank<=3 ORDER BY observed,seq`).all(since,...params) as any[];
   return {timezone:PROJECT_TIMEZONE,day:projectDay(since),since,until:Math.min(until,now),total,selected:events.length,
-    events:events.filter(e=>!hasToolMarkup(e.text)).map(e=>({role:e.role,time:new Date(e.observed+8*3600000).toISOString().slice(11,16),text:redact(e.text).replace(/\b\d{5,20}\b/g,'[号码]').slice(0,500)}))};
+    events:events.filter(e=>!hasToolMarkup(e.text)).map(e=>({role:e.role,time:projectTime(e.observed),text:redact(e.text).replace(/\b\d{5,20}\b/g,'[号码]').slice(0,500)}))};
 }
 export function dailyActions(root:string,store:Store,cfg:Config,day:string){
   const until=Date.parse(day+'T00:00:00+08:00'),since=until-DAY_MS,images:Record<string,unknown>[]=[];
@@ -77,7 +79,7 @@ export class DailyQzone {
       const key='qq-image-result:'+r.image_id,previous=JSON.parse(this.store.getMeta(key)??'{}');
       this.store.setMeta(key,JSON.stringify({...previous,created:true,imageId:r.image_id,catalogId:'generated-'+r.image_id,qzone:{scheduledFor:day+'T00:00:00+08:00',deliveryStatus:r.state==='published'?'confirmed':['publishing','unknown'].includes(r.state)?'unconfirmed':'scheduled',postId:r.post_id,url:r.url}}));
     }
-    const {photo:_photo,lock:_lock,...record}=r;writePrivateAtomic(this.root,'runtime/logs/daily-qzone/'+day+'.json',JSON.stringify(record,null,2));
+    const {photo:_photo,lock:_lock,...record}=r;writeActivityLogAtomic(this.root,'runtime/logs/daily-qzone/'+day+'.json',JSON.stringify(record,null,2));
   }
   private config(){const s=dailySettings(this.root),c=this.cfg();if(!s?.enabled||!c.enabled||!conversationAllowed(c,'private:'+s.owner))throw new FishError('DAILY_QZONE_DISABLED');return s;}
   private context(day:string){
@@ -85,7 +87,7 @@ export class DailyQzone {
     return {memory:dailyMemory(this.store,this.cfg(),day,this.now()),actions:dailyActions(this.root,this.store,this.cfg(),day),prepared:draft?{text:draft.text,imageId:row?.catalog_id??(row?.image_id?'generated-'+row.image_id:null),previousError:row?.error}:null};
   }
   async preview(day=projectDay(projectDayStart(this.now())+DAY_MS)){
-    const config=this.config();return dailyQzoneAgent({root:this.root,store:this.store,cfg:this.cfg,model:this.model,images:this.images,owner:config.owner,self:this.publisher.self,day,phase:'preview',context:this.context(day),signal:new AbortController().signal,guard:()=>{this.config();},imageRequest:()=>{throw new FishError('PREVIEW_ONLY');},finish:async selection=>selection,services:{...this.services,library:this.library}});
+    const config=this.config();return dailyQzoneAgent({now:this.now,root:this.root,store:this.store,cfg:this.cfg,model:this.model,images:this.images,owner:config.owner,self:this.publisher.self,day,phase:'preview',context:this.context(day),signal:new AbortController().signal,guard:()=>{this.config();},imageRequest:()=>{throw new FishError('PREVIEW_ONLY');},finish:async selection=>selection,services:{...this.services,library:this.library}});
   }
   async run(prepareOnly=false){
     const config=this.config(),slot=prepareOnly?{phase:'prepare' as const,day:projectDay(projectDayStart(this.now())+DAY_MS),inWindow:true}:dailySlot(this.now()),{day}=slot;
@@ -116,16 +118,31 @@ export class DailyQzone {
         this.save(day,{state:'unknown'});return {state:'unknown',day};
       }
       const context=this.context(day);this.save(day,{state:'preparing',attempts:row.attempts+1,error:null});
-      return await dailyQzoneAgent({root:this.root,store:this.store,cfg:this.cfg,model:this.model,images:this.images,owner:config.owner,self:this.publisher.self,day,phase:slot.phase,context,signal:controller.signal,guard,
-        imageRequest:()=>{const key=this.row(day)!.image_key??'daily-qzone:'+day+':1';this.save(day,{image_key:key});return key;},
+      return await dailyQzoneAgent({now:this.now,root:this.root,store:this.store,cfg:this.cfg,model:this.model,images:this.images,owner:config.owner,self:this.publisher.self,day,phase:slot.phase,context,signal:controller.signal,guard,
+        imageRequest:()=>this.store.transaction(()=>{
+          let key=this.row(day)!.image_key??'daily-qzone:'+day+':1';
+          if(this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='qq_image_requests'").get()){
+            const request=this.store.db.prepare('SELECT state FROM qq_image_requests WHERE conversation=? AND message_id=?');
+            // Missing, completed and in-flight rows retain the same key. Only
+            // a definitive broker failure authorizes another generation.
+            while(request.get('private:'+config.owner,key)?.state==='failed'){
+              const suffix=Number(key.slice(key.lastIndexOf(':')+1));
+              key='daily-qzone:'+day+':'+(Number.isSafeInteger(suffix)&&suffix>0?suffix+1:2);
+            }
+          }
+          this.save(day,{image_key:key});return key;
+        }),
         finish:async(selection:DailySelection)=>{
           guard();const [file]=this.library.select('private:'+config.owner,config.owner,[selection.imageId]),previous=this.row(day)!,same=(previous.catalog_id??(previous.image_id?'generated-'+previous.image_id:null))===selection.imageId;
           this.save(day,{draft:JSON.stringify(selection),catalog_id:selection.imageId,image_id:selection.imageId.startsWith('generated-')?selection.imageId.slice(10):null,...(!same?{photo:null}:{})});
           if(slot.phase==='prepare'){this.save(day,{state:'ready',error:null});return {state:'ready',day,catalogId:selection.imageId};}
-          if(!this.row(day)!.photo){const photo=await this.publisher.upload(fs.readFileSync(file.path));guard();this.save(day,{photo:JSON.stringify(photo)});}
-          guard();let post:{id:string;url:string};
-          try{post=await this.publisher.publish(selection.text,JSON.parse(this.row(day)!.photo!) as UploadedPhoto,()=>{guard();this.save(day,{state:'publishing'});});}
-          catch(e){this.save(day,{state:e instanceof QzoneRejected?'preparing':'unknown',error:codeOf(e)});throw e;}
+          if(!this.row(day)!.photo){
+            try{const photo=await this.publisher.upload(fs.readFileSync(file.path));guard();this.save(day,{photo:JSON.stringify(photo)});}
+            catch(e){const info=sendFailure(e,'upload_qzone_photo','before');throw new ProviderError(info.error,info,e);}
+          }
+          guard();let post:{id:string;url:string},dispatched=false;
+          try{post=await this.publisher.publish(selection.text,JSON.parse(this.row(day)!.photo!) as UploadedPhoto,()=>{guard();this.save(day,{state:'publishing'});dispatched=true;});}
+          catch(e){const info=sendFailure(e,'publish_qzone',dispatched?'submitted':'before');this.save(day,{state:info.deliveryStatus==='failed'?'preparing':'unknown',error:info.error});throw new ProviderError(info.error,info,e);}
           this.save(day,{state:'published',post_id:post.id,url:post.url,refreshed:1,error:null});this.store.audit('daily-qzone','',JSON.stringify({day,postId:post.id}));
           try{new (await import('../memory/journal.js')).MemoryJournal(this.root,this.store).record({id:'daily-qzone:'+day,conversation:'private:'+config.owner,actor:'DeepSeekFish',role:'assistant',text:'[自己的QQ空间动态] '+selection.text+' '+post.url,at:this.now(),source:'qzone-daily'});}catch(e){this.store.audit('daily-qzone-memory-error','',codeOf(e));}
           return {state:'published',day,url:post.url};
@@ -134,7 +151,7 @@ export class DailyQzone {
       const submitted=['publishing','unknown'].includes(this.row(day)?.state??'');
       this.save(day,{state:submitted&&!(e instanceof QzoneRejected)?'unknown':'failed',error:submitted?this.row(day)?.error??codeOf(e):codeOf(e)});
       this.store.audit('daily-qzone-error','',JSON.stringify({day,error:codeOf(e)}));
-      writePrivateAtomic(this.root,'runtime/logs/daily-qzone/error-'+day+'-'+randomUUID()+'.json',JSON.stringify(diagnosticSafe({day,state:this.row(day)?.state,error:codeOf(e),diagnostic:errorDiagnostic(e),at:this.now()}),null,2));throw e;
+      writeActivityLogAtomic(this.root,'runtime/logs/daily-qzone/error-'+day+'-'+randomUUID()+'.json',JSON.stringify(diagnosticSafe({day,state:this.row(day)?.state,error:codeOf(e),diagnostic:errorDiagnostic(e),at:this.now()}),null,2));throw e;
     }finally{clearInterval(heartbeat);this.store.db.prepare('UPDATE daily_qzone SET lock=NULL,lease=0 WHERE day=? AND lock=?').run(day,token);}
   }
 }

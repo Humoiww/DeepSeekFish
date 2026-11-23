@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fixture } from './helpers.js';
 import { CodexDiagnostics,readCodexRecord } from '../src/codex/diagnostics.js';
+import { writeActivityLogAtomic,writePrivateAtomic } from '../src/paths.js';
 
 test('Codex records persist streamed/final replies, RPC failures and image metadata without credentials or image data',()=>{
   const f=fixture();try{
@@ -23,7 +24,23 @@ test('Codex records persist streamed/final replies, RPC failures and image metad
     assert.equal((record.images[0] as any).status,'failed');
     const file=path.join(f.root,'runtime/logs/codex/record-check.json'),text=fs.readFileSync(file,'utf8');
     for(const secret of ['sk-secretvalue12345','secret-token','private-refresh','stderr-secret','PRIVATE_IMAGE_BASE64'])assert.equal(text.includes(secret),false,secret);
-    assert.equal(fs.statSync(file).mode&0o777,0o600);
+    if(process.platform!=='win32')assert.equal(fs.statSync(file).mode&0o7777,0o640);
     assert.equal(readCodexRecord(f.root,'../auth'),undefined);
+  }finally{f.cleanup();}
+});
+
+test('atomic activity records are group-readable while private records stay owner-only',{skip:process.platform==='win32'},()=>{
+  const f=fixture();
+  try{
+    const activity='runtime/logs/permissions.json',privateFile='runtime/data/permissions.json';
+    assert.equal(process.umask(),0o077);
+    writeActivityLogAtomic(f.root,activity,'{"version":1}');
+    writeActivityLogAtomic(f.root,activity,'{"version":2}');
+    writePrivateAtomic(f.root,privateFile,'{"private":true}');
+    assert.equal(fs.statSync(path.join(f.root,activity)).mode&0o7777,0o640);
+    assert.equal(fs.statSync(path.join(f.root,privateFile)).mode&0o7777,0o600);
+    assert.equal(fs.readFileSync(path.join(f.root,activity),'utf8'),'{"version":2}');
+    assert.deepEqual(fs.readdirSync(path.join(f.root,'runtime/logs')),['permissions.json']);
+    assert.throws(()=>writeActivityLogAtomic(f.root,privateFile,'{}'),/ACTIVITY_LOG_PATH_INVALID/);
   }finally{f.cleanup();}
 });

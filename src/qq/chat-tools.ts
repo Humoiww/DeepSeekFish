@@ -4,24 +4,29 @@ import { imageFields } from '../web/images.js';
 import { knowledgeUpdateParameters } from '../memory/knowledge.js';
 
 const remark={type:'string',description:'想顺口对朋友说的话，可省略',maxLength:180};
-export function qqChatTools(profile:boolean,image:boolean,qzone=false):ModelTool[]{
+export const sendQQMessage:ModelTool={type:'function',function:{
+  name:'send_message',description:'给当前 QQ 私聊发一条你想先说或补充的话。可以连续调用，或发完接着用其他工具，无需等对方回话。想结束本次问答时用 reply，已经说完可以用 reply 的空文字收尾。',
+  parameters:{type:'object',properties:{text:{type:'string',description:'这条发给对方的话'}},required:['text'],additionalProperties:false}
+}};
+export function qqChatTools(profile:boolean,image:boolean,qzone=false,channel:'qq'|'background'='qq'):ModelTool[]{
+  const imageMessage=channel==='qq'?{messageToQQ:{type:'string',description:'可选。想在开画前直接对当前 QQ 聊天里的人说话时才填，文字会原样发送。给画师的要求写在画面字段里。',maxLength:180}}:{};
   return [
     {type:'function',function:{name:'reply',description:'发消息并结束这一轮。memory可同时后台保存你想长期记住的内容；其他操作先用对应工具。',parameters:{type:'object',properties:{text:{type:'string',description:'你想对朋友说的话'},memory:knowledgeUpdateParameters},required:['text'],additionalProperties:false}}},
-    {type:'function',function:{name:'get_quota',description:'读取现在的精力值、每日限额和还能请 GPT小姐画多少张图。',parameters:{type:'object',properties:{},additionalProperties:false}}},
+    {type:'function',function:{name:'get_quota',description:channel==='qq'?'读取当前心情、耐力（companion）以及每日 API 费用额度和生图次数。':'读取每日 API 费用额度和生图次数。',parameters:{type:'object',properties:{},additionalProperties:false}}},
     ...(profile?[{type:'function' as const,function:{name:'get_person',description:'查看对方 QQ 头像和资料。',parameters:{type:'object',properties:{view:{type:'string',enum:['avatar','profile']},remark},required:['view'],additionalProperties:false}}}]:[]),
     ...(qzone?[{type:'function' as const,function:{name:'get_qzone',description:'看指定账号的QQ空间说说。target=self是你（肥鱼）自己的空间，speaker是当前说话人，其他人填QQ号；1最新、2上一条。结果和附件标明所属账号。',parameters:{type:'object',properties:{target:{type:'string',description:'self / speaker / 明确的QQ号'},index:{type:'integer',minimum:1,maximum:10000},count:{type:'integer',minimum:1,maximum:10},remark},required:['target','index','count'],additionalProperties:false}}}]:[]),
     ...(image?[{type:'function' as const,function:{name:'generate_image',description:'请GPT小姐画图，referenceIds会附上原图；画面和参考由你选；成图存入图库并返回catalogId，还没发送。随后用send_image先发图再回复。format/animated是实际格式和动画状态。',parameters:{type:'object',
-      properties:{remark,gif:gifParameters,referenceIds:{type:'array',items:{type:'string'},maxItems:3,description:'图库或recentImages的ID，最多3张；本人设定图为character，可与收到的图片一起附上。'},...Object.fromEntries(Object.entries(imageFields).map(([key,label])=>[key,{type:'string',description:label,maxLength:300}]))},
+      properties:{...imageMessage,gif:gifParameters,referenceIds:{type:'array',items:{type:'string'},maxItems:3,description:'图库或recentImages的ID，最多3张；本人设定图为character，可与收到的图片一起附上。'},...Object.fromEntries(Object.entries(imageFields).map(([key,label])=>[key,{type:'string',description:label,maxLength:300}]))},
       required:Object.keys(imageFields),additionalProperties:false}}}]:[])
   ];
 }
 export function imageLibraryTools():ModelTool[]{return [
-  {type:'function',function:{name:'send_image',description:'将图库任意图片发到当前对话，包括下载图、参考图、生成图；无需收藏成表情。重复调用查询送达结果，未确认的发送不重复投递。',parameters:{type:'object',properties:{imageId:{type:'string',description:'download_image/list_images/view_images返回的ID或生成图catalogId'}},required:['imageId'],additionalProperties:false}}},
+  {type:'function',function:{name:'send_image',description:'将图库任意图片发到当前对话，包括下载图、参考图、生成图；无需收藏成表情。生成图重复调用查询已有送达结果，reused=true且submittedNow=false表示本次没有新发送。未确认的发送不重复投递。',parameters:{type:'object',properties:{imageId:{type:'string',description:'download_image/list_images/view_images返回的ID或生成图catalogId'}},required:['imageId'],additionalProperties:false}}},
   {type:'function',function:{name:'list_images',description:'图库：设定图、收到的图片/空间配图/头像、收藏表情、生成图、网页下载图。生成图按新到旧排列，position=1 是最新；可收藏或交给GPT。',parameters:{type:'object',properties:{source:{type:'string',enum:['all','character','qzone','avatar','generated','received','collected','web']},offset:{type:'integer',minimum:0,maximum:1000}},additionalProperties:false}}},
   {type:'function',function:{name:'view_images',description:'查看所选ID的原图，可作为GPT生图参考。',parameters:{type:'object',properties:{imageIds:{type:'array',items:{type:'string'},minItems:1,maxItems:3}},required:['imageIds'],additionalProperties:false}}}
 ];}
 export function fileTools():ModelTool[]{return [
- {type:'function',function:{name:'list_files',description:'查看当前对话可发送的文件：图库原图和已完成Codex任务的产物。与表情包无关。',parameters:{type:'object',properties:{offset:{type:'integer',minimum:0,maximum:10000}},additionalProperties:false}}},
- {type:'function',function:{name:'send_file',description:'把已有文件作为普通QQ附件发送，保留原始字节和文件名。可用list_files的ID或图库ID；不需要将图片收藏成表情包。',parameters:{type:'object',properties:{fileId:{type:'string'}},required:['fileId'],additionalProperties:false}}}
+ {type:'function',function:{name:'list_files',description:'查找当前对话可发送的文件，例如已备好的倒计时视频、图库原图或开发产物。用结果中的ID发送所选文件。',parameters:{type:'object',properties:{offset:{type:'integer',minimum:0,maximum:10000}},additionalProperties:false}}},
+ {type:'function',function:{name:'send_file',description:'将已有文件（包括MP4视频）作为QQ附件原样发送。fileId取自list_files或图库。以送达回执为准。',parameters:{type:'object',properties:{fileId:{type:'string'}},required:['fileId'],additionalProperties:false}}}
 ];}
 export function requestsReferences(text:string):boolean{return /参考图|设定图|设定集|参考原图|图片库/.test(text);}

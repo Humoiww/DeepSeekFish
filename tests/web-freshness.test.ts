@@ -7,6 +7,36 @@ import {FishError,type ChatMessage} from '../src/types.js';
 import {inputBound,BudgetedModel} from '../src/agent/model.js';
 import {knowledgeTokens} from '../src/memory/knowledge.js';
 import {BudgetError} from '../src/budget/ledger.js';
+import {ProviderError} from '../src/diagnostics.js';
+import {webTools,browseTools} from '../src/search/tools.js';
+
+test('paid fetch rejects all direct image extensions before cache, reservations, provider calls or billing',async t=>{
+ const f=fixture({search:true});let calls=0,charges=0;
+ const service=new SearchService({async search(){return [];},async fetch(url){calls++;return {url,title:'text',content:'body',truncated:false,fetchedAt:new Date().toISOString()};}},f.ledger,f.cfg);
+ try{
+  const reservations=f.store.db.prepare('SELECT COUNT(*) AS n FROM reservations').get();
+  const used=f.ledger.costSummary().used;
+  // Any cache read or reservation would touch this database method and fail the test.
+  const prepare=t.mock.method(f.store.db,'prepare',()=>{throw Error('image URLs must be rejected before ledger/cache access');});
+  try{
+   for(const ext of ['png','jpg','jpeg','gif','webp','bmp','ico','svg','avif','PNG','JpEg','AVIF']){
+    for(const fresh of [false,true])await assert.rejects(service.fetch('https://example.com/public.'+ext+'?download=1#original','g','u',0,fresh,()=>{charges++;}),error=>{
+     assert.ok(error instanceof ProviderError);assert.equal(error.code,'FETCH_IMAGE_URL_NOT_SUPPORTED');assert.equal(error.diagnostic.stage,'fetch_page');
+     assert.match(String(error.diagnostic.reason),/download_image/);return true;
+    });
+   }
+  }finally{prepare.mock.restore();}
+  assert.equal(calls,0);assert.equal(charges,0);assert.equal(f.ledger.costSummary().used,used);
+  assert.deepEqual(f.store.db.prepare('SELECT COUNT(*) AS n FROM reservations').get(),reservations);
+  await service.fetch('https://example.com/article?image=cover.jpg','g','u');assert.equal(calls,1);assert.equal(f.ledger.costSummary().used,used+0.005);
+ }finally{f.cleanup();}
+});
+test('web tools describe free-first browsing and manual paid text-only fallback',()=>{
+ const browse=browseTools.find(tool=>tool.function.name==='browse_page')!.function.description;
+ const fetch=webTools.find(tool=>tool.function.name==='fetch_page')!.function.description;
+ assert.match(browse,/免费/);assert.match(browse,/优先/);assert.match(browse,/不会自动/);
+ assert.match(fetch,/付费/);assert.match(fetch,/最后兜底/);assert.match(fetch,/不能抓取图片/);
+});
 
 test('search timestamps survive caching; explicit refresh is charged once; index is not latest evidence',async()=>{
  const f=fixture({search:true,dailyCny:5,groupDailyCny:0});let searches=0,reads=0;

@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { makeDir,safePath,writePrivate } from '../paths.js';
+import { makeDir,safePath,writeActivityLogAtomic } from '../paths.js';
 import { redact } from '../storage/db.js';
 
 export interface CodexRecord {
@@ -24,7 +24,7 @@ export function saveCodexRecord(root:string,record:CodexRecord):void{
   try{
     if(!/^[a-z0-9-]{1,64}$/.test(record.id))return;
     makeDir(root,'runtime/logs/codex');
-    const name='runtime/logs/codex/'+record.id+'.json',tmp=name+'.tmp';
+    const name='runtime/logs/codex/'+record.id+'.json';
     const safe=clean(record);
     if(Buffer.byteLength(JSON.stringify(safe))>200000){
       safe.truncated=true;safe.request.prompt=safe.request.prompt.slice(0,4000);
@@ -32,8 +32,7 @@ export function saveCodexRecord(root:string,record:CodexRecord):void{
       safe.events=safe.events.slice(-20).map((e:any)=>({...e,detail:{omittedForSize:true}}));
       safe.finalText=safe.finalText?.slice(0,8000);
     }
-    writePrivate(root,tmp,JSON.stringify(safe,null,2)+'\n');
-    fs.renameSync(safePath(root,tmp),safePath(root,name));
+    writeActivityLogAtomic(root,name,JSON.stringify(safe,null,2)+'\n');
   }catch{console.error('CODEX_RECORD_WRITE_FAILED');}
 }
 export function readCodexRecord(root:string,id:string):CodexRecord|undefined{
@@ -64,7 +63,8 @@ export class CodexDiagnostics {
     if(method==='item/agentMessage/delta'&&typeof p.delta==='string'){this.message(p.itemId??'stream',p.delta,undefined,true);return;}
     const item=p?.item;
     this.event(method,{threadId:p?.threadId,turnId:p?.turnId??p?.turn?.id,itemId:item?.id,type:item?.type,status:item?.status??p?.turn?.status,
-      name:item?.name,tool:item?.tool,server:item?.server,arguments:item?.arguments,command:item?.command,error:p?.error??p?.turn?.error??item?.error});
+      name:item?.name,tool:item?.tool,server:item?.server,arguments:item?.arguments,command:item?.command,error:p?.error??p?.turn?.error??item?.error,
+      ...(['warning','configWarning','deprecationNotice','model/verification','model/safetyBuffering/updated'].includes(method)?{message:p?.message??p?.summary,details:p?.details,reasons:p?.reasons}: {})});
     if(method==='turn/started')this.record.turnId=p?.turn?.id;
     if(method==='item/completed'&&item?.type==='agentMessage')this.message(item.id,String(item.text??''),item.phase);
     if(method==='item/completed'&&item?.type==='imageGeneration'){

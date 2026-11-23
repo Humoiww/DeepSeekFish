@@ -3,7 +3,8 @@ import { isIP } from 'node:net';
 import type { Config } from '../config.js';
 import { Ledger } from '../budget/ledger.js';
 import { FishError,codeOf } from '../types.js';
-import { boundedJson } from '../agent/model.js';
+import {ProviderError,diagnosticSafe} from '../diagnostics.js';
+import { boundedJson,errorBody } from '../agent/model.js';
 import { pageEvidence } from './evidence.js';
 
 export interface SearchResult { title:string; url:string; snippet:string; summary?:string; date?:string|null; siteName?:string|null; retrievedAt?:string }
@@ -26,6 +27,16 @@ export function publicUrl(raw:string): boolean {
 }
 export class DeepSeekSearchProvider implements SearchProvider {
   constructor(private key:string, private cfg:()=>Config, private http:typeof fetch=fetch) {}
+  private async check(response:Response,operation:'SEARCH'|'FETCH'){
+    if(response.ok)return;
+    const body=await errorBody(response).catch(()=>null);
+    const reason=body?.error?.message??body?.message??(typeof body?.error==='string'?body.error:undefined);
+    const details:Record<string,unknown>={httpStatus:response.status,stage:operation==='SEARCH'?'search_response':'fetch_response'};
+    if(typeof reason==='string'&&!/^\s*</.test(reason)){
+      details.providerMessage=diagnosticSafe(reason.replaceAll(this.key,'[凭据省略]').split('\n')[0].slice(0,360));
+    }
+    throw new ProviderError(operation+'_HTTP_'+response.status,details);
+  }
   async search(query:string):Promise<SearchResult[]> {
     if (!this.key) throw new FishError('DEEPSEEK_KEY_MISSING');
     const res=await this.http('https://api.deepseek.com/v1/tools/search',{
@@ -33,7 +44,7 @@ export class DeepSeekSearchProvider implements SearchProvider {
       headers:{authorization:'Bearer '+this.key,'content-type':'application/json'},
       body:JSON.stringify({query,count:this.cfg().searchCount,need_content:false}),
     });
-    if(!res.ok){await res.body?.cancel();throw new FishError('SEARCH_HTTP_'+res.status);}
+    await this.check(res,'SEARCH');
     const data=await boundedJson(res);
     if(!Array.isArray(data.results))throw new FishError('SEARCH_INVALID_RESPONSE');
     const results=data.results.filter((r:any)=>typeof r.url==='string'&&publicUrl(r.url)).slice(0,this.cfg().searchCount).map((r:any)=>({
@@ -49,7 +60,7 @@ export class DeepSeekSearchProvider implements SearchProvider {
       method:'POST',redirect:'error',signal:AbortSignal.timeout(this.cfg().searchTimeoutMs),
       headers:{authorization:'Bearer '+this.key,'content-type':'application/json'},body:JSON.stringify({url}),
     });
-    if(!res.ok){await res.body?.cancel();throw new FishError('FETCH_HTTP_'+res.status);}
+    await this.check(res,'FETCH');
     const data=await boundedJson(res);
     if(typeof data.title!=='string'||typeof data.content!=='string')throw new FishError('FETCH_INVALID_RESPONSE');
     return {url,title:data.title.slice(0,200),content:data.content.slice(0,200000),truncated:data.content.length>200000,fetchedAt:new Date().toISOString()};
@@ -77,6 +88,7 @@ export class SearchService {
   async fetch(url:string,group:string,user:string,offset=0,fresh=false,charge?:(usage:WebCharge)=>void){
     if(!this.cfg().search)throw new FishError('SEARCH_DISABLED');
     if(typeof url!=='string'||url.length>8192||!publicUrl(url))throw new FishError('FETCH_PUBLIC_URL_REQUIRED');
+    if(/\.(png|jpe?g|gif|webp|bmp|ico|svg|avif)$/i.test(new URL(url).pathname))throw new ProviderError('FETCH_IMAGE_URL_NOT_SUPPORTED',{stage:'fetch_page',reason:'fetch_page 只能抓取网页文本正文，不能下载图片；下图片请用 download_image 或换其他来源。'});
     if(!Number.isSafeInteger(offset)||offset<0||offset>200000)throw new FishError('FETCH_OFFSET_INVALID');
     const normalized=new URL(url);normalized.hash='';url=normalized.href;
     if(!this.provider.fetch)throw new FishError('FETCH_UNAVAILABLE');

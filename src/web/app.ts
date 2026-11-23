@@ -1,3 +1,7 @@
+import {projectTime,clockPrompt,modelTimeJson} from '../time.js';
+import {Affect} from '../affect.js';
+import {tiebaTextPosts} from '../search/tieba.js';
+import {toolFailure,toolArgs,UnreadFeedback,actionState} from '../agent/tool-feedback.js';
 import { networkPricing,toCny } from '../budget/pricing.js';
 import fs from 'node:fs';
 import { configureQQ,qqStatus,readQQSettings } from '../qq/settings.js';
@@ -17,7 +21,7 @@ import { FishError,codeOf } from '../types.js';
 import { SessionWorkspace } from './workspace.js';
 import { WebModel,type WireMessage,type WebTool } from './model.js';
 import { webPrompt,promptSystems } from '../prompts.js';
-import { personaSettings,savePersona } from '../character.js';
+import { characterPrompt,personaSettings,savePersona } from '../character.js';
 import { promptSnapshots } from '../prompt-record.js';
 import { WebImages,requestsImage } from './images.js';
 import type { ImageRunner } from '../image/codex-smoke.js';
@@ -25,16 +29,20 @@ import { AppServerQuotaReader,CodexQuotaMonitor,type QuotaReader } from '../code
 import { MemoryJournal,dayStart } from '../memory/journal.js';
 import { startQQImageBroker } from '../qq/image-broker.js';
 import { ActivityHistory } from './activity.js';
+import {activityChainActive,interruptActivityChains} from '../qq/activity-chain.js';
+import {developmentDashboard,developmentRecord,requestDevelopmentInterrupt,requestConversationReset} from '../development/bridge-view.js';
+import {boundDevelopmentOwner} from '../development/intake.js';
 import { modelPayload } from '../agent/model.js';
 import {traceModel} from '../agent/model-trace.js';
 import {diagnosticSafe,errorDiagnostic} from '../diagnostics.js';
 import { PROJECT_TIMEZONE } from '../time.js';
 import {TiebaAccountClient} from '../tieba/client.js';
 import {tiebaTarget} from '../search/tieba.js';
+import {tiebaSectionSettings,saveTiebaSectionSettings} from '../tieba/section-settings.js';
 import { dailyStatus } from '../qq/daily-qzone.js';
 import { newsStatus } from '../qq/daily-news.js';
 
-type Settings={model:string;maxOutputTokens:number;dailyCny:number;groupDailyCny:number;search:boolean;codexQueue:boolean};
+type Settings={model:string;maxOutputTokens:number;dailyCny:number;groupDailyCny:number;search:boolean;codexQueue:boolean;groupChatSearch:boolean;curiosityPublicSearch:boolean;curiosityAutoSummary:boolean};
 type Session={id:string;title:string;created:number;updated:number};
 type Turn={id:string;sid:string;user:string;answer:string;trace:string;context:string;state:string;created:number};
 export type WebEvent={type:string;[key:string]:unknown};
@@ -49,8 +57,10 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   prepare(root);loadSecrets(root);
   const store=new Store(root,mock?'webui-mock.sqlite':'webui.sqlite');
   const budgetStore=new Store(root,mock?'webui-mock-budget.sqlite':'fish.sqlite');
+  const affect=new Affect(budgetStore);
   const activity=new ActivityHistory(root,store,budgetStore);
   const exploration=new ExplorationState(budgetStore,()=>validateConfig({...loadConfig(root),...JSON.parse(budgetStore.getMeta('settings')??'{}'),...readQQSettings(root)}));
+  const activeExploration=()=>budgetStore.db.prepare("SELECT id,state,cancel FROM exploration_runs WHERE state IN ('queued','running') ORDER BY created DESC LIMIT 1").get()??null;
   store.db.exec(`CREATE TABLE IF NOT EXISTS web_sessions(id TEXT PRIMARY KEY,title TEXT,created INTEGER,updated INTEGER);
     CREATE TABLE IF NOT EXISTS web_turns(id TEXT PRIMARY KEY,sid TEXT,user TEXT,answer TEXT,trace TEXT,context TEXT,state TEXT,created INTEGER);`);
   const memory=new MemoryJournal(root,store);
@@ -58,7 +68,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     memory.record({id:t.id+':user',conversation:'web:'+t.sid,actor:'webui-local',role:'user',text:t.user,at:t.created,source:'existing-web-chat'});
     if(t.state==='completed')memory.record({id:t.id+':assistant',conversation:'web:'+t.sid,actor:'DeepSeekFish',role:'assistant',text:t.answer,at:t.created,source:'existing-web-chat'});
   }
-  let settings:Settings={model:'deepseek-flash',maxOutputTokens:1024,dailyCny:loadConfig(root).dailyCny,groupDailyCny:loadConfig(root).groupDailyCny,search:false,codexQueue:false,...JSON.parse(store.getMeta('web-settings')??'{}')};
+  let settings:Settings={model:'deepseek-flash',maxOutputTokens:1024,dailyCny:loadConfig(root).dailyCny,groupDailyCny:loadConfig(root).groupDailyCny,search:false,codexQueue:false,groupChatSearch:loadConfig(root).groupChatSearch,curiosityPublicSearch:loadConfig(root).curiosityPublicSearch,curiosityAutoSummary:loadConfig(root).curiosityAutoSummary,...JSON.parse(store.getMeta('web-settings')??'{}')};
   const codexImageOnly=process.env.FISH_CODEX_IMAGE_ONLY==='1';
   if(codexImageOnly)settings.codexQueue=false;
   let secret='';const secretPath=safePath(root,'runtime/data/webui-secrets.json');
@@ -67,7 +77,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   const sessions=():Session[]=>store.db.prepare('SELECT * FROM web_sessions ORDER BY updated DESC LIMIT 50').all() as unknown as Session[];
   const cfg=():Config=>{
     const {codexQueue,...common}=settings;
-    return validateConfig({...defaults,...loadConfig(root),...common,...Object.fromEntries(Object.entries(JSON.parse(budgetStore.getMeta('settings')??'{}')).filter(([k])=>['search','dailyCny','groupDailyCny'].includes(k))),codex:codexQueue,
+    return validateConfig({...defaults,...loadConfig(root),...common,...Object.fromEntries(Object.entries(JSON.parse(budgetStore.getMeta('settings')??'{}')).filter(([k])=>['search','dailyCny','groupDailyCny','groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'].includes(k))),codex:codexQueue,
       groups:sessions().map(s=>'web:'+s.id),admins:['webui-local']});
   };
   const ledger=new Ledger(budgetStore,cfg),model=new WebModel(key,cfg,ledger,mock,http);
@@ -97,24 +107,25 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   }
   function configure(input:Record<string,unknown>){
     if(codexImageOnly&&input?.codexQueue===true)throw new FishError('CODEX_IMAGE_ONLY');
-    const allowed=['apiKey','model','maxOutputTokens','dailyCny','groupDailyCny','search','codexQueue'];
+    const allowed=['apiKey','model','maxOutputTokens','dailyCny','groupDailyCny','search','codexQueue','groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'];
     if(!input||typeof input!=='object'||Object.keys(input).some(k=>!allowed.includes(k)))throw new FishError('INVALID_WEB_SETTINGS');
-    const next={...settings,dailyCny:cfg().dailyCny,groupDailyCny:cfg().groupDailyCny};
-    for(const field of ['model','maxOutputTokens','dailyCny','groupDailyCny','search','codexQueue'] as const)if(field in input)(next as any)[field]=input[field];
+    const next={...settings,dailyCny:cfg().dailyCny,groupDailyCny:cfg().groupDailyCny,groupChatSearch:cfg().groupChatSearch,curiosityPublicSearch:cfg().curiosityPublicSearch,curiosityAutoSummary:cfg().curiosityAutoSummary};
+    for(const field of ['model','maxOutputTokens','dailyCny','groupDailyCny','search','codexQueue','groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'] as const)if(field in input)(next as any)[field]=input[field];
     if(typeof next.model!=='string'||!/^[a-zA-Z0-9._-]{1,80}$/.test(next.model)||!Number.isInteger(next.maxOutputTokens)||next.maxOutputTokens<128||next.maxOutputTokens>4096||
-      ![next.dailyCny,next.groupDailyCny].every(n=>typeof n==='number'&&Number.isFinite(n)&&n>=0&&Number.isSafeInteger(Math.round(n*1e9)))||typeof next.search!=='boolean'||typeof next.codexQueue!=='boolean')throw new FishError('INVALID_WEB_SETTINGS');
+      ![next.dailyCny,next.groupDailyCny].every(n=>typeof n==='number'&&Number.isFinite(n)&&n>=0&&Number.isSafeInteger(Math.round(n*1e9)))||typeof next.search!=='boolean'||typeof next.codexQueue!=='boolean'||['groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'].some(field=>typeof next[field as keyof Settings]!=='boolean'))throw new FishError('INVALID_WEB_SETTINGS');
     if(input.apiKey!==undefined){
       if(typeof input.apiKey!=='string'||input.apiKey.length>256||input.apiKey&&!/^[a-zA-Z0-9_-]{8,256}$/.test(input.apiKey))throw new FishError('INVALID_API_KEY');
       if(input.apiKey){secret=input.apiKey;writePrivate(root,'runtime/data/webui-secrets.json',JSON.stringify({deepseekKey:secret})+'\n');}
     }
-    budgetStore.transaction(()=>{const shared=JSON.parse(budgetStore.getMeta('settings')??'{}');for(const field of ['search','dailyCny','groupDailyCny'] as const)if(input[field]!==undefined)shared[field]=next[field];budgetStore.setMeta('settings',JSON.stringify(shared));});
+    budgetStore.transaction(()=>{const shared=JSON.parse(budgetStore.getMeta('settings')??'{}');for(const field of ['search','dailyCny','groupDailyCny','groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'] as const)if(input[field]!==undefined)shared[field]=next[field];budgetStore.setMeta('settings',JSON.stringify(shared));});
     settings=next;store.setMeta('web-settings',JSON.stringify(settings));return status();
   }
-  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings:{...settings,search:cfg().search,dailyCny:cfg().dailyCny,groupDailyCny:cfg().groupDailyCny},web:{enabled:cfg().search,requests:ledger.value('search'),spentCny:toCny(Number((budgetStore.db.prepare("SELECT coalesce(sum(cost_nano),0) AS n FROM reservations WHERE day=? AND kind='search' AND allowance_reset=0").get(dayKey()) as any).n)),budget:'CNY',...networkPricing(cfg().model)},workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
-    dailyQzone:dailyStatus(root,budgetStore),
+  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings:{...settings,search:cfg().search,dailyCny:cfg().dailyCny,groupDailyCny:cfg().groupDailyCny,groupChatSearch:cfg().groupChatSearch,curiosityPublicSearch:cfg().curiosityPublicSearch,curiosityAutoSummary:cfg().curiosityAutoSummary},web:{enabled:cfg().search,requests:ledger.value('search'),spentCny:toCny(Number((budgetStore.db.prepare("SELECT coalesce(sum(cost_nano),0) AS n FROM reservations WHERE day=? AND kind='search' AND allowance_reset=0").get(dayKey()) as any).n)),budget:'CNY',...networkPricing(cfg().model)},workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
+    neonBusy:developmentDashboard(root,boundDevelopmentOwner(root),false).busy,
+    companion:affect.status(),dailyQzone:dailyStatus(root,budgetStore),
     dailyNews:newsStatus(root,budgetStore),
     memory:{automaticDays:2,timezone:PROJECT_TIMEZONE,archive:'runtime/memory/days',persona:'personas/active.json'},
-    imageLimits:{daily:cfg().imageDaily,codexDaily:cfg().codexDaily},codexQuota:quota.status(),
+    imageLimits:{daily:cfg().imageDaily},codexQuota:quota.status(),
     capabilities:['会话文件列表','会话文本读写','明确请求后设计并生成单张图片',...(cfg().search?['公开搜索与网页读取']:[]),...(settings.codexQueue?['提交 Codex 待审任务']:[])],
     budgets:{cost:ledger.costSummary(),dailyCny:cfg().dailyCny,groupDailyCny:cfg().groupDailyCny,usage:ledger.snapshot(),fault:budgetStore.getMeta('budgetFault')??null},
     tasks:tasks.list().map(t=>({id:t.id,sessionId:t.grp.slice(4),request:t.request,brief:t.brief,state:t.state,result:t.result})),active:active.size};}
@@ -132,7 +143,11 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       case 'read_file':return {path:args.path,content:workspace.read(args.path)};
       case 'write_file':return workspace.write(args.path,args.content);
       case 'search_web':return searchEvidence(await search.search(args.query,'web:'+s.id,'webui-local',args.fresh));
-      case 'browse_page':return browsePage(args.url,args.offset,signal,publicReader,args.query,args.textOffset);
+      case 'browse_page':{
+        const page=await browsePage(args.url,args.offset,signal,publicReader,args.query,args.textOffset);
+        const posts=tiebaTextPosts(page,page.text);
+        return posts?{...page,text:undefined,posts}:page;
+      }
       case 'fetch_page':return search.fetch(args.url,'web:'+s.id,'webui-local',args.offset,args.fresh);
       case 'queue_codex':{
         if(typeof args.task!=='string'||args.task.length>1500)throw new FishError('INVALID_TASK_BRIEF');
@@ -153,13 +168,23 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     const controller=new AbortController();active.set(s.id,controller);
     const imageRequest=mode==='image'||requestsImage(text);
     const joined=AbortSignal.any([signal,controller.signal,AbortSignal.timeout(imageRequest?cfg().codexTimeoutMs+90000:120000)]),turnId=randomUUID(),trace:any[]=[];
-    const prior=store.db.prepare("SELECT id,context FROM web_turns WHERE sid=? AND state='completed' AND created>=? ORDER BY created DESC,rowid DESC LIMIT 3").all(s.id,dayStart()-86400000) as {id:string;context:string}[];
-    const history=prior.reverse().flatMap(t=>JSON.parse(t.context) as WireMessage[]);
+    const prior=store.db.prepare("SELECT id,context,created FROM web_turns WHERE sid=? AND state='completed' AND created>=? ORDER BY created DESC,rowid DESC LIMIT 3").all(s.id,dayStart()-86400000) as {id:string;context:string;created:number}[];
+    const history=prior.reverse().flatMap(t=>(JSON.parse(t.context) as WireMessage[]).map(m=>{
+      if(m.role==='user')return {...m,content:'[此轮开始于香港时间 '+projectTime(t.created)+'] '+m.content};
+      if(m.role==='tool'){
+        // Older saved tool receipts can contain raw epochs or UTC metadata.
+        try{return {...m,content:modelTimeJson(JSON.parse(m.content))};}catch{ /* May be a retained excerpt. */ }
+      }
+      return m;
+    }));
     // Whole completed turns only: never orphan tool results when trimming context.
     while(Buffer.byteLength(JSON.stringify(history))>24000&&history.length){history.splice(0,history.findIndex((m,i)=>i>0&&m.role==='user')>0?history.findIndex((m,i)=>i>0&&m.role==='user'):history.length);}
+    const feedback=new UnreadFeedback(store,'web:'+s.id),pending=feedback.previous();
+    const receipts:WireMessage[]=pending.previousToolErrors?[{role:'system',content:modelTimeJson(pending)}]:[];
     const recalled=memory.recall('web:'+s.id,text,prior.flatMap(t=>[{id:t.id+':user'},{id:t.id+':assistant'}]));
-    const memoryContext:WireMessage[]=recalled.events.length||recalled.needsReference?[{role:'user',content:JSON.stringify({memory:recalled})}]:[];
-    const current:WireMessage[]=[{role:'user',content:redact(text.trim())}],sent:WireMessage[]=[{role:'system',content:webPrompt(root)},...memoryContext,...history];
+    const memoryContext:WireMessage[]=recalled.events.length||recalled.needsReference?[{role:'user',content:modelTimeJson({memory:recalled})}]:[];
+    const characterText=characterPrompt(root);
+    const current:WireMessage[]=[{role:'user',content:redact(text.trim())}],sent:WireMessage[]=[{role:'system',content:webPrompt(root,characterText)},...receipts,...memoryContext,...history];
     const offered=mode==='agent'?tools.filter(t=>!['search_web','fetch_page','browse_page'].includes(t.function.name)||cfg().search).filter(t=>t.function.name!=='queue_codex'||settings.codexQueue):[];
     store.db.prepare('INSERT INTO web_turns VALUES (?,?,?,?,?,?,?,?)').run(turnId,s.id,current[0].content,'','[]','[]','running',Date.now());
     store.db.prepare('UPDATE web_sessions SET title=?,updated=? WHERE id=?').run(s.title==='新的对话'?redact(text.trim()).slice(0,26):s.title,Date.now(),s.id);
@@ -168,9 +193,17 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     const record=(event:any,publish=true)=>{trace.push(event);saveTrace();if(publish)emit({type:'tool',event});};
     try{
       memory.record({id:turnId+':user',conversation:'web:'+s.id,actor:'webui-local',role:'user',text:current[0].content,at:Date.now(),source:'web'});
+      if(!imageRequest){
+        try{
+          affect.feedback('web:'+turnId,text,true);
+          const mood=affect.expression();
+          if(mood)sent[0].content+='\n'+mood;
+        }catch{/* Chat remains available if state recording fails. */}
+      }
       emit({type:'start',turnId});
       if(imageRequest){
-        const image=await images.generate(s.id,turnId,current[0].content,[...memoryContext,...history],model,joined,e=>{
+        const image=await images.generate(s.id,turnId,current[0].content,[...receipts,...memoryContext,...history],model,joined,e=>{
+          if(e.type==='image_plan')feedback.acknowledged();
           if(e.type==='model_usage')record({name:'model_usage',state:'completed',usage:e.usage},false);
           else if(e.type==='image_plan')record({name:'image_plan',state:'completed',plan:e.plan,character:e.character,mock:e.mock,result:JSON.stringify(e.plan)});
           else if(e.type==='codex_record')record({name:'codex_record',state:e.error?'failed':'completed',result:JSON.stringify(e.record,null,2)});
@@ -183,13 +216,16 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
         emit({type:'answer',text:answer});emit({type:'done',turnId});return;
       }
       const used=new Set<string>();
-      for(let round=0;round<4;round++){
+      for(let round=0;round<5;round++){
         joined.throwIfAborted();emit({type:'thinking',round:round+1});
-        const messages=[...sent,...current],final=round===3||calls>=6;
+        const messages:WireMessage[]=[...sent,{role:'system',content:clockPrompt()},...current],final=round>=3||calls>=6;
         const m=await traceModel(trace,saveTrace,modelPayload(cfg(),messages,cfg().maxOutputTokens,{tools:offered,final}),round,onReservation=>model.complete('web:'+s.id,messages,offered,joined,final,onReservation));
         joined.throwIfAborted();
-        if(!m.tool_calls?.length){answer=redact(m.content).slice(0,16000);current.push({role:'assistant',content:answer});break;}
-        if(!offered.length||round===3||calls+m.tool_calls.length>6)throw new FishError('TOOL_LIMIT_OR_DISABLED');
+        feedback.acknowledged();
+        if(!m.tool_calls?.length){
+          answer=redact(m.content).slice(0,16000);current.push({role:'assistant',content:answer});break;
+        }
+        if(!offered.length||round>=3||calls+m.tool_calls.length>6)throw new FishError('TOOL_LIMIT_OR_DISABLED');
         current.push({role:'assistant',content:m.content,tool_calls:m.tool_calls});
         for(const c of m.tool_calls){
           joined.throwIfAborted();
@@ -197,11 +233,12 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
           let result:unknown;
           try{
             if(!offered.some(t=>t.function.name===c.function.name))throw new FishError('TOOL_NOT_ALLOWED');
-            result=await execute(s,c.function.name,JSON.parse(c.function.arguments),joined);
-            if(c.function.name==='update_knowledge')sent[0]={role:'system',content:webPrompt(root)};
-            record({name:c.function.name,state:'completed',round,callId:c.id,args:JSON.parse(c.function.arguments),result:redact(JSON.stringify(result))});
-          }catch(e){result={error:e instanceof SyntaxError?'INVALID_TOOL_JSON':codeOf(e)};record({name:c.function.name,state:'failed',round,callId:c.id,args:c.function.arguments,result:JSON.stringify(result),diagnostic:errorDiagnostic(e)});}
-          current.push({role:'tool',tool_call_id:c.id,content:['get_knowledge','update_knowledge'].includes(c.function.name)?JSON.stringify(result):redact(JSON.stringify(result)).slice(0,18000)});
+            const args=toolArgs(c.function.arguments);
+            result=await execute(s,c.function.name,args,joined);
+            if(c.function.name==='update_knowledge')sent[0]={role:'system',content:webPrompt(root,characterText)};
+            record({name:c.function.name,state:actionState(result),round,callId:c.id,args:toolArgs(c.function.arguments),result:redact(JSON.stringify(result))});
+          }catch(e){result=toolFailure(e,c.function.name);record({name:c.function.name,state:'failed',round,callId:c.id,args:c.function.arguments,result:JSON.stringify(result),diagnostic:errorDiagnostic(e)});}
+          feedback.record(c.function.name,result);current.push({role:'tool',tool_call_id:c.id,content:['get_knowledge','update_knowledge'].includes(c.function.name)?modelTimeJson(result):redact(modelTimeJson(result)).slice(0,18000)});
         }
       }
       joined.throwIfAborted();if(!answer)throw new FishError('DEEPSEEK_EMPTY_RESPONSE');
@@ -209,7 +246,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       memory.record({id:turnId+':assistant',conversation:'web:'+s.id,actor:'DeepSeekFish',role:'assistant',text:answer,at:Date.now(),source:'web'});
       emit({type:'answer',text:answer});emit({type:'done',turnId});
     }catch(e){
-      const error=joined.aborted?'CHAT_CANCELLED':codeOf(e);
+      const error=joined.aborted?'CHAT_CANCELLED':codeOf(e);if(imageRequest)feedback.record('generate_image',toolFailure(e,'generate_image'));
       record({error,phase:'turn',diagnostic:errorDiagnostic(e),at:Date.now()},false);
       store.db.prepare("UPDATE web_turns SET answer=?,state='failed' WHERE id=?").run(error,turnId);emit({type:'error',error});
     }finally{active.delete(s.id);}
@@ -223,9 +260,40 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     while(active.size)await new Promise(resolve=>setTimeout(resolve,10));await quota.close();store.close();budgetStore.close();}
   return {root,mock,token,
     exploration,tieba,tiebaAttempt:()=>JSON.parse(budgetStore.getMeta('tieba:last-attempt')??'null'),
+    companion:()=>affect.status(),configureCompanion:(input:Record<string,unknown>)=>affect.configure(input),
+    tiebaSections:()=>tiebaSectionSettings(root),saveTiebaSections:(input:unknown)=>saveTiebaSectionSettings(root,input),
     tiebaRead:async(input:any)=>{if(!input||Object.keys(input).some(k=>!['url','mode'].includes(k))||typeof input.url!=='string'||input.url.length>4096||!['public','account'].includes(input.mode)||!tiebaTarget(new URL(input.url)))throw new FishError('TIEBA_READ_TARGET_DENIED');return input.mode==='account'?tieba.read(input.url):browsePage(input.url,0,undefined,publicReader);},
     tiebaAudit:(action:string,result:any)=>budgetStore.audit('tieba-account','web',JSON.stringify({action,state:result?.state,error:result?.error??result?.lastError?.code,at:Date.now()})),
-    activity:(params:URLSearchParams)=>activity.list(params),activityDetail:(id:unknown)=>activity.detail(id),activityImage:(id:unknown)=>activity.image(id),
+    activity:(params:URLSearchParams,signal?:AbortSignal)=>activity.list(params,signal),activityDetail:(id:unknown)=>activity.detail(id),activityImage:(id:unknown)=>activity.image(id),
+    neon:()=>developmentDashboard(root,boundDevelopmentOwner(root)),
+    neonRecord:(kind:unknown,id:unknown)=>developmentRecord(root,kind,id),
+    neonResetConversation:(input:Record<string,unknown>)=>{
+      if(Object.keys(input).length)throw new FishError('INVALID_TOOL_ARGS');
+      if(!developmentDashboard(root,boundDevelopmentOwner(root),false).bridge)throw new FishError('DEV_AGY_BRIDGE_UNAVAILABLE');
+      return requestConversationReset(root);
+    },
+    neonInterrupt:(input:Record<string,unknown>)=>{
+      if(Object.keys(input).some(key=>key!=='taskId'))throw new FishError('INVALID_TOOL_ARGS');
+      return {ok:true,developmentRequested:requestDevelopmentInterrupt(root,boundDevelopmentOwner(root),input.taskId)};
+    },
+    activityActive:()=>{
+      const owner=boundDevelopmentOwner(root);
+      return {chains:owner?activityChainActive(budgetStore,owner):[],exploration:activeExploration(),
+        development:developmentDashboard(root,owner,false).active};
+    },
+    activityInterrupt:(input:Record<string,unknown>)=>{
+      if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!['chainId','runId','taskId'].includes(key))||
+        [input.chainId,input.runId,input.taskId].filter(id=>id!==undefined).length>1)throw new FishError('INVALID_TOOL_ARGS');
+      const owner=boundDevelopmentOwner(root);
+      const empty={ok:true,stopped:[],settling:[],explorationRequested:false,developmentRequested:[]};
+      if(input.taskId!==undefined)return {...empty,developmentRequested:requestDevelopmentInterrupt(root,owner,input.taskId)};
+      if(input.chainId!==undefined&&!owner)throw new FishError('ACTIVITY_CHAIN_NOT_FOUND');
+      const result=input.runId===undefined&&owner?interruptActivityChains(budgetStore,owner,input.chainId):empty;
+      if(input.chainId!==undefined)return {...empty,...result};
+      const runId=input.runId??activeExploration()?.id;
+      return {...result,explorationRequested:runId!==undefined&&exploration.cancel(runId).requested===true,
+        developmentRequested:input.runId===undefined?requestDevelopmentInterrupt(root,owner):[]};
+    },
     persona:()=>personaSettings(root),savePersona:(input:unknown)=>savePersona(root,input),
     prompts:()=>({systems:promptSystems(root),knowledge:knowledgeSnapshot(root),latest:promptSnapshots(budgetStore)}),
     sessions,session,createSession,detail,configure,status,chat,tasks,recover,close,

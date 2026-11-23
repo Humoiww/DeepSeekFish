@@ -1,3 +1,4 @@
+import {sourceTime,projectTime} from '../time.js';
 import {Parser} from 'htmlparser2';
 import type {PublicReader,PublicResource} from './public-web.js';
 import {publicUrl} from './provider.js';
@@ -8,7 +9,12 @@ export type SocialPost={id:string;url:string|null;author:{id?:string;name:string
 export type SocialPage={url:string;sourceUrl:string;provider:string;coverage:string;title:string;status:string;fetchedAt:string;latestVerified:false;posts:SocialPost[];links:{url:string;label:string}[];nextPage:string|null;notice?:string;unavailable:{url:string;error:string}[];[key:string]:unknown};
 export const str=(v:unknown)=>typeof v==='string'?v:'';
 export const safeLink=(raw:unknown,base:string)=>{try{if(typeof raw!=='string'||!raw.trim())return null;const u=new URL(raw,base);return publicUrl(u.href)?u.href:null;}catch{return null;}};
-export const timestamp=(value:unknown)=>{const ms=typeof value==='number'?value*1000:Date.parse(str(value));return Number.isFinite(ms)&&ms>0&&ms<=8640000000000000?new Date(ms).toISOString():null;};
+export function timestamp(value:unknown){
+ if(typeof value==='number'){
+  const ms=value*1000;return Number.isFinite(ms)&&ms>0&&ms<=8640000000000000?projectTime(ms):null;
+ }
+ const raw=str(value).trim();return raw&&raw.length<=100&&Number.isFinite(Date.parse(raw))?sourceTime(raw):null;
+}
 export function htmlContent(html:string,base:string){
  let text='',skip=0;const images:SocialImage[]=[],links:{url:string;label:string}[]=[];
  const p=new Parser({onopentag(name,a){if(['script','style','template'].includes(name))skip++;if(skip)return;if(['p','div','br','li','blockquote'].includes(name))text+='\n';const url=safeLink(a.src??a.href,base);if(url&&name==='img')images.push({url,kind:'post_image',label:(a.alt??'').slice(0,200)});if(url&&name==='a')links.push({url,label:(a.title??url).slice(0,160)});},ontext(t){if(!skip&&text.length<200000)text+=t;},onclosetag(n){if(['script','style','template'].includes(n))skip=Math.max(0,skip-1);if(n==='p')text+='\n';}},{decodeEntities:true});p.end(html);
@@ -36,7 +42,7 @@ export function socialOutput(page:SocialPage,offset:number,textOffset:number,que
  const terms=query.toLowerCase().split(/\s+/).filter(Boolean),all=page.posts.filter(p=>terms.every(t=>(p.text+' '+p.author.name+' '+p.id).toLowerCase().includes(t))),posts=all.slice(offset,offset+10);
  const text=posts.map(p=>{
   const by=p.repostedBy as {name?:string;handle?:string}|undefined;
-  return '['+p.id+'] '+p.author.name+(p.author.handle?' @'+p.author.handle:'')+(p.publishedAt?' · '+p.publishedAt:'')+
+  return '['+p.id+'] '+p.author.name+(p.author.handle?' @'+p.author.handle:'')+(p.publishedAt?' · '+sourceTime(p.publishedAt):'')+
    (p.parentId?' · 回复 '+p.parentId:'')+(p.kind==='quoted_post'?' · 被引用原帖':'')+(p.quotedPostId?' · 引用 '+p.quotedPostId:'')+
    (by?' · 转发人 '+(by.handle||by.name||'未知'):'')+(p.kind==='unavailable'?' · 不可用 '+String(p.unavailableReason??''):'')+'\n'+p.text;
  }).join('\n\n');

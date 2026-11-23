@@ -31,5 +31,5 @@ MemoryMax=768M
 TasksMax=512
 LimitNOFILE=4096
 CPUQuota=100%
-TimeoutStopSec=5
+TimeoutStopSec=55
 KillMode=control-group

@@ -2,7 +2,7 @@ import {validateGif,type GifOptions} from './options.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { makeDir, safePath, writePrivate } from '../paths.js';
+import { makeDir, safePath, writeActivityLogAtomic } from '../paths.js';
 import { loadConfig,type Config } from '../config.js';
 import { FishError, codeOf } from '../types.js';
 import { Store } from '../storage/db.js';
@@ -42,7 +42,7 @@ export function captureCodexImage(root:string,cwd:string,images:CodexImageItem[]
   }catch(e){if(created&&target)fs.rmSync(target,{force:true});throw e;}
 }
 
-export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server'|'mock';error?:string;retryAt?:number;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number;diagnostic?:CodexRecord;actual?:ReturnType<typeof generatedInfo>;requestedGif?:GifOptions}
+export interface ImageSmokeReport {ok:boolean;id:string;source:'codex-app-server'|'mock';error?:string;failure?:{stage:string;timeoutMs:number;elapsedMs:number};retryAt?:number;nativeImageCompletions?:number;manifest?:Artifact[];outputDir?:string;elapsedMs:number;diagnostic?:CodexRecord;actual?:ReturnType<typeof generatedInfo>;requestedGif?:GifOptions}
 export function publishCodexImage(root:string,id:string,maxBytes:number):Artifact[]{
   if(!/^[a-z0-9-]{1,64}$/.test(id))throw new FishError('INVALID_TASK_ID');
   const cwd=safePath(root,'runtime/workspace/'+id);
@@ -62,7 +62,7 @@ export function checkImageCapacity(root:string,cfg:Config,ledger:Ledger,mock=fal
   if(ledger.store.getMeta('budgetFault'))throw new FishError('BUDGET_USAGE_FAULT');
   if(!mock&&!fs.existsSync(safePath(root,'runtime/codex-home/auth.json')))throw new FishError('CODEX_PROJECT_LOGIN_REQUIRED');
   if(ledger.value('image')>=cfg.imageDaily)throw new FishError('IMAGE_BUDGET_EXHAUSTED');
-  if(ledger.store.db.prepare("SELECT id FROM reservations WHERE kind='codex' AND state='held'").get())throw new FishError('CODEX_BUSY');
+  if(ledger.imageJobRunning())throw new FishError('CODEX_BUSY');
 }
 
 /** Trusted caller supplies a single human image request; never expose this as a
@@ -73,7 +73,7 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
   const report:ImageSmokeReport={ok:false,id,source:mock?'mock':'codex-app-server',elapsedMs:0};
   let reservation:{codex:string;image:string}|undefined,stopUnconfirmed=false,reference:CharacterReference|undefined;
   let selected:CharacterReference[]=[];
-  const signal=AbortSignal.any([options.signal,AbortSignal.timeout(cfg.codexTimeoutMs)]);
+  const deadline=AbortSignal.timeout(cfg.codexTimeoutMs),signal=AbortSignal.any([options.signal,deadline]);
   try{
     signal.throwIfAborted();checkImageCapacity(root,cfg,ledger,mock);
     if(options.gif!==undefined)report.requestedGif=validateGif(options.gif);
@@ -101,7 +101,13 @@ export async function runCodexImage(root:string,prompt:string,options:ImageJobOp
     report.ok=true;
   }catch(e){
     stopUnconfirmed=codeOf(e)==='CODEX_PROCESS_NOT_TERMINATED';
-    report.error=signal.aborted?'CODEX_IMAGE_CANCELLED_OR_TIMED_OUT':codeOf(e);
+    if(signal.aborted){
+      const record=readCodexRecord(root,id),imageStarted=record?.events.some(e=>e.method==='item/started'&&(e.detail as any)?.type==='imageGeneration');
+      const turnStarted=record?.events.some(e=>e.method==='turn-requested');
+      const timedOut=deadline.aborted&&signal.reason===deadline.reason;
+      report.error=!timedOut?'CODEX_IMAGE_CANCELLED':imageStarted?'CODEX_IMAGE_GENERATION_TIMEOUT':turnStarted?'CODEX_MODEL_RESPONSE_TIMEOUT':'CODEX_IMAGE_STARTUP_TIMEOUT';
+      report.failure={stage:imageStarted?'native_image_generation':turnStarted?'await_model_response':'startup',timeoutMs:cfg.codexTimeoutMs,elapsedMs:Date.now()-started};
+    }else report.error=codeOf(e);
     if(e instanceof CodexRateLimitError)report.retryAt=e.retryAt;
     if(reservation)ledger.error();
   }finally{
@@ -124,6 +130,6 @@ export async function codexImageSmoke(root:string,prompt:string,reviewed:boolean
   const cancelled=()=>controller.abort();process.once('SIGINT',cancelled);process.once('SIGTERM',cancelled);
   try{
     const report=await runCodexImage(root,prompt,{cfg,ledger,group:'local-cli',signal:controller.signal});
-    writePrivate(root,'runtime/logs/codex-image-last.json',JSON.stringify(report,null,2)+'\n');return report;
+    writeActivityLogAtomic(root,'runtime/logs/codex-image-last.json',JSON.stringify(report,null,2)+'\n');return report;
   }finally{process.removeListener('SIGINT',cancelled);process.removeListener('SIGTERM',cancelled);store.close();}
 }

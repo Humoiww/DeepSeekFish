@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily DeepSeekFish backup at 03:00 Hong Kong time
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Asia/Hong_Kong
+Persistent=true
+RandomizedDelaySec=0
+AccuracySec=1min
+Unit=deepseekfish-memory-backup.service
+
+[Install]
+WantedBy=timers.target

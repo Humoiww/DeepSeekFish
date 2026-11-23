@@ -1,7 +1,7 @@
 import { createServer, request, type IncomingMessage } from 'node:http';
 
-const reads=new Set(['/','/web.css','/web.js','/activity.js','/exploration.js','/api/exploration','/api/exploration/journal','/tieba.js','/api/tieba','/api/tieba/frame','/api/tieba/publication-frame','/api/tieba/actions','/fish.svg','/api/status','/api/sessions','/api/session','/api/file','/api/image','/api/qq','/api/persona','/api/prompts','/api/activity','/api/activity/detail','/api/activity/image']);
-const writes=new Set(['/api/tieba/account','/api/tieba/start','/api/tieba/check','/api/tieba/publication-start','/api/tieba/publication-submit','/api/tieba/publication-check','/api/tieba/logout','/api/tieba/close','/api/tieba/input','/api/tieba/read','/api/bootstrap','/api/sessions','/api/chat','/api/settings','/api/codex-quota/refresh','/api/images/reset','/api/tokens/reset','/api/costs/reset','/api/cancel','/api/qq','/api/persona','/api/exploration/settings','/api/exploration/run','/api/exploration/cancel']);
+const reads=new Set(['/','/web.css','/appearance.js','/web.js','/activity.js','/neon.js','/api/neon','/api/neon/record','/api/activity/active','/exploration.js','/api/exploration','/api/exploration/journal','/tieba.js','/api/tieba','/api/tieba/frame','/api/tieba/publication-frame','/api/tieba/actions','/api/tieba/queue','/api/tieba/sections','/fish.svg','/portrait.webp','/portrait-motion.js','/portrait-parts.webp','/api/status','/api/companion','/api/sessions','/api/session','/api/file','/api/image','/api/qq','/api/persona','/api/prompts','/api/activity','/api/activity/detail','/api/activity/image']);
+const writes=new Set(['/api/neon/reset-conversation','/api/neon/interrupt','/api/activity/interrupt','/api/tieba/account','/api/tieba/sections','/api/tieba/start','/api/tieba/check','/api/tieba/publication-start','/api/tieba/publication-submit','/api/tieba/publication-check','/api/tieba/logout','/api/tieba/close','/api/tieba/input','/api/tieba/read','/api/bootstrap','/api/sessions','/api/chat','/api/settings','/api/companion','/api/codex-quota/refresh','/api/images/reset','/api/tokens/reset','/api/costs/reset','/api/cancel','/api/qq','/api/persona','/api/exploration/settings','/api/exploration/daily-post','/api/exploration/run','/api/exploration/cancel']);
 
 export type TailnetAccess={owner:(address:string,port:number)=>Promise<boolean>;token:string};
 /** Fixed-target gateway. Owner devices use Tailscale identity, with the local
@@ -31,7 +31,7 @@ export function tailnetGateway(publicHost:string,upstreamPort=17862,access?:Tail
     if(Number(req.headers['content-length'])>32768){deny(res,413,'BODY_LIMIT');return;}
     // Forward only application headers; strip approval, proxy and hop headers.
     const headers:IncomingMessage['headers']={host:localHost};
-    for(const key of ['authorization','content-type','accept'])if(req.headers[key])headers[key]=req.headers[key];
+    for(const key of ['authorization','content-type','accept','if-none-match'])if(req.headers[key])headers[key]=req.headers[key];
     if(access)headers.authorization='Bearer '+access.token;
     if(req.headers.origin)headers.origin='http://'+localHost;
     const upstream=request({hostname:'127.0.0.1',port:upstreamPort,path:url.pathname+url.search,method:req.method,headers},response=>{
@@ -43,7 +43,7 @@ export function tailnetGateway(publicHost:string,upstreamPort=17862,access?:Tail
     res.on('close',()=>{if(!res.writableEnded)upstream.destroy();});
     req.pipe(upstream);
   });
-  server.headersTimeout=10000;server.requestTimeout=150000;
+  server.headersTimeout=15000;server.requestTimeout=330000;
   server.on('upgrade',(_req,socket)=>socket.destroy());
   server.on('connect',(_req,socket)=>socket.destroy());
   return server;

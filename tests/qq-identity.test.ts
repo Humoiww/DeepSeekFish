@@ -47,9 +47,9 @@ test('legacy archives migrate without inventing names; per-message identity surv
   assert.match(String(dialogue.find(m=>String(m.content).includes('另一个同名的人'))?.content),/QQ 30003.*旧名片/);
   assert.match(String(dialogue.at(-1)?.content),/回复 QQ 30003/);
   s.prune(24,1);assert.equal(s.history('g',20).length,1);
-  assert.equal(j.read('g',{messageId:'a'}).events[0].sender.card,'旧名片');
-  assert.equal(j.read('g',{messageId:'b'}).events[0].sender.card,'新名片');
-  assert.equal(j.read('g2',{messageId:'d'}).events[0].sender.card,'第二群名片');
+  assert.equal(j.read('g',{messageId:'a'}).events[0].sender?.card,'旧名片');
+  assert.equal(j.read('g',{messageId:'b'}).events[0].sender?.card,'新名片');
+  assert.equal(j.read('g2',{messageId:'d'}).events[0].sender?.card,'第二群名片');
   assert.equal(j.read('g',{messageId:'reply'}).events[0].replyTo,'30003');
   assert.equal(j.read('g',{query:'同一个人'}).events.length,2);
   assert.equal(j.recall('g','回忆一下“旧称呼”',[],now+10).events[0].actor,'20002');
@@ -79,10 +79,10 @@ test('group turns preserve distinct accounts and reply targets while model-selec
   await bot.receive(m(30003,3,'叫我小林'));await bot.flush();
   await bot.receive(m(20002,4,'继续'));await bot.flush();
   assert.deepEqual(recipients,['20002','30003','20002']);assert.equal(inputs.length,3);
-  assert.match(String(inputs[1].at(-1)?.content),/QQ 30003.*路人名片.*叫我小林/);
-  assert.ok(inputs[1].some(m=>m.role==='assistant'&&String(m.content).includes('[回复 QQ 20002]')));
+  assert.match(String(inputs[1].findLast(m=>m.role==='user')?.content),/QQ 30003.*路人名片.*叫我小林/);
+  assert.ok(inputs[1].some(m=>m.role==='assistant'&&String(m.content).includes('[收件人 QQ 20002]')));
   assert.match(String(inputs[2][0].content),/QQ 20002.*老大/);assert.match(String(inputs[2][0].content),/QQ 30003.*小林/);
-  assert.ok(inputs[2].some(m=>m.role==='assistant'&&String(m.content).includes('[回复 QQ 30003]')));
+  assert.ok(inputs[2].some(m=>m.role==='assistant'&&String(m.content).includes('[收件人 QQ 30003]')));
   const replies=bot.memory.read('123456',{}).events.filter(e=>e.role==='assistant');assert.deepEqual(replies.map(e=>e.replyTo),recipients);
   assert.equal(newsMemory(f.store,'20002').peerQQ,'20002');
   assert.equal(knowledgeSnapshot(f.root).lines.length,2);

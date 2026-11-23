@@ -2,13 +2,14 @@
 const $=id=>document.getElementById(id);
 const imageUrls=new Set();
 let token=sessionStorage.getItem('fish-token')||'',state,currentId=null,mode='chat',busy=false,abortController,tailnetOwner=false;
+let sessionRequest=0;
 const errors={CODEX_IMAGE_ONLY:'当前服务器仅启用 Codex 生图，不提供普通执行任务。',CODEX_RATE_LIMITED:'Codex 本次请求被服务端限流。账号状态仍可查看，系统不会因此锁住后续生图。',PERSONA_INVALID:'人格内容格式不正确，最多20块、合计24 KiB。',PERSONA_EMPTY:'请至少保留一块人格内容。',PERSONA_CHANGED_RELOAD:'人格已在其他页面修改，请复制未保存内容后重新打开。',IMAGE_RESET_BUSY_OR_UNCERTAIN:'存在运行中或用量未确认的任务，暂时不能重置本地计数。',IMAGE_BUDGET_EXHAUSTED:'今天的本地生图额度已用完；可等待明天，或使用右侧 Reset 本地计数。',CODEX_BUDGET_EXHAUSTED:'今天的 Codex 任务额度已用完。',CODEX_TIME_BUDGET:'今天的 Codex 时长额度不足。',CODEX_BUSY:'已有 Codex 任务正在运行，请完成后再试。',CODEX_PROJECT_LOGIN_REQUIRED:'请在项目终端运行 bash scripts/manage.sh codex-login --device-auth（Windows：npm run cli -- codex-login --device-auth）后重试。',CHARACTER_REFERENCE_MISSING:'缺少鲸酱设定图，请恢复仓库中的 assets/character/whalechan-reference.png，或将自定义图放到 runtime/character/whalechan-reference.png。',CHARACTER_REFERENCE_NOT_USED:'Codex 没有确认使用设定图，未发布图片。',IMAGE_PLAN_REQUIRED:'模型未返回有效画面方案，未开始生图。',INVALID_IMAGE_PLAN:'画面方案格式不正确，未开始生图。',CODEX_IMAGE_CANCELLED_OR_TIMED_OUT:'生图已取消或超时，已发生的调用仍计入额度。',CODEX_IMAGE_UNSUPPORTED_OR_MISSING:'未收到 Codex 原生生图结果，未发布图片。',ARTIFACT_CHANGED:'图片文件发生变化，已停止提供该文件。',DEEPSEEK_KEY_MISSING:'请先在「连接与设置」中保存 DeepSeek API Key。',LOCAL_AUTH_REQUIRED:'本机连接已失效，请重新输入令牌。',DEEPSEEK_HTTP_401:'API Key 无效，请检查连接设置。',DEEPSEEK_HTTP_402:'DeepSeek 账户余额不足。',DEEPSEEK_HTTP_429:'DeepSeek 请求过于频繁，请稍后重试。',DEEPSEEK_HTTP_400:'模型或请求参数不受支持，请检查模型设置。',CNY_BUDGET_EXHAUSTED:'今日人民币额度不足以预留本次请求；香港时间 00:00 恢复。',DAILY_REQUEST_LIMIT:'今日请求次数已到上限。',OUTPUT_LIMIT_EXCEEDED:'本次输出设置超过允许上限。',MODEL_PRICE_UNKNOWN:'此模型尚未配置计费单价，未发起请求。',LEGACY_COST_MIGRATION_REQUIRED:'旧用量尚未完成费用迁移，请在本机维护账本。',BUDGET_USAGE_FAULT:'用量与预留不一致，后续调用已停止，请在本机检查预算。',CHAT_CANCELLED:'本次请求已停止。已发生的调用或文件写入会保留。',CHAT_BUSY:'此会话正在处理消息，请稍后再发。',CONVERSATION_LIMIT_CREATE_NEW:'当前会话已满，请开启新的对话。',TOOL_LIMIT_OR_DISABLED:'本次工具调用达到上限，或当前模式不允许工具。',BOOTSTRAP_EXPIRED:'自动连接链接已使用或过期，请输入本机令牌。'};
 const explain=e=>errors[e]||'操作未完成：'+e;
 const node=(tag,className,text)=>{const n=document.createElement(tag);if(className)n.className=className;if(text!==undefined)n.textContent=text;return n;};
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,5000);}
-async function api(path,value){
-  const r=await fetch('/api/'+path,{method:value===undefined?'GET':'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:value===undefined?undefined:JSON.stringify(value)});
-  const data=await r.json();if(!r.ok){if(r.status===401&&!tailnetOwner&&!$('auth-dialog').open)$('auth-dialog').showModal();throw Error(data.error||'REQUEST_FAILED');}return data;
+async function api(path,value,signal){
+  const r=await fetch('/api/'+path,{method:value===undefined?'GET':'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:value===undefined?undefined:JSON.stringify(value),signal});
+  const data=await r.json();if(!r.ok){if(r.status===401&&!tailnetOwner&&!$('auth-dialog').open)$('auth-dialog').showModal();throw Object.assign(Error(data.error||'REQUEST_FAILED'),{detail:data.detail});}return data;
 }
 function setMode(next){mode=next;for(const key of ['chat','agent','image']){const button=$('mode-'+key);button.classList.toggle('selected',next===key);button.setAttribute('aria-pressed',String(next===key));}$('mode-label').textContent=({chat:'聊天',agent:'受限助手',image:'画图'})[next];$('mode-note').textContent=next==='image'?'发送即授权本次一张：DeepSeek 设计 → Codex 生图，可随时停止。':next==='agent'?'可操作会话文件；明确画图请求会自动进入单张生图流程。':'明确请求画图时，小鱼会设计方案并交给 Codex 生成一张。';}
 
@@ -26,8 +27,21 @@ function renderCodexQuota(q){
   content.append(node('small','quota-policy-note','百分比和读取失败不阻止提交；实际生成结果由服务端返回。'));
   const latest=q.recentUsage?.[0];if(latest)content.append(node('small','quota-observation',latest.changes.length?'最近一次窗口变化：'+latest.changes.map(c=>c.window+' +'+c.percentagePoints+' 个百分点').join('，')+'（可能包含其他调用）':'最近一次窗口消耗暂不可比较；不推算剩余张数。'));
 }
-function renderStatus(s){renderCodexQuota(s.codexQuota);$('reset-images').disabled=busy||s.active>0;
-  state=s;if(s.tieba)window.dispatchEvent(new CustomEvent('fish-tieba-status',{detail:{status:s.tieba,attempt:s.tiebaAttempt}}));$('image-quota').textContent=((s.budgets.usage.find(x=>x.metric==='image'&&x.scope==='*')?.value)||0)+' / '+s.imageLimits.daily;$('model-name').textContent=s.settings.model;$('connection').textContent=s.mock?'离线演示':s.credentialPresent?'API 已配置':'待配置';
+function renderCompanion(companion){
+  for(const key of ['mood','stamina']){
+    const value=companion?.[key],meter=$(key+'-meter'),max=key==='stamina'?(companion?.staminaMax??100):100;
+    meter.max=max;
+    meter.hidden=!Number.isFinite(value);
+    if(!meter.hidden)meter.value=value;
+    $(key+'-value').textContent=value===null?'已关闭':meter.hidden?'—':value+' / '+max;
+  }
+}
+function renderStatus(s){renderCodexQuota(s.codexQuota);renderCompanion(s.companion);$('reset-images').disabled=busy||s.active>0;
+  state=s;
+  const badge=$('neon-badge');
+  if(badge)badge.hidden=!s.neonBusy;
+  window.dispatchEvent(new CustomEvent('fish-neon-status',{detail:!!s.neonBusy}));
+  if(s.tieba)window.dispatchEvent(new CustomEvent('fish-tieba-status',{detail:{status:s.tieba,attempt:s.tiebaAttempt}}));$('image-quota').textContent=((s.budgets.usage.find(x=>x.metric==='image'&&x.scope==='*')?.value)||0)+' / '+s.imageLimits.daily;$('model-name').textContent=s.settings.model;$('connection').textContent=s.mock?'离线演示':s.credentialPresent?'API 已配置':'待配置';
   $('demo-banner').hidden=!s.mock;$('setup-banner').hidden=s.mock||s.credentialPresent;
   const cost=s.budgets.cost,count=cost.used,limit=cost.daily,money=n=>'¥'+Number(n||0).toFixed(4);
   $('budget-text').textContent=limit?Math.round(count/limit*100)+'%':'已停用';
@@ -62,10 +76,34 @@ function turnElement(turn){const row=node('article','turn');row.append(node('div
   if(turn.state==='running')answer.append(node('div','thinking','小鱼正在想一想…'));else if(turn.state==='failed')answer.append(node('div','error-message',explain(turn.answer)));else answer.append(formatted(turn.answer));content.append(answer);const gallery=node('div','image-results');for(const image of turn.images||[])gallery.append(imageElement(image,currentId));content.append(gallery);assistant.append(img,content);row.append(assistant);return row;}
 async function downloadFile(file){try{const r=await fetch('/api/file?id='+encodeURIComponent(currentId)+'&path='+encodeURIComponent(file.name),{headers:{authorization:'Bearer '+token}});if(!r.ok){const e=await r.json();throw Error(e.error);}const url=URL.createObjectURL(await r.blob()),a=node('a');a.href=url;a.download=file.name.split('/').at(-1);a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(e){toast(explain(e.message));}}
 function renderFiles(files){$('file-count').textContent=String(files.length);$('files').replaceChildren();if(!files.length){const empty=node('div','empty-files');empty.append(node('span','','▱'),node('p','','文件会出现在这里'),node('small','','试试让助手创建 notes.md'));$('files').append(empty);}for(const f of files){const row=node('div','file-row'),info=node('div'),b=node('button','','↓');b.type='button';b.setAttribute('aria-label','下载 '+f.name);b.onclick=()=>downloadFile(f);info.append(node('strong','',f.name),node('small','',f.bytes.toLocaleString()+' bytes'));row.append(node('span','','▱'),info,b);$('files').append(row);}}
-async function selectSession(id){if(busy&&id!==currentId){toast('请先等待或停止当前请求。');return;}for(const url of imageUrls)URL.revokeObjectURL(url);imageUrls.clear();currentId=id;const d=await api('session?id='+encodeURIComponent(id));$('welcome').hidden=d.turns.length>0;$('messages').replaceChildren(...d.turns.map(turnElement));renderFiles(d.files);await refreshSessions();if(state)renderStatus(state);closeDrawers(false);if(d.turns.length)scrollEnd();else $('conversation').scrollTop=0;}
+async function selectSession(id){
+  if(busy){if(id!==currentId)toast('请先等待或停止当前请求。');return false;}
+  const request=++sessionRequest,d=await api('session?id='+encodeURIComponent(id));
+  if(request!==sessionRequest||busy)return false;
+  for(const url of imageUrls)URL.revokeObjectURL(url);imageUrls.clear();currentId=id;
+  $('companion-home').hidden=true;$('conversation').hidden=false;$('composer-area').hidden=false;
+  $('welcome').hidden=d.turns.length>0;$('messages').replaceChildren(...d.turns.map(turnElement));renderFiles(d.files);
+  closeDrawers(false);if(d.turns.length)scrollEnd();else $('conversation').scrollTop=0;
+  await refreshSessions();if(state)renderStatus(state);return request===sessionRequest;
+}
 function scrollEnd(){const box=$('conversation');box.scrollTop=box.scrollHeight;}
-async function initialize(){renderStatus(await api('status'));const list=await refreshSessions();if(!currentId)currentId=list[0]?.id||(await api('sessions',{})).id;await selectSession(currentId);}
-function settings(){if(!state)return;closeDrawers(false);$('model').value=state.settings.model;$('api-key').value='';$('key-state').textContent=state.credentialPresent?'已配置 · 留空保留':'尚未配置';$('max-output').value=state.settings.maxOutputTokens;$('daily-cny').value=state.settings.dailyCny;$('group-daily-cny').value=state.settings.groupDailyCny??0;$('search-enabled').checked=state.settings.search;$('codex-enabled').checked=state.settings.codexQueue;$('codex-enabled').disabled=state.codexImageOnly===true;$('settings-error').textContent='';$('settings-dialog').showModal();}
+async function initialize(){renderStatus(await api('status'));await refreshSessions();}
+function settingsTab(active){
+  for(const [tab,pane] of [['connection-tab','connection-settings'],['affect-tab','affect-settings']]){
+    const selected=tab===active,button=$(tab);button.setAttribute('aria-selected',String(selected));
+    button.tabIndex=selected?0:-1;$(pane).hidden=!selected;
+  }
+}
+let affectFormSettings={};
+function fillAffectForm(settings){
+  affectFormSettings={...settings};
+  for(const input of $('affect-form').querySelectorAll('[name]')){
+    const value=settings?.[input.name];
+    if(input.type==='checkbox')input.checked=value===true;
+    else if(value!==undefined)input.value=value;
+  }
+}
+function settings(){if(!state)return;closeDrawers(false);$('model').value=state.settings.model;$('api-key').value='';$('key-state').textContent=state.credentialPresent?'已配置 · 留空保留':'尚未配置';$('max-output').value=state.settings.maxOutputTokens;$('daily-cny').value=state.settings.dailyCny;$('group-daily-cny').value=state.settings.groupDailyCny??0;$('search-enabled').checked=state.settings.search;for(const [id,key] of [['group-chat-search','groupChatSearch'],['curiosity-public-search','curiosityPublicSearch'],['curiosity-auto-summary','curiosityAutoSummary']])$(id).checked=state.settings[key]!==false;$('codex-enabled').checked=state.settings.codexQueue;$('codex-enabled').disabled=state.codexImageOnly===true;$('settings-error').textContent='';$('affect-error').textContent='';fillAffectForm(state.companion?.settings);settingsTab('connection-tab');$('settings-dialog').showModal();}
 $('refresh-quota').onclick=async()=>{const button=$('refresh-quota');button.disabled=true;try{renderStatus(await api('codex-quota/refresh',{}));}catch(e){toast(explain(e.message));}finally{button.disabled=false;}};
 $('reset-images').onclick=()=>{$('reset-images-error').textContent='';$('reset-images-dialog').showModal();};
 $('reset-images-form').onsubmit=async e=>{e.preventDefault();e.submitter.disabled=true;try{renderStatus(await api('images/reset',{}));$('reset-images-dialog').close();toast('本地生图计数已重置；Codex 账号额度未改变。');}catch(err){$('reset-images-error').textContent=explain(err.message);}finally{e.submitter.disabled=false;}};
@@ -92,9 +130,39 @@ $('qq-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;butt
   finally{button.disabled=false;}
 };
 for(const b of document.querySelectorAll('[data-close]'))b.onclick=()=>$(b.dataset.close).close();
-$('settings-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;try{renderStatus(await api('settings',{apiKey:$('api-key').value.trim(),model:$('model').value.trim(),maxOutputTokens:Number($('max-output').value),dailyCny:Number($('daily-cny').value),groupDailyCny:Number($('group-daily-cny').value),search:$('search-enabled').checked,codexQueue:$('codex-enabled').checked}));$('api-key').value='';$('settings-dialog').close();toast('连接设置已保存，尚未发起模型请求。');}catch(err){$('settings-error').textContent=explain(err.message);}finally{button.disabled=false;}};
+$('settings-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;try{renderStatus(await api('settings',{apiKey:$('api-key').value.trim(),model:$('model').value.trim(),maxOutputTokens:Number($('max-output').value),dailyCny:Number($('daily-cny').value),groupDailyCny:Number($('group-daily-cny').value),search:$('search-enabled').checked,groupChatSearch:$('group-chat-search').checked,curiosityPublicSearch:$('curiosity-public-search').checked,curiosityAutoSummary:$('curiosity-auto-summary').checked,codexQueue:$('codex-enabled').checked}));$('api-key').value='';$('settings-dialog').close();toast('连接设置已保存，尚未发起模型请求。');}catch(err){$('settings-error').textContent=explain(err.message);}finally{button.disabled=false;}};
+$('connection-tab').onclick=()=>settingsTab('connection-tab');
+$('affect-tab').onclick=()=>settingsTab('affect-tab');
+$('settings-tabs').onkeydown=e=>{
+  if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key)||e.target?.getAttribute('role')!=='tab')return;
+  e.preventDefault();
+  const tab=e.key==='Home'?'connection-tab':e.key==='End'?'affect-tab':e.target.id==='connection-tab'?'affect-tab':'connection-tab';
+  settingsTab(tab);$(tab).focus();
+};
+$('affect-form').onsubmit=async e=>{
+  e.preventDefault();const form=e.currentTarget,button=e.submitter??form.querySelector('[type="submit"]'),error=$('affect-error');
+  if(button.disabled)return;
+  error.textContent='';
+  const changes={};
+  for(const input of form.querySelectorAll('[name]')){
+    const value=input.type==='checkbox'?input.checked:input.type==='number'?input.valueAsNumber:input.value;
+    if(input.type==='number'&&!Number.isFinite(value)){
+      error.textContent='请填写数值'+(input.labels?.[0]?.firstChild?.textContent?'（'+input.labels[0].firstChild.textContent.trim()+'）':'')+'。';
+      input.focus();return;
+    }
+    if(value!==affectFormSettings[input.name])changes[input.name]=value;
+  }
+  if(!Object.keys(changes).length){toast('设置没有改动');return;}
+  button.disabled=true;
+  try{
+    const companion=await api('settings',{companion:changes});
+    state.companion=companion;renderCompanion(companion);fillAffectForm(companion.settings);
+    toast('心情与耐力设置已保存');
+  }catch(err){error.textContent=err.message==='AFFECT_SETTINGS_INVALID'?(err.detail||'请检查参数是否在有效范围内。'):explain(err.message);}
+  finally{button.disabled=false;}
+};
 $('auth-form').onsubmit=async e=>{e.preventDefault();token=$('auth-token').value.trim();try{await initialize();sessionStorage.setItem('fish-token',token);$('auth-token').value='';$('auth-dialog').close();}catch(err){$('auth-error').textContent=explain(err.message);}};
-$('new-chat').onclick=async()=>{if(busy){toast('请先等待或停止当前请求。');return;}try{await selectSession((await api('sessions',{})).id);$('prompt').focus();}catch(e){toast(explain(e.message));}};
+$('new-chat').onclick=async()=>{if(busy){toast('请先等待或停止当前请求。');return;}const button=$('new-chat');if(button.disabled)return;button.disabled=true;try{if(await selectSession((await api('sessions',{})).id))$('prompt').focus();}catch(e){toast(explain(e.message));}finally{button.disabled=false;}};
 $('mode-chat').onclick=()=>{if(!busy)setMode('chat');};$('mode-agent').onclick=()=>{if(!busy)setMode('agent');};$('mode-image').onclick=()=>{if(!busy)setMode('image');};
 for(const b of document.querySelectorAll('[data-prompt]'))b.onclick=()=>{if(busy)return;$('prompt').value=b.dataset.prompt;if(b.dataset.image)setMode('image');else if(b.dataset.agent)setMode('agent');$('prompt').focus();};
 const narrow=matchMedia('(max-width:700px)'),overlayPanel=matchMedia('(max-width:1150px)'),touchInput=matchMedia('(pointer:coarse)');
@@ -146,7 +214,7 @@ $('chat-form').onsubmit=async e=>{
   finally{busy=false;$('send').hidden=false;$('cancel').hidden=true;$('prompt').disabled=false;$('mode-chat').disabled=false;$('mode-agent').disabled=false;$('mode-image').disabled=false;$('prompt').focus();try{await refreshSessions();renderStatus(await api('status'));renderFiles((await api('session?id='+encodeURIComponent(id))).files);}catch{}}
 };
 async function start(){
-  const fragment=new URLSearchParams(location.hash.slice(1)),code=fragment.get('bootstrap');history.replaceState(null,'',location.pathname);
+  const fragment=new URLSearchParams(location.hash.slice(1)),code=fragment.get('bootstrap');history.replaceState(null,'',location.pathname+location.search);
   try{
     const access=await fetch('/api/access');
     if(access.ok&&(await access.json()).tailnetOwner===true){tailnetOwner=true;token='';sessionStorage.removeItem('fish-token');await initialize();return;}
@@ -163,17 +231,24 @@ function personaTab(edit){
   $('persona-edit-tab').setAttribute('aria-pressed',String(edit));$('persona-view-tab').setAttribute('aria-pressed',String(!edit));
 }
 function addPersonaBlock(block={title:'补充',text:''}){
-  const container=$('persona-blocks');if(container.children.length>=20){toast('最多20块');return;}
+  const container=$('persona-blocks'),generated=block.kind==='kaomoji';
+  if(!generated&&[...container.children].filter(box=>!box.dataset.kind).length>=20){toast('最多20块可编辑内容');return;}
   const box=node('section','persona-block'),heading=node('div','persona-block-heading'),title=node('input');title.value=block.title;title.maxLength=60;title.required=true;title.setAttribute('aria-label','区块名称');
+  if(generated){box.dataset.kind=block.kind;title.readOnly=true;}
   heading.append(title);
-  for(const [label,action] of [['上移',()=>{if(box.previousElementSibling)container.insertBefore(box,box.previousElementSibling);}],['下移',()=>{if(box.nextElementSibling)container.insertBefore(box.nextElementSibling,box);}],['删除',()=>box.remove()]]){
+  const actions=[['上移',()=>{if(box.previousElementSibling)container.insertBefore(box,box.previousElementSibling);}],['下移',()=>{if(box.nextElementSibling)container.insertBefore(box.nextElementSibling,box);}]];
+  if(!generated)actions.push(['删除',()=>box.remove()]);
+  for(const [label,action] of actions){
     const button=node('button','quiet-button',label);button.type='button';button.onclick=action;heading.append(button);
   }
-  const text=node('textarea');text.value=block.text;text.rows=4;text.maxLength=8000;text.setAttribute('aria-label','区块内容');box.append(heading,text);container.append(box);
+  box.append(heading);
+  if(generated){box.append(node('small','','每轮从 14 类情绪中各随机抽取 2 个不同的颜文字。'));}
+  else{const text=node('textarea');text.value=block.text;text.rows=4;text.maxLength=8000;text.setAttribute('aria-label','区块内容');box.append(text);}
+  container.append(box);
 }
 function renderPromptView(){
   if(!promptView)return;const channel=$('prompt-channel').value,system=promptView.systems[channel];
-  $('prompt-system').value=system;$('prompt-info').textContent='知识库 '+(promptView.knowledge?.tokens??0)+' / 5000 tokens；当前系统提示词 '+system.length+' 字符；这是实际组装函数的输出，包含人格与该入口的功能指引。字符数不是 token 数。';
+  $('prompt-system').value=system;$('prompt-info').textContent='知识库 '+(promptView.knowledge?.tokens??0)+' / 5000 tokens；预览 '+system.length+' 字符。颜文字为本次预览抽样，实际发送的范例见下方请求记录。';
   const latest=promptView.latest[channel==='portrait'?'image':channel];
   $('prompt-record-info').textContent=latest?'实际调用时间：'+quotaTime(latest.at/1000)+'。下方保留该次发送的文本、工具与参数。':'更新后这个入口尚无请求记录。下一次调用会自动记录，不为查看提示词额外调用模型。';
   $('prompt-record').value=latest?JSON.stringify(latest.request,null,2):'';
@@ -199,6 +274,76 @@ async function copyPrompt(id){const text=$(id);try{if(navigator.clipboard?.write
 $('prompt-copy').onclick=()=>copyPrompt('prompt-system');$('prompt-record-copy').onclick=()=>copyPrompt('prompt-record');
 $('persona-form').onsubmit=async e=>{
   e.preventDefault();const button=$('persona-save');button.disabled=true;$('persona-error').textContent='';$('persona-saved').textContent='';
-  try{const blocks=[...$('persona-blocks').children].map(box=>({title:box.querySelector('input').value,text:box.querySelector('textarea').value}));const result=await api('persona',{revision:personaRevision,blocks,appearance:$('persona-appearance').value});personaRevision=result.revision;$('persona-saved').textContent='已保存，下一轮对话生效。';await refreshPromptView();}
+  try{
+    const blocks=[...$('persona-blocks').children].map(box=>({title:box.querySelector('input').value,text:box.querySelector('textarea')?.value??'',kind:box.dataset.kind}));
+    const result=await api('persona',{revision:personaRevision,blocks,appearance:$('persona-appearance').value});
+    personaRevision=result.revision;$('persona-saved').textContent='已保存，下一轮对话生效。';await refreshPromptView();
+  }
   catch(err){$('persona-error').textContent=explain(err.message);}finally{button.disabled=false;}
 };
+
+
+(function sortableFeatures(){
+  const list=$('sidebar-features');
+  const key='fish-sidebar-features';
+  const rows=()=>Array.from(list.children);
+  const id=row=>row.querySelector('.sidebar-action').id;
+  const saved=new Map(rows().map(row=>[id(row),row]));
+  try{
+    const order=JSON.parse(localStorage.getItem(key)||'[]');
+    if(Array.isArray(order)){
+      const selected=[...new Set(order)].filter(name=>saved.has(name));
+      list.append(...selected.map(name=>saved.get(name)),...rows().filter(row=>!selected.includes(id(row))));
+    }
+  }catch{}
+  const save=()=>{try{localStorage.setItem(key,JSON.stringify(rows().map(id)));}catch{}};
+  let drag;
+  function move(){
+    if(!drag?.moving)return;
+    const bounds=list.getBoundingClientRect();
+    if(drag.y<bounds.top+25)list.scrollTop-=8;
+    if(drag.y>bounds.bottom-25)list.scrollTop+=8;
+    const target=rows().find(row=>row!==drag.row&&drag.y<row.getBoundingClientRect().top+row.offsetHeight/2)??null;
+    if(drag.row.nextElementSibling!==target)list.insertBefore(drag.row,target);
+    drag.frame=requestAnimationFrame(move);
+  }
+  function end(commit){
+    if(!drag)return;
+    const {row,pointer,moving,frame,original}=drag;
+    drag=undefined;
+    cancelAnimationFrame(frame);
+    row.classList.remove('is-moving');
+    if(list.hasPointerCapture(pointer))list.releasePointerCapture(pointer);
+    if(moving&&commit)save();
+    if(moving&&!commit)list.append(...original);
+  }
+  list.addEventListener('pointerdown',event=>{
+    const handle=event.target.closest('.sidebar-grip');
+    if(!handle||drag||event.button!==0)return;
+    list.setPointerCapture(event.pointerId);
+    drag={pointer:event.pointerId,row:handle.parentElement,start:event.clientY,y:event.clientY,original:rows()};
+  });
+  list.addEventListener('pointermove',event=>{
+    if(drag?.pointer!==event.pointerId)return;
+    drag.y=event.clientY;
+    if(drag.moving||Math.abs(drag.start-drag.y)<5)return;
+    drag.moving=true;
+    drag.row.classList.add('is-moving');
+    move();
+  });
+  list.addEventListener('pointerup',event=>{if(drag?.pointer===event.pointerId)end(true);});
+  list.addEventListener('pointercancel',()=>end(false));
+  list.addEventListener('lostpointercapture',()=>end(false));
+  list.addEventListener('keydown',event=>{
+    const handle=event.target.closest('.sidebar-grip');
+    if(!handle||!['ArrowUp','ArrowDown'].includes(event.key))return;
+    event.preventDefault();
+    const row=handle.parentElement,adjacent=event.key==='ArrowUp'?row.previousElementSibling:row.nextElementSibling;
+    if(!adjacent)return;
+    if(event.key==='ArrowUp')list.insertBefore(row,adjacent);
+    else list.insertBefore(adjacent,row);
+    handle.focus();
+    row.scrollIntoView({block:'nearest'});
+    save();
+  });
+})();

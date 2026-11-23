@@ -11,7 +11,8 @@ import { collectArtifacts } from '../src/codex/artifacts.js';
 import { verifyArtifact } from '../src/codex/verify.js';
 import { Tasks } from '../src/codex/tasks.js';
 import { RpcProcess } from '../src/codex/process.js';
-import { MockTaskRunner, AppServerRunner, childEnvironment } from '../src/codex/runner.js';
+import {FishError} from '../src/types.js';
+import { AppServerRunner, childEnvironment } from '../src/codex/runner.js';
 test('canonical path boundary rejects absolute, traversal, Windows ADS/device and ancestor symlink/junction',()=>{
   const f=fixture();try{
     for(const input of ['../secret','/etc/passwd','C:/Users/a','C:\\Users\\a','a/../../b','a/./b','a\\b','x:stream','NUL.txt','a.','a '])assert.throws(()=>safePath(f.root,input));
@@ -33,10 +34,16 @@ test('artifacts validate complete set, hashes, byte count, file count and hardli
     const hard=makeDir(f.root,'runtime/workspace/hard');fs.linkSync(path.join(task,'hello.txt'),path.join(hard,'leak.txt'));assert.throws(()=>collectArtifacts(f.root,'hard',2,100),/ARTIFACT_LINK/);
   }finally{f.cleanup();}
 });
-test('Codex task timeout/cancel settle state and never collect interrupted artifacts',async()=>{
-  const f=fixture({codex:true,codexTimeoutMs:20,codexDaily:10});
-  const tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner(200));try{
-    const a=tasks.enqueue(message(),'create','create');tasks.approve(a.id);await tasks.idle();assert.equal(tasks.get(a.id).state,'timed_out');
+test('Codex provider error and cancellation settle state and never collect interrupted artifacts',async()=>{
+  const f=fixture({codex:true});
+  let attempt=0;
+  const tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,{async run(cwd,_brief,signal){
+    fs.writeFileSync(path.join(cwd,'uncommitted.txt'),'partial result');
+    if(++attempt===1)throw new FishError('CODEX_PROVIDER_TIMEOUT');
+    await delay(200,undefined,{signal});
+    return 'done';
+  }});try{
+    const a=tasks.enqueue(message(),'create','create');tasks.approve(a.id);await tasks.idle();assert.equal(tasks.get(a.id).state,'failed');assert.equal(tasks.get(a.id).result,'CODEX_PROVIDER_TIMEOUT');
     const b=tasks.enqueue(message(),'create','create');tasks.approve(b.id);tasks.cancel(b.id);await tasks.idle();assert.equal(tasks.get(b.id).state,'cancelled');
     assert.ok(!fs.existsSync(path.join(f.root,'runtime/outputs',a.id)));assert.ok(!fs.existsSync(path.join(f.root,'runtime/outputs',b.id)));
     const c=tasks.enqueue(message(),'create','create');tasks.cancel(c.id);assert.equal(tasks.get(c.id).state,'cancelled');assert.throws(()=>tasks.approve(c.id),/TASK_NOT_WAITING/);
@@ -56,7 +63,9 @@ test('JSON-RPC approval is declined, cancellation kills actual process tree on P
   try{
     await rpc.call('initialize');const result=await rpc.call('spawn');assert.ok(result.pid>0&&result.child>0);
     const notice=once(rpc,'notice');await rpc.call('approval');const [method,p]=await notice;assert.equal(method,'approvalResult');assert.equal(p.decision,'decline');
-    await delay(100);const heartbeat=path.join(f.root,'heartbeat.txt');assert.ok(fs.existsSync(heartbeat));
+    const heartbeat=path.join(f.root,'heartbeat.txt'),deadline=Date.now()+3000;
+    while(!fs.existsSync(heartbeat)&&Date.now()<deadline)await delay(25);
+    assert.ok(fs.existsSync(heartbeat));
     const hanging=rpc.call('hang');abort.abort();await assert.rejects(hanging,/CODEX_ABORTED/);await rpc.stop();
     await delay(50);const last=fs.readFileSync(heartbeat,'utf8');await delay(80);assert.equal(fs.readFileSync(heartbeat,'utf8'),last);
     assert.throws(()=>process.kill(result.pid,0));

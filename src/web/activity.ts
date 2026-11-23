@@ -1,3 +1,5 @@
+import {qqAccess,type QQAccess} from '../qq/activity-receipt.js';
+import {actionState} from '../agent/tool-feedback.js';
 import {generatedImage} from '../image/generated.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -5,14 +7,23 @@ import { Store,redact } from '../storage/db.js';
 import { FishError,type Usage } from '../types.js';
 import { inputCache } from '../usage.js';
 import { MAX_IMAGE_BYTES } from '../image/limits.js';
-import { safePath } from '../paths.js';
+import { makeDir,safePath,writePrivateAtomic } from '../paths.js';
 import {diagnosticSafe} from '../diagnostics.js';
+import {developmentActivityFolder} from '../development/activity.js';
 
-export type ActivityKind='qq'|'web'|'news'|'memory'|'diary'|'image'|'audit'|'exploration';
-type Step={type:string;name:string;state?:string;at?:number;durationMs?:number;request?:any;diagnostic?:any;args?:unknown;result?:any;usage?:Usage;callId?:string;round?:number;phases?:unknown[];modelCall?:number;decision?:{call:number;usage?:Usage;actions:string[]}};
+export type ActivityKind='qq'|'web'|'news'|'memory'|'diary'|'image'|'audit'|'exploration'|'development'|'chain';
+type Step={type:string;name:string;state?:string;at?:number;durationMs?:number;request?:any;diagnostic?:any;args?:unknown;result?:any;qqAccess?:QQAccess;usage?:Usage;callId?:string;round?:number;phases?:unknown[];modelCall?:number;decision?:{call:number;usage?:Usage;actions:string[]}};
 type UsageSummary={input:number;output:number;total:number;calls:number;known:boolean;cachedInput:number;uncachedInput:number;cacheKnownCalls:number;cacheUnknownInput:number;unreportedCalls:number;unconfirmedTokens:number};
-type RecordItem={id:string;kind:ActivityKind;title:string;conversation:string;speaker:string;at:number;updated:number;durationMs:number|null;state:string;usage:UsageSummary;counts:{tools:number;search:number;fetch:number;browse:number;downloads:number;images:number;sends:number};reply:string;errors:number;events:Step[];related:string[];raw:unknown};
-const kinds=new Set(['qq','web','news','memory','diary','image','audit','exploration']);
+type RecordItem={id:string;kind:ActivityKind;title:string;conversation:string;speaker:string;at:number;updated:number;durationMs:number|null;state:string;usage:UsageSummary;counts:{tools:number;search:number;fetch:number;browse:number;downloads:number;images:number;sends:number};qqAccess:number;reply:string;errors:number;events:Step[];related:string[];raw:unknown};
+type ActivitySummary=Omit<RecordItem,'events'|'raw'>;
+type IndexedSummary={stamp:string;summary:ActivitySummary};
+type DevelopmentStatus={id:string;updatedAt:number;phase:string;goal:string;reason?:string;report?:string;rounds:number;codexStep?:string;codexUpdatedAt?:number};
+const logFolders={qq:'runtime/logs/qq',news:'runtime/logs/daily-news',memory:'runtime/logs/daily-news',
+  diary:'runtime/logs/daily-qzone',image:'runtime/logs/codex',exploration:'runtime/logs/exploration',development:developmentActivityFolder} as const;
+const summaryFile='runtime/cache/activity-summaries-v1.json';
+const maxLogBytes=16*1024*1024;
+const kinds=new Set(['qq','web','news','memory','diary','image','audit','exploration','development','chain','qq_access']);
+const isMemoryLog=(name:string)=>name.startsWith('memory-')||name.startsWith('curiosity-');
 const secret=/^(?:authorization|cookie|set-cookie|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|skey|p_skey|rkey)$/i;
 /** Log data is display-only. Never expose credentials, signed media handles or inline binaries. */
 export function activitySafe(value:any,root='',depth=0):any{
@@ -33,15 +44,10 @@ export function activitySafe(value:any,root='',depth=0):any{
 const obj=(v:any)=>{if(typeof v==='string'){try{return JSON.parse(v);}catch{}}return v;};
 const finite=(v:any)=>Number.isFinite(Number(v))?Number(v):0;
 const time=(v:any)=>typeof v==='string'?Date.parse(v)||0:finite(v);
-function resultState(value:any){
-  const r=obj(value);if(r?.error||r?.ok===false||r?.success===false||r?.state==='failed')return 'failed';
-  if(Array.isArray(r?.images)&&r.images.some((i:any)=>i.error))return r.images.every((i:any)=>i.error)?'failed':'partial';
-  if(r?.deliveryStatus==='unconfirmed')return 'unconfirmed';
-  if(r?.deliveryStatus==='failed')return 'failed';return 'completed';
-}
+const resultState=(v:any)=>actionState(obj(v));
 function base(id:string,kind:ActivityKind,d:any,mtime:number):RecordItem{
   const at=time(d.startedAt??d.created??d.inputContext?.context?.currentTurn?.at??d.at??d.updated)||mtime;
-  return {id,kind,title:'',conversation:d.conversation??'',speaker:d.inputContext?.context?.qqIdentity?.speaker??'',at,updated:time(d.finishedAt??d.updated??d.at)||mtime,durationMs:d.finishedAt&&d.startedAt?Math.max(0,d.finishedAt-d.startedAt):null,state:'unknown',usage:{input:0,output:0,total:0,calls:0,known:false,cachedInput:0,uncachedInput:0,cacheKnownCalls:0,cacheUnknownInput:0,unreportedCalls:0,unconfirmedTokens:0},counts:{tools:0,search:0,fetch:0,browse:0,downloads:0,images:0,sends:0},reply:'',errors:0,events:[],related:[],raw:d};
+  return {id,kind,title:'',conversation:d.conversation??'',speaker:d.inputContext?.context?.qqIdentity?.speaker??'',at,updated:time(d.finishedAt??d.updated??d.at)||mtime,durationMs:d.finishedAt&&d.startedAt?Math.max(0,d.finishedAt-d.startedAt):null,state:'unknown',usage:{input:0,output:0,total:0,calls:0,known:false,cachedInput:0,uncachedInput:0,cacheKnownCalls:0,cacheUnknownInput:0,unreportedCalls:0,unconfirmedTokens:0},counts:{tools:0,search:0,fetch:0,browse:0,downloads:0,images:0,sends:0},qqAccess:0,reply:'',errors:0,events:[],related:[],raw:d};
 }
 function addUsage(r:RecordItem,usage:any):Usage|undefined{
   r.usage.calls++;
@@ -99,10 +105,35 @@ function traceRecord(r:RecordItem,trace:any[]){
     const decision={call:model.modelCall!,usage:model.usage,actions:actions.map(e=>e.name)};
     for(const action of actions)action.decision=decision;
   }
+  for(const step of r.events){
+    const evidence=qqAccess(step);
+    if(evidence){step.qqAccess=evidence;r.qqAccess++;}
+  }
   r.related=[...new Set(r.related)];
+}
+const developmentPhases={code:'开发',candidate:'候选构建',deploy:'部署',live:'上线核对',done:'已完成',blocked:'失败',cancelled:'已停止'} as const;
+function developmentRecord(r:RecordItem,d:any){
+  const phase=Object.hasOwn(developmentPhases,d.phase)?developmentPhases[d.phase as keyof typeof developmentPhases]:'状态未记录';
+  const codex=d.codex??{};
+  r.title=d.goal??'开发任务';r.conversation='development';
+  r.state=d.phase==='done'?'completed':d.phase==='blocked'?'failed':d.phase==='cancelled'?'cancelled':phase==='状态未记录'?'unknown':'running';
+  r.errors=r.state==='failed'?1:0;
+  r.reply=d.phase==='code'?(codex.activity?.step??(codex.thread?'已创建 Codex 会话':'等待 Codex 会话')):d.report??d.reason??phase;
+  if(d.requests?.length)r.events.push({type:'request',name:'主人原话与肥鱼提交的需求',at:r.at,result:{messages:d.requests,criteria:d.criteria}});
+  r.events.push({type:'event',name:'任务阶段 · '+phase,state:r.state,at:r.updated,result:d.reason?{error:d.reason}:undefined});
+  const codexState=codex.activity?.step??(codex.turn?'回合状态未记录':codex.thread?'已创建会话，未开始回合':d.requests?'未创建 Codex 会话':'会话明细未记录');
+  r.events.push({type:'event',name:'Codex · '+codexState,at:codex.activity?.at,
+    result:{model:codex.selection?.model,effort:codex.selection?.effort,threadId:codex.thread,turnId:codex.turn,
+      completedRounds:codex.rounds,response:codex.response}});
+  if(codex.approvals?.length)r.events.push({type:'event',name:'Codex 自动审批',result:codex.approvals});
+  for(const trial of d.trials??[])r.events.push({type:'event',name:trial.kind==='live'?'上线复验':'候选验收',
+    state:trial.passed===undefined?'running':trial.passed?'completed':'failed',result:trial});
+  if(d.deployment||d.candidate)r.events.push({type:'event',name:'候选与部署版本',result:{candidate:d.candidate,deployment:d.deployment}});
+  return r;
 }
 function parseLog(id:string,kind:ActivityKind,d:any,mtime:number):RecordItem{
   const r=base(id,kind,d,mtime);
+  if(kind==='development')return developmentRecord(r,d);
   if(kind==='image'){
     r.title=d.request?.prompt??'Codex 生图';r.reply=d.finalText??'';
     r.state=d.delivery?.ok===false||d.error?'failed':d.delivery?.ok===true?'completed':d.outcome==='running'?'running':'unknown';
@@ -111,11 +142,12 @@ function parseLog(id:string,kind:ActivityKind,d:any,mtime:number):RecordItem{
   }
   if(kind==='diary'||kind==='news'&&!d.trace){
     r.title=kind==='diary'?'每日空间动态':'早间新闻发送';r.conversation=d.owner?'private:'+d.owner:d.self?'QQ '+d.self:'';
-    r.reply=obj(d.draft)?.text??'';r.state=({sent:'completed',published:'completed',completed:'completed',failed:'failed',sending:'running',running:'running'} as any)[d.state]??'unknown';
+    r.reply=obj(d.draft)?.text??'';r.state=({sent:'completed',published:'completed',completed:'completed',failed:'failed',unknown:'unconfirmed',publishing:'running',sending:'running',running:'running'} as any)[d.state]??'unknown';
     r.events=[{type:'result',name:r.title,result:d}];if(d.image_id)r.related=['image:'+d.image_id];if(d.error)r.errors=1;return r;
   }
-  r.title=kind==='exploration'?String(d.request??'自主探索'):kind==='qq'?String(d.request??'QQ 对话'):kind==='memory'?'后台记忆回顾':'早间新闻检索';
-  traceRecord(r,d.trace??[]);if(['running','completed','failed','paused','cancelled','interrupted'].includes(d.state))r.state=d.state;
+  r.title=d.kind==='curiosity-summary'?'会话结束后的好奇心整理'+(d.groupName?' · '+d.groupName:''):kind==='exploration'?String(d.request??'自主探索'):kind==='qq'?String(d.request??'QQ 对话'):kind==='memory'?'后台记忆回顾':'早间新闻检索';
+  traceRecord(r,d.trace??[]);if(['running','completed','failed','unconfirmed','paused','cancelled','interrupted'].includes(d.state))
+    r.state=kind==='exploration'&&d.state==='paused'?'failed':d.state;
   return r;
 }
 function queryDate(raw:string|null,end=false){
@@ -125,59 +157,260 @@ function queryDate(raw:string|null,end=false){
   return v+(end?86400000:0);
 }
 
-/** Read the existing private logs lazily; cache parsed files by size/mtime. No model calls. */
+function summarize({events:_events,raw:_raw,...record}:RecordItem,root:string):ActivitySummary{
+  const summary=activitySafe(record,root) as ActivitySummary;
+  summary.title=String(summary.title??'').slice(0,180);
+  summary.reply=String(summary.reply??'').slice(0,240);
+  summary.speaker=String(summary.speaker??'');
+  summary.conversation=String(summary.conversation??'');
+  return summary;
+}
+
+async function logStat(file:string){
+  const stat=await fs.lstat(file);
+  if(!stat.isFile()||stat.nlink!==1||stat.size>maxLogBytes)throw new FishError('ACTIVITY_NOT_FOUND');
+  return stat;
+}
+
+/** The index stores previews and counters. Full traces are only kept while reading one record. */
 export class ActivityHistory {
-  private cache=new Map<string,{stamp:string;record:RecordItem}>();
-  private lastScan=0;private scanning?:Promise<void>;
+  private logs=new Map<string,IndexedSummary>();
+  private webIndex=new Map<string,IndexedSummary>();
+  private indexLoaded=false;
+  private lastScan=0;private lastDevelopmentScan=0;private scanning?:Promise<void>;
   constructor(private root:string,private web:Store,private shared:Store){}
-  private async scan(){
-    if(this.scanning)return this.scanning;if(Date.now()-this.lastScan<1500)return;
+
+  private async loadIndex(){
+    if(this.indexLoaded)return;
+    this.indexLoaded=true;
+    try{
+      const file=safePath(this.root,summaryFile);
+      await logStat(file);
+      const rows=JSON.parse(await fs.readFile(file,'utf8')) as IndexedSummary[];
+      this.logs=new Map(rows.filter(row=>Number.isSafeInteger(row.summary.qqAccess)).map(({stamp,summary})=>[summary.id,{stamp,summary}]));
+    }catch{/* A missing or damaged index can be rebuilt from the original logs. */}
+  }
+
+  private async scan(developmentOnly:boolean){
+    while(this.scanning)await this.scanning;
+    if(Date.now()-(developmentOnly?this.lastDevelopmentScan:this.lastScan)<1500)return;
     this.scanning=(async()=>{
+      await this.loadIndex();
       const found=new Set<string>();
-      for(const [folder,defaultKind] of [['qq','qq'],['daily-news','news'],['daily-qzone','diary'],['codex','image'],['exploration','exploration']] as const){
-        const dir=path.join(this.root,'runtime/logs',folder);let entries:string[];
-        try{const s=await fs.lstat(dir);if(!s.isDirectory()||s.isSymbolicLink())continue;entries=await fs.readdir(dir);}catch{continue;}
+      let changed=false;
+      for(const defaultKind of ['qq','news','diary','image','exploration','development'] as const){
+        if(developmentOnly&&defaultKind!=='development')continue;
+        let dir:string,entries:string[];
+        try{dir=safePath(this.root,logFolders[defaultKind]);entries=await fs.readdir(dir);}catch{continue;}
         for(const name of entries){
           if(!/^[a-zA-Z0-9-]+\.json$/.test(name))continue;
-          const kind=folder==='daily-news'&&name.startsWith('memory-')?'memory':defaultKind,id=kind+':'+name.slice(0,-5),file=path.join(dir,name);found.add(id);
+          const kind=defaultKind==='news'&&isMemoryLog(name)?'memory':defaultKind,id=kind+':'+name.slice(0,-5),file=path.join(dir,name);
           try{
-            const stat=await fs.lstat(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size>16*1024*1024){found.delete(id);continue;}
-            const stamp=stat.mtimeMs+':'+stat.size;if(this.cache.get(id)?.stamp===stamp)continue;
-            const raw=JSON.parse(await fs.readFile(file,'utf8'));this.cache.set(id,{stamp,record:parseLog(id,kind,activitySafe(raw,this.root),stat.mtimeMs)});
+            const stat=await logStat(file);found.add(id);
+            const stamp=`${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+            if(this.logs.get(id)?.stamp===stamp)continue;
+            const raw=JSON.parse(await fs.readFile(file,'utf8'));
+            const summary=summarize(parseLog(id,kind,raw,stat.mtimeMs),this.root);
+            this.logs.set(id,{stamp,summary});changed=true;
           }catch{/* An active write can be partial; keep the last readable snapshot and retry. */}
         }
       }
-      for(const id of this.cache.keys())if(!found.has(id))this.cache.delete(id);
-      if(this.shared.db.prepare("SELECT name FROM sqlite_master WHERE name='exploration_runs'").get()){
-        for(const [id,cached] of this.cache)if(cached.record.kind==='exploration'){const row=this.shared.db.prepare('SELECT state,note,finished FROM exploration_runs WHERE id=?').get(id.slice(12)) as any;if(row){cached.record.state=row.state;cached.record.reply=row.note??cached.record.reply;}}
+      for(const id of this.logs.keys())if((!developmentOnly||id.startsWith('development:'))&&!found.has(id)){this.logs.delete(id);changed=true;}
+      if(changed){
+        try{
+          makeDir(this.root,'runtime/cache');
+          writePrivateAtomic(this.root,summaryFile,JSON.stringify([...this.logs.values()]));
+        }catch{/* The in-memory summaries still serve the current process. */}
       }
-      this.lastScan=Date.now();
+      this.lastDevelopmentScan=Date.now();
+      if(!developmentOnly)this.lastScan=this.lastDevelopmentScan;
     })();try{await this.scanning;}finally{this.scanning=undefined;}
   }
-  private webRecords(){
-    const rows=this.web.db.prepare('SELECT * FROM web_turns ORDER BY created DESC').all() as any[];
-    return rows.map(t=>{const d=activitySafe({...t,trace:obj(t.trace),context:obj(t.context)},this.root),r=base('web:'+t.id,'web',d,t.created);r.title=d.user;r.conversation='web:'+t.sid;r.speaker='webui-local';r.reply=d.answer;r.state=d.state;traceRecord(r,Array.isArray(d.trace)?d.trace:[]);return r;});
+
+  private explorationNotes(){
+    if(!this.shared.db.prepare("SELECT name FROM sqlite_master WHERE name='exploration_runs'").get())return;
+    return this.shared.db.prepare('SELECT state,note FROM exploration_runs WHERE id=?');
   }
-  private auditRecords(){
-    return [this.shared,...(this.web===this.shared?[]:[this.web])].flatMap((store,i)=>(store.db.prepare('SELECT * FROM audit ORDER BY at DESC').all() as any[]).map(d=>{
-      d=activitySafe({...d,detail:obj(d.detail)},this.root);const r=base('audit:'+i+'-'+d.id,'audit',d,d.at);r.title=d.kind;r.conversation=d.grp;r.state=/error|denied|fault|limit/.test(d.kind)?'failed':'completed';r.events=[{type:'event',name:d.kind,result:d.detail}];r.errors=r.state==='failed'?1:0;return r;
-    }));
+
+  private webRecord(t:any,full:boolean){
+    const d=full?activitySafe({...t,trace:obj(t.trace),context:obj(t.context)},this.root):{...t,trace:obj(t.trace)};
+    const r=base('web:'+t.id,'web',d,t.created);
+    r.title=d.user;r.conversation='web:'+t.sid;r.speaker='webui-local';r.reply=d.answer;
+    traceRecord(r,Array.isArray(d.trace)?d.trace:[]);r.state=d.state;
+    return r;
   }
-  async list(params:URLSearchParams){
+
+  private webSummaries(){
+    const summaries:ActivitySummary[]=[];
+    const previous=this.webIndex;
+    this.webIndex=new Map();
+    const readTrace=this.web.db.prepare('SELECT id,sid,user,answer,trace,state,created FROM web_turns WHERE id=?');
+    for(const t of this.web.db.prepare('SELECT id,state,created FROM web_turns').iterate() as Iterable<{id:string;state:string;created:number}>){
+      // Only running turns can have updates without a state transition.
+      const stamp=`${t.created}:${t.state}`,cached=previous.get(t.id);
+      let summary=t.state!=='running'&&cached?.stamp===stamp?cached.summary:undefined;
+      if(!summary){
+        const row=readTrace.get(t.id);
+        if(!row)continue;
+        summary=summarize(this.webRecord(row,false),this.root);
+      }
+      this.webIndex.set(t.id,{stamp,summary});summaries.push(summary);
+    }
+    return summaries;
+  }
+
+  private auditRecord(row:any,index:number){
+    const d=activitySafe({...row,detail:obj(row.detail)},this.root);
+    const r=base('audit:'+index+'-'+d.id,'audit',d,d.at);
+    r.title=d.kind;r.conversation=d.grp;r.state=/error|denied|fault|limit/.test(d.kind)?'failed':'completed';
+    r.events=[{type:'event',name:d.kind,result:d.detail}];r.errors=r.state==='failed'?1:0;
+    return r;
+  }
+
+  private auditStores(){return this.shared===this.web?[this.shared]:[this.shared,this.web];}
+
+  private chainRows(id?:string){
+    const db=this.shared.db,exists=(name:string)=>!!db.prepare("SELECT 1 FROM sqlite_master WHERE name=? AND type='table'").get(name);
+    if(!exists('activity_chains'))return [];
+    const count=exists('activity_chain_events')?"(SELECT count(*) FROM activity_chain_events e WHERE e.chain_id=c.id AND json_extract(e.detail,'$.qqAccess')=1)":'0';
+    return db.prepare(`SELECT id,owner,instruction,created,updated,state,job_id,turn_id,answer IS NOT NULL AS answered${id?',answer AS discussion':''},
+      authorized,text AS draft,submitted,post_id,url,error,${count} AS qqVisits FROM activity_chains c${id?' WHERE id=?':''}`).all(...(id?[id]:[]));
+  }
+
+  private chainRecord(row:any,full=false){
+    const d=activitySafe(row,this.root),r=base('chain:'+row.id,'chain',{...d,conversation:'private:'+row.owner},row.created);
+    r.title=d.instruction;
+    r.state=({published:'completed',completed:'completed',failed:'failed',cancelled:'cancelled',unconfirmed:'unconfirmed'} as Record<string,string>)[row.state]??'running';
+    r.errors=r.state==='failed'?1:0;r.qqAccess=row.qqVisits||(row.post_id?1:0);
+    r.reply=({waiting_discussion:'等待 GPT 小姐的讨论结果',queued:'等待执行下一步',drafting:'正在准备后续操作',executing:'正在使用工具办事',completed:'后续步骤已完成',ready:'草稿已保存，等待提交',publishing:'正在向 QQ 空间提交',published:'QQ 空间已确认发布',unconfirmed:'空间回执待核对',failed:'任务链失败',cancelled:'任务链已取消'} as Record<string,string>)[row.state]??row.state;
+    if(!full)return r;
+    r.events.push({type:'event',name:'任务链已建立',at:row.created,state:'completed'});
+    const hasEvents=this.shared.db.prepare("SELECT 1 FROM sqlite_master WHERE name='activity_chain_events' AND type='table'").get();
+    const events=hasEvents?this.shared.db.prepare('SELECT at,step,state,detail FROM activity_chain_events WHERE chain_id=? ORDER BY seq').all(row.id):[];
+    if(row.answered&&!events.some(event=>event.step==='收到讨论结论'))
+      r.events.push({type:'event',name:'收到讨论结论',state:'completed',result:{discussionId:row.job_id,turnId:row.turn_id,text:d.discussion}});
+    const calls=new Map<string,number>();
+    for(const event of events){
+      const result=activitySafe(obj(event.detail),this.root);
+      const step={type:'event',name:String(event.step),state:String(event.state),at:Number(event.at),result};
+      if(step.name==='收到讨论结论'&&result.text===undefined)result.text=d.discussion;
+      if(result.tool===true&&typeof result.callId==='string'){
+        const action:Step={...step,type:'tool',callId:result.callId,args:result.args,result:result.result};
+        action.qqAccess=qqAccess(action);
+        const index=calls.get(result.callId);
+        if(index===undefined){calls.set(result.callId,r.events.length);r.events.push(action);count(r,action.name);}
+        else r.events[index]=action;
+      }else r.events.push(step);
+    }
+    if(row.post_id&&!r.events.some(event=>event.result?.postId===row.post_id))
+      r.events.push({type:'event',name:'QQ 空间返回发言回执',at:row.updated,state:'completed',result:{postId:d.post_id,url:d.url}});
+    if(row.error&&!r.events.some(event=>event.result?.error===d.error)){
+      const old=!events.length&&row.error==='ACTIVITY_CHAIN_PUBLICATION_NOT_AUTHORIZED'&&!row.submitted&&!row.authorized;
+      r.events.push({type:'event',name:old?'检查主人发布授权':'任务链状态',at:row.updated,state:r.state,
+        result:{error:d.error,text:old?'在写稿和提交前停止。旧版未保存授权工具的原始返回。':undefined}});
+    }
+    return r;
+  }
+
+  private async developmentStatus():Promise<DevelopmentStatus[]>{
+    try{
+      const file=safePath(this.root,'runtime/data/development-inbox/status.json');
+      await logStat(file);
+      const {tasks}=JSON.parse(await fs.readFile(file,'utf8'));
+      return Array.isArray(tasks)?tasks.filter(row=>typeof row?.id==='string'&&/^[a-f0-9-]{36}$/.test(row.id)):[];
+    }catch{return [];}
+  }
+
+  private developmentWithStatus(record:any,status:DevelopmentStatus|undefined){
+    if(!status||record.updated>=status.updatedAt)return record;
+    const current=activitySafe(status,this.root);
+    return {...record,updated:current.updatedAt,phase:current.phase,goal:current.goal,reason:current.reason,report:current.report,
+      codex:{...record.codex,rounds:current.rounds,activity:current.codexStep?{step:current.codexStep,at:current.codexUpdatedAt}:undefined}};
+  }
+
+  private async summaries(kind:string){
+    if(kind==='audit')return this.auditStores().flatMap((store,index)=>(store.db.prepare('SELECT * FROM audit').all()).map(row=>summarize(this.auditRecord(row,index),this.root)));
+    if(kind==='chain')return this.chainRows().map(row=>summarize(this.chainRecord(row),this.root));
+    const developmentOnly=kind==='development';
+    await this.scan(developmentOnly);
+    const exploration=developmentOnly?undefined:this.explorationNotes();
+    const records=[...this.logs.values()].filter(({summary})=>!developmentOnly||summary.kind==='development').map(({summary})=>{
+      if(summary.kind!=='exploration')return summary;
+      const row=exploration?.get(summary.id.slice(12)) as {state:string;note:string|null}|undefined;
+      return row?{...summary,state:row.state==='paused'?'failed':row.state,reply:row.note===null?summary.reply:activitySafe(row.note,this.root).slice(0,240)}:summary;
+    });
+    const activeDevelopment=new Map((await this.developmentStatus()).map(row=>['development:'+row.id,row]));
+    for(let i=0;i<records.length;i++){
+      const entry=records[i],status=activeDevelopment.get(entry.id);
+      if(!status)continue;
+      activeDevelopment.delete(entry.id);
+      if(status.updatedAt>entry.updated)records[i]=summarize(parseLog(entry.id,'development',this.developmentWithStatus({
+        created:entry.at,updated:entry.updated,goal:entry.title,
+      },status),entry.at),this.root);
+    }
+    for(const [id,status] of activeDevelopment)records.push(summarize(parseLog(id,'development',
+      this.developmentWithStatus({created:status.updatedAt},status),status.updatedAt),this.root));
+    return developmentOnly?records:records.concat(this.webSummaries(),this.chainRows().map(row=>summarize(this.chainRecord(row),this.root)));
+  }
+
+  async list(params:URLSearchParams,signal?:AbortSignal){
     const kind=params.get('kind')||'',state=params.get('state')||'',q=(params.get('q')??'').trim().toLowerCase(),conversation=params.get('conversation')||'';
     const from=queryDate(params.get('from')),to=queryDate(params.get('to'),true),offset=Number(params.get('offset')??0),limit=20;
-    if(kind&&!kinds.has(kind)||state&&!['completed','failed','running','unknown','paused','cancelled','interrupted'].includes(state)||q.length>200||conversation.length>120||!Number.isSafeInteger(offset)||offset<0||from!==null&&to!==null&&from>=to)throw new FishError('ACTIVITY_QUERY_INVALID');
-    await this.scan();let records=kind==='audit'?this.auditRecords():[...this.cache.values()].map(v=>v.record).concat(this.webRecords());
+    if(kind&&!kinds.has(kind)||state&&!['completed','failed','running','unknown','cancelled','interrupted','unconfirmed'].includes(state)||q.length>200||conversation.length>120||!Number.isSafeInteger(offset)||offset<0||from!==null&&to!==null&&from>=to)throw new FishError('ACTIVITY_QUERY_INVALID');
+    let records=await this.summaries(kind);
+    signal?.throwIfAborted();
     const conversations=[...new Set(records.map(r=>r.conversation).filter(Boolean))].sort();
-    records=records.filter(r=>(!kind||r.kind===kind)&&(!state||(state==='failed'?r.state==='failed'||r.errors>0:r.state===state))&&(!conversation||r.conversation===conversation)&&(from===null||r.at>=from)&&(to===null||r.at<to)&&(!q||JSON.stringify([r.title,r.reply,r.conversation,r.speaker,r.events]).toLowerCase().includes(q))).sort((a,b)=>b.at-a.at||b.id.localeCompare(a.id));
+    records=records.filter(r=>(!kind||(kind==='qq_access'?r.qqAccess>0:r.kind===kind))&&(!state||r.state===state)&&(!conversation||r.conversation===conversation)&&(from===null||r.at>=from)&&(to===null||r.at<to));
+    if(q){
+      const matches:ActivitySummary[]=[];
+      for(const summary of records){
+        signal?.throwIfAborted();
+        try{
+          const r=await this.detail(summary.id);
+          if(JSON.stringify([r.title,r.reply,r.conversation,r.speaker,r.events]).toLowerCase().includes(q))matches.push(summary);
+        }catch(e){if(!(e instanceof FishError)||e.message!=='ACTIVITY_NOT_FOUND')throw e;}
+      }
+      records=matches;
+    }
+    records.sort((a,b)=>b.at-a.at||b.id.localeCompare(a.id));
     const totals={records:records.length,input:0,output:0,tokens:0,modelCalls:0,unknownUsage:0,cachedInput:0,uncachedInput:0,cacheKnownCalls:0,cacheUnknownInput:0,unreportedCalls:0,tools:0,search:0,fetch:0,browse:0,downloads:0,images:0,sends:0,errors:0};
     for(const r of records){totals.input+=r.usage.input;totals.output+=r.usage.output;totals.tokens+=r.usage.total;totals.modelCalls+=r.usage.calls;for(const k of ['cachedInput','uncachedInput','cacheKnownCalls','cacheUnknownInput','unreportedCalls'] as const)totals[k]+=r.usage[k];if(!r.usage.known)totals.unknownUsage++;totals.errors+=r.errors;for(const k of Object.keys(r.counts) as (keyof RecordItem['counts'])[])totals[k]+=r.counts[k];}
-    return {items:records.slice(offset,offset+limit).map(({events,raw,...item})=>({...item,title:item.title.slice(0,180),reply:item.reply.slice(0,240)})),totals,conversations,offset,limit,nextOffset:offset+limit<records.length?offset+limit:null,timezone:'Asia/Hong_Kong',updatedAt:Date.now()};
+    return {items:records.slice(offset,offset+limit),totals,conversations,offset,limit,nextOffset:offset+limit<records.length?offset+limit:null,timezone:'Asia/Hong_Kong',updatedAt:Date.now()};
   }
   async detail(id:unknown){
     if(typeof id!=='string'||id.length>180||!/^\w+:[a-zA-Z0-9-]+$/.test(id))throw new FishError('ACTIVITY_NOT_FOUND');
-    await this.scan();const r=id.startsWith('web:')?this.webRecords().find(r=>r.id===id):id.startsWith('audit:')?this.auditRecords().find(r=>r.id===id):this.cache.get(id)?.record;
-    if(!r)throw new FishError('ACTIVITY_NOT_FOUND');return r;
+    const [kind,key]=id.split(':');
+    if(kind==='chain'){
+      const [row]=this.chainRows(key);
+      if(row)return this.chainRecord(row,true);
+    }else if(kind==='web'){
+      const row=this.web.db.prepare('SELECT * FROM web_turns WHERE id=?').get(key);
+      if(row)return this.webRecord(row,true);
+    }else if(kind==='audit'){
+      const match=/^([01])-([1-9]\d*)$/.exec(key);
+      if(match){
+        const index=Number(match[1]);
+        const row=this.auditStores()[index]?.db.prepare('SELECT * FROM audit WHERE id=?').get(match[2]);
+        if(row)return this.auditRecord(row,index);
+      }
+    }else if(Object.hasOwn(logFolders,kind)){
+      const fileKind=kind as keyof typeof logFolders;
+      const status=fileKind==='development'?(await this.developmentStatus()).find(row=>row.id===key):undefined;
+      try{
+        if((fileKind==='news'||fileKind==='memory')&&(fileKind==='memory')!==isMemoryLog(key))throw new FishError('ACTIVITY_NOT_FOUND');
+        const file=safePath(this.root,`${logFolders[fileKind]}/${key}.json`),stat=await logStat(file);
+        const raw=JSON.parse(await fs.readFile(file,'utf8'));
+        const r=parseLog(id,fileKind,this.developmentWithStatus(activitySafe(raw,this.root),status),stat.mtimeMs);
+        if(fileKind==='exploration'){
+          const row=this.explorationNotes()?.get(key) as {state:string;note:string|null}|undefined;
+          if(row){r.state=row.state==='paused'?'failed':row.state;r.reply=activitySafe(row.note??r.reply,this.root);}
+        }
+        return r;
+      }catch{
+        if(status)return parseLog(id,'development',this.developmentWithStatus({created:status.updatedAt},status),status.updatedAt);
+      }
+    }
+    throw new FishError('ACTIVITY_NOT_FOUND');
   }
   async image(id:unknown){
     const record=await this.detail(id);

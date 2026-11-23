@@ -5,7 +5,8 @@ import {EventEmitter} from 'node:events';
 import dns from 'node:dns/promises';
 import https from 'node:https';
 import {browsePage,postPublic,type PublicPoster} from '../src/search/public-web.js';
-import {tiebaPage} from '../src/search/tieba.js';
+import {tiebaPage,tiebaTarget} from '../src/search/tieba.js';
+import {publishInput,publishSectionFeedback} from '../src/tieba/posting.js';
 
 const user={id:12,name:'吧友',portrait:'https://example.com/avatar.jpg'};
 const forum={id:7,name:'任意兴趣'};
@@ -14,6 +15,37 @@ const fixture=(data:any):PublicPoster=>async url=>({url,type:'application/json',
 const post={id:'56789',floor:2,time:1793626428,author_id:12,sub_post_number:5,content:[{type:0,text:'真实正文'},
  {type:3,origin_src:'https://example.com/original.gif',cdn_src:'https://example.com/thumbnail.jpg'},
  {type:1,text:'出处',link:'https://example.com/source'}]};
+
+test('Tieba jump domains route supported paths through the free public API instead of HTML GET',async()=>{
+ for(const host of ['jump2.bdimg.com','jump.bdimg.com']){
+  const url='https://'+host+'/p/12345?pn=2';
+  assert.deepEqual(tiebaTarget(new URL(url)),{kind:'thread',tid:'12345',page:2});
+  assert.deepEqual(tiebaTarget(new URL('https://'+host+'/f?kw=任意兴趣&pn=50')),{kind:'forum',forum:'任意兴趣',page:2});
+  let calls=0;
+  const page=await browsePage(url,0,undefined,async()=>{throw Error('blocked HTML GET must not run');},'',0,async(api,body)=>{
+   calls++;assert.equal(api,'https://tiebac.baidu.com/c/f/pb/page');assert.equal(body.get('kz'),'12345');assert.equal(body.get('pn'),'2');
+   return fixture({error_code:0,forum,thread,user_list:[user],post_list:[post],page:{current_page:2,total_page:2}})(api,body);
+  });
+  assert.equal(calls,1);assert.equal(page.status,'content');assert.match(page.text,/真实正文/);
+ }
+ assert.equal(tiebaTarget(new URL('https://jump2.bdimg.com.evil.example/p/12345')),undefined);
+});
+
+test('replies distinguish a new floor, an exact floor and an exact child comment',()=>{
+ const args={action:'reply',forumId:'7',content:'回复测试。'};
+ const topic='https://tieba.baidu.com/p/12345',floor=topic+'?pid=56789#56789';
+ const child='https://tieba.baidu.com/p/comment?tid=12345&pid=56789#67890';
+ assert.equal(publishSectionFeedback({...args,target:topic}),undefined);
+ assert.equal(publishInput({...args,target:topic}).action,'reply');
+ assert.equal(publishSectionFeedback({...args,target:floor}),undefined);
+ assert.equal(publishInput({...args,target:floor}).postId,'56789');
+ assert.equal(publishInput({...args,target:child}).subPostId,'67890');
+ assert.equal(publishSectionFeedback({...args,target:child,replyScope:'floor'})?.error,'TIEBA_REPLY_SCOPE_MISMATCH');
+ assert.equal(publishSectionFeedback({...args,target:floor,replyScope:'floor'}),undefined);
+ assert.equal(publishInput({...args,target:floor,replyScope:'floor'}).postId,'56789');
+ assert.equal(publishSectionFeedback({...args,target:child,replyScope:'subreply'}),undefined);
+ assert.equal(publishInput({...args,target:child,replyScope:'subreply'}).subPostId,'67890');
+});
 
 test('any chosen bar uses signed public read POST, preserves pinned threads and follows native pagination',async()=>{
  const read:PublicPoster=async(url,body)=>{
@@ -77,4 +109,31 @@ test('public mobile POST retains DNS pinning and certificate verification, refus
  for(const url of ['https://example.com/c/f/frs/page','https://tiebac.baidu.com/c/c/thread/add','https://tiebac.baidu.com/c/f/frs/page?extra=x'])assert.throws(()=>postPublic(url,body),/TARGET_DENIED/);
  assert.equal(requests,0);await assert.rejects(postPublic('https://tiebac.baidu.com/c/f/frs/page',body),/POST_REDIRECT_REJECTED/);assert.equal(requests,1);
  privateDns=true;await assert.rejects(postPublic('https://tiebac.baidu.com/c/f/frs/page',body),/PRIVATE_ADDRESS/);assert.equal(requests,1);
+});
+
+test('moderator capability probes are shared and a slow RPC promptly defaults to read tools',async()=>{
+ const {TiebaAccountClient}=await import('../src/tieba/client.js');
+ const {allowedTiebaTools}=await import('../src/agent/shared-tools.js');
+ let calls=0;
+ const allowed=new TiebaAccountClient(async()=>{
+  calls++;
+  return {moderatorAuthorized:true};
+ });
+ for(const tools of await Promise.all([allowedTiebaTools(allowed),allowedTiebaTools(allowed)])){
+  assert.ok(tools.some(tool=>tool.function.name==='apply_tieba_moderator'));
+ }
+ assert.equal(calls,1);
+ let resolve!: (value:unknown)=>void;
+ const slow=new TiebaAccountClient(async()=>{
+  calls++;
+  return new Promise(done=>{resolve=done;});
+ });
+ const started=performance.now(),tools=await allowedTiebaTools(slow);
+ try{
+  assert.ok(performance.now()-started<2500,'tool setup must not wait for the full RPC timeout');
+  assert.ok(tools.some(tool=>tool.function.name==='publish_tieba'));
+  assert.ok(!tools.some(tool=>tool.function.name==='apply_tieba_moderator'));
+  assert.deepEqual(await allowedTiebaTools(slow),tools);
+  assert.equal(calls,2);
+ }finally{resolve({moderatorAuthorized:true});}
 });

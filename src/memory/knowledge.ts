@@ -50,5 +50,5 @@ export function updateKnowledge(root:string,args:any){
 export const knowledgeUpdateParameters={type:'object',properties:{version:{type:'integer'},changes:{type:'array',items:{type:'object',properties:{action:{type:'string',enum:['add','replace','delete']},id:{type:'integer',description:'替换或删除的条目ID'},text:{type:'string',description:'添加或替换的内容'}},required:['action'],additionalProperties:false}}},required:['version','changes'],additionalProperties:false};
 export const knowledgeTools:ModelTool[]=[
   {type:'function',function:{name:'get_knowledge',description:'读取自己的知识库和当前 token 数。',parameters:{type:'object',properties:{},additionalProperties:false}}},
-  {type:'function',function:{name:'update_knowledge',description:'后台按条增删改自己的长期记忆，包括知识、偏好、约定和经验；自主取舍，总长不超过5000 token。',parameters:knowledgeUpdateParameters}},
+  {type:'function',function:{name:'update_knowledge',description:'按条维护常驻长期知识库，总长最多 5000 token。',parameters:knowledgeUpdateParameters}},
 ];

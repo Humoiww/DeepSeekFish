@@ -1,10 +1,11 @@
+import {personaSettings} from '../src/character.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {fixture} from './helpers.js';
 import {writePrivate} from '../src/paths.js';
 import {DailyNews,newsSlot,newsMemory,newsStatus} from '../src/qq/daily-news.js';
 import {MemoryJournal} from '../src/memory/journal.js';
-import {knowledgeSnapshot} from '../src/memory/knowledge.js';
+import {knowledgeSnapshot,updateKnowledge} from '../src/memory/knowledge.js';
 import {FishError,type ChatMessage} from '../src/types.js';
 import type {BudgetedModel} from '../src/agent/model.js';
 import {PROJECT_TIMEZONE} from '../src/time.js';
@@ -19,7 +20,8 @@ function setup(){
   const model:Pick<BudgetedModel,'complete'>={async complete(_group,user,m,options){
     modelCalls++;contexts.push(structuredClone(m));
     if(user==='memory-review')return call('finish_memory',{memory:{version:knowledgeSnapshot(f.root).version,changes:[{action:'add',text:'记住主人喜欢鲸鱼。'}]}});
-    assert.ok(options?.tools?.some(t=>t.function.name==='update_knowledge'));
+    assert.ok(options?.tools?.some(t=>t.function.name==='draft_news'));
+    if(newsRound<8)assert.ok(options?.tools?.some(t=>t.function.name==='update_knowledge'));
     if(++newsRound===1)return call('search_web',{query:'鲸鱼 近期 新闻'});
     if(newsRound===2)return call('fetch_page',{url});
     return call('draft_news',{text:'翻到个有意思的鲸鱼消息，给你看看。',sources:[unverifiedSource?'https://example.com/invented':url]});
@@ -78,7 +80,7 @@ test('unverified final links cannot be sent as researched news',async()=>{
   finally{f.cleanup();}
 });
 test('background review can autonomously recall, update and finish without a QQ send',async()=>{
-  const f=setup();let round=0;
+  const f=setup();let round=0,first:ChatMessage[]|undefined;
   try{
     f.journal.record({id:'owner-rule',conversation:'private:20002',actor:'owner',role:'user',text:'我喜欢鲸鱼',at:morning-60000});
     f.journal.record({id:'other-rule',conversation:'private:30003',actor:'other',role:'user',text:'其他人的秘密',at:morning-60000});
@@ -86,6 +88,12 @@ test('background review can autonomously recall, update and finish without a QQ 
       assert.ok(options?.tools?.some(t=>t.function.name==='recall_chat'));
       const input=JSON.parse(String(m[1].content));assert.ok(input.qqWebTools.some((t:any)=>t.name==='download_image'));assert.ok(input.qqTools.includes('read_forward'));assert.ok(input.qqTools.includes('send_image'));
       assert.ok(!JSON.stringify(m).includes('其他人的秘密'));
+      assert.equal(m.at(-1)?.role,'system');
+      assert.ok(String(m.at(-1)?.content).includes(personaSettings(f.root).blocks.find(block=>block.kind!=='kaomoji')!.text.trim()));
+      assert.match(String(m.at(-2)?.content),/当前香港时间/);
+      if(first)assert.deepEqual(m.slice(0,2),first);
+      else first=structuredClone(m.slice(0,2));
+
       const [name,args]=++round===1?['recall_chat',{}]:round===2?['update_knowledge',{version:0,changes:[{action:'add',text:'主人喜欢鲸鱼'}]}]:['finish_memory',{}];
       return {text:'',tool_calls:[{id:'recall-'+round,type:'function',function:{name:String(name),arguments:JSON.stringify(args)}}],usage:{input:100,output:50}};
     }};
@@ -93,4 +101,26 @@ test('background review can autonomously recall, update and finish without a QQ 
     const daily=new DailyNews(f.root,f.store,f.cfg,model,search,{async send(){throw Error('unexpected send');}},()=>morning);
     const result=await daily.remember();assert.equal(result.ok,true);assert.equal(round,3);assert.equal(result.version,1);assert.match(result.content,/喜欢鲸鱼/);
   }finally{f.cleanup();}
+});
+
+test('a full knowledge base and a malformed final update end the review with a no-write receipt',async()=>{
+ const f=setup(),before=updateKnowledge(f.root,{version:0,changes:[{action:'add',text:'alpha '.repeat(4970)}]});
+ try{
+  assert.equal(before.ok,true);
+  const patch={version:before.version,changes:[{action:'replace',id:1,text:'alpha '.repeat(5050)}]};
+  const calls=[['get_knowledge',{}],['finish_memory',{memory:patch}],['finish_memory',{memory:patch}],
+   ['finish_memory',{memory:{changes:patch.changes},version:before.version}]];
+  let round=0;
+  const model:Pick<BudgetedModel,'complete'>={async complete(){
+   const [name,args]=calls[round++];
+   return {text:'',tool_calls:[{id:'memory-'+round,type:'function',function:{name:String(name),arguments:JSON.stringify(args)}}],usage:{input:1,output:1}};
+  }};
+  const unused=async()=>{throw Error('unexpected external operation');};
+  const daily=new DailyNews(f.root,f.store,f.cfg,model,{search:unused,fetch:unused},{send:unused},()=>morning);
+  const receipt=await daily.remember();
+  assert.equal(receipt.ok,true);assert.equal(receipt.reason,'KNOWLEDGE_TOO_LONG');
+  assert.equal(receipt.memorySaved,false);assert.equal(receipt.memoryStatus,'unchanged');
+  assert.deepEqual(knowledgeSnapshot(f.root).lines,before.lines);
+  assert.equal(knowledgeSnapshot(f.root).version,before.version);
+ }finally{f.cleanup();}
 });

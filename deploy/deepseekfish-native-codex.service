@@ -1,0 +1,14 @@
+[Unit]
+Description=Forward the native Codex CLI connection
+Requires=deepseekfish-native-codex.socket
+After=deepseekfish-native-codex.socket
+
+[Service]
+User=fishops
+Group=fishops
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd /home/fishops/.codex/app-server-control/app-server-control.sock
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictAddressFamilies=AF_UNIX
+PrivateTmp=no

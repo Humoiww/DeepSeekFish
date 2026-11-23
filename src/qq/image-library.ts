@@ -69,8 +69,8 @@ export class QQImageLibrary{
     const all=this.entries(conversation,user).filter(i=>source==='all'||i.source===source),page=all.slice(offset,offset+12);
     return {canAttachOriginals:true,images:page.map(({path,...image})=>image),total:all.length,nextOffset:offset+12<all.length?offset+12:null};
   }
-  select(conversation:string,user:string,ids:unknown):SelectedReference[]{
-    if(!Array.isArray(ids)||ids.length>3||ids.some(id=>typeof id!=='string'||id.length>180)||new Set(ids).size!==ids.length)throw new FishError('IMAGE_REFERENCE_IDS_INVALID');
+  select(conversation:string,user:string,ids:unknown,limit=3):SelectedReference[]{
+    if(!Array.isArray(ids)||ids.length>limit||ids.some(id=>typeof id!=='string'||id.length>180)||new Set(ids).size!==ids.length)throw new FishError('IMAGE_REFERENCE_IDS_INVALID');
     if(!ids.length)return [];
     const entries=this.entries(conversation,user);
     return ids.map(id=>{const found=entries.find(i=>i.id===id)??(id.startsWith('qzone-')?entries.find(i=>i.owner===user&&i.id==='qzone-'+user+'-'+id.slice(6)):undefined);if(!found)throw new FishError('IMAGE_REFERENCE_NOT_AVAILABLE');return {id:found.id,label:found.label,path:found.path};});

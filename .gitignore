@@ -6,6 +6,7 @@ runtime/**
 .env.*
 !.env.example
 config/local.json
+config/development-owner
 *.key
 *.pem
 *.log

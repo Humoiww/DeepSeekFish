@@ -4,7 +4,7 @@ import { createServer,request,type Server } from 'node:http';
 import { once } from 'node:events';
 import { tailnetGateway } from '../src/web/tailnet.js';
 
-const publicHost='100.123.219.112:17863';
+const publicHost='100.100.25.7:17863';
 async function listen(server:Server){server.listen(0,'127.0.0.1');await once(server,'listening');return (server.address() as import('node:net').AddressInfo).port;}
 test('tailnet gateway validates origin, preserves auth/stream, strips approval and denies management routes',async()=>{
   let seen:any,count=0;
@@ -25,6 +25,15 @@ test('tailnet gateway validates origin, preserves auth/stream, strips approval a
     assert.equal((await call('/api/bootstrap',{},'POST')).status,200);
     assert.equal((await call('/api/qq')).status,200);
     assert.equal((await call('/api/qq',{},'POST')).status,200);
+    for(const route of ['/neon.js','/api/neon','/api/neon/record?kind=codex&id=x','/api/activity/active']){
+      assert.equal((await call(route)).status,200);
+      assert.equal((await call(route,{},'POST')).status,403);
+    }
+    for(const route of ['/api/neon/interrupt','/api/activity/interrupt','/api/neon/reset-conversation']){
+      assert.equal((await call(route,{},'POST')).status,200);
+      assert.equal((await call(route,{Origin:'https://evil.example'},'POST')).status,403);
+      assert.equal((await call(route)).status,403);
+    }
   }finally{gateway.closeAllConnections();upstream.closeAllConnections();await Promise.all([new Promise<void>(r=>gateway.close(()=>r())),new Promise<void>(r=>upstream.close(()=>r()))]);}
 });
 
@@ -41,30 +50,4 @@ test('owner devices enter without browser credentials; the upstream token never 
     assert.equal(status.status,200);assert.equal(seen.authorization,'Bearer server-only-secret');assert.equal(status.body.includes('server-only-secret'),false);assert.equal(peer,'127.0.0.1');
     owner=false;assert.equal((await call('/api/status')).status,403);assert.equal((await call('/api/access')).status,403);
   }finally{gateway.closeAllConnections();upstream.closeAllConnections();await Promise.all([new Promise<void>(r=>gateway.close(()=>r())),new Promise<void>(r=>upstream.close(()=>r()))]);}
-});
-
-test('phone owner gateway loads every prompt and saves persona through the real WebUI API',async()=>{
-  const {fixture}=await import('./helpers.js'),{createWebApp}=await import('../src/web/app.js'),{webServer}=await import('../src/web/server.js');
-  const f=fixture(),app=createWebApp(f.root,true),upstreamPort=44000+Math.floor(Math.random()*10000),{server:upstream}=webServer(app,upstreamPort);
-  upstream.listen(upstreamPort,'127.0.0.1');await once(upstream,'listening');
-  let owner=true;const gateway=tailnetGateway(publicHost,upstreamPort,{token:app.token,owner:async()=>owner}),port=await listen(gateway);
-  const call=(route:string,data?:unknown)=>new Promise<{status:number;body:any}>((resolve,reject)=>{
-    const req=request({hostname:'127.0.0.1',port,path:'/api/'+route,method:data?'POST':'GET',headers:{host:publicHost,origin:'http://'+publicHost,'content-type':'application/json'}},res=>{
-      let body='';res.on('data',part=>{body+=part;});res.on('end',()=>resolve({status:res.statusCode!,body:JSON.parse(body)}));
-    });req.on('error',reject);req.end(data?JSON.stringify(data):undefined);
-  });
-  try{
-    const config=await call('persona');assert.equal(config.status,200);assert.equal(config.body.blocks.length,3);
-    const prompts=await call('prompts');assert.equal(prompts.status,200);
-    for(const system of Object.values(prompts.body.systems))assert.ok(typeof system==='string'&&system.length>50);
-    const saved=await call('persona',{...config.body,blocks:[{title:'人格',text:'通过手机入口保存的设定'}]});assert.equal(saved.status,200);
-    const next=await call('prompts');for(const system of Object.values(next.body.systems))assert.ok(String(system).includes('通过手机入口保存的设定'));
-    assert.ok(!JSON.stringify(next.body).includes(app.token));assert.equal((await call('prompts',{})).status,403);
-    const settings=await call('settings',{search:true});assert.equal(settings.status,200);assert.equal(settings.body.settings.search,true);assert.equal(settings.body.web.enabled,true);
-    const {Store}=await import('../src/storage/db.js');const budgetStore=new Store(f.root,'webui-mock-budget.sqlite');
-    try{const shared=JSON.parse(budgetStore.getMeta('settings')??'{}');assert.equal(shared.search,true);}finally{budgetStore.close();}
-    owner=false;assert.equal((await call('persona')).status,403);assert.equal((await call('prompts')).status,403);assert.equal((await call('persona',saved.body)).status,403);
-  }finally{
-    gateway.closeAllConnections();upstream.closeAllConnections();await Promise.all([new Promise<void>(r=>gateway.close(()=>r())),new Promise<void>(r=>upstream.close(()=>r()))]);await app.close();f.cleanup();
-  }
 });

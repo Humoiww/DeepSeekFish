@@ -20,13 +20,25 @@ function sample(){return {request:'下载参考图再画一张',conversation:'pr
  {tool:'send_image',result:{delivered:true}},{tool:'reply',result:{sent:true}}
  ]};}
 
+test('idle curiosity traces appear as private memory activity with their real group name',async()=>{
+ const f=fixture(),app=createWebApp(f.root,true);
+ try{
+  log(f.root,'daily-news','curiosity-idle',{kind:'curiosity-summary',conversation:'88776655',groupName:'鲸鱼研究会',startedAt:at,finishedAt:at+1000,state:'completed',trace:[
+   {kind:'model',round:0,usage:{input:100,output:20},toolCalls:[call('skip','skip_curiosity_summary',{})]},
+   {tool:'skip_curiosity_summary',callId:'skip',args:{},result:{ok:true,skipped:true}},
+  ]});
+  const list=await app.activity(new URLSearchParams({kind:'memory'}));assert.equal(list.items.length,1);assert.match(list.items[0].title,/鲸鱼研究会/);
+  const detail=await app.activityDetail('memory:curiosity-idle');assert.equal(detail.state,'completed');assert.equal(detail.usage.total,120);assert.equal(detail.events.find(event=>event.name==='skip_curiosity_summary')?.state,'completed');
+ }finally{await app.close();f.cleanup();}
+});
+
 test('activity preserves native call/result pairs, counts real usage once, and keeps old unknown usage distinct',async()=>{
  const f=fixture(),app=createWebApp(f.root,true);
  try{
   log(f.root,'qq','sample',sample());log(f.root,'qq','old-failure',{request:'旧请求',conversation:'private:30003',at:at-86400000,trace:[{error:'DEEPSEEK_HTTP_400'}]});
   log(f.root,'daily-news','research-today',{at,trace:[{round:0,usage:{input:50,output:10},tool_calls:[call('news','draft_news',{text:'今日新闻'})]},{draft:{text:'今日新闻',sources:[]}}]});
   const all=await app.activity(new URLSearchParams());assert.equal(all.totals.records,3);assert.equal(all.totals.tokens,285);assert.equal(all.totals.modelCalls,4);assert.equal(all.totals.unknownUsage,1);
-  const filtered=await app.activity(new URLSearchParams({kind:'qq',from:'2026-11-03',to:'2026-11-03',conversation:'private:20002',q:'WEB_BODY_TOO_LARGE',state:'failed'}));assert.equal(filtered.items.length,1);
+  const filtered=await app.activity(new URLSearchParams({kind:'qq',from:'2026-11-03',to:'2026-11-03',conversation:'private:20002',q:'WEB_BODY_TOO_LARGE',state:'completed'}));assert.equal(filtered.items.length,1);
   const detail=await app.activityDetail('qq:sample');assert.equal(detail.usage.total,225);assert.equal(detail.durationMs,3000);assert.equal(detail.state,'completed');assert.equal(detail.reply,'画好了。');assert.equal(detail.counts.tools,5);assert.equal(detail.counts.search,1);assert.equal(detail.counts.downloads,1);assert.equal(detail.counts.images,1);assert.equal(detail.counts.sends,1);
   const image=detail.events.find(e=>e.name==='generate_image')!;assert.equal(image.phases?.length,2);assert.equal(image.callId,'g');assert.equal(image.state,'completed');assert.deepEqual(detail.related,['image:'+imageId]);
   assert.equal(detail.usage.cachedInput,140);assert.equal(detail.usage.uncachedInput,40);assert.equal(detail.usage.cacheUnknownInput,10);assert.equal(detail.usage.cacheKnownCalls,2);
@@ -91,4 +103,68 @@ test('legacy internal failures say diagnostics were not recorded and repeated to
   const {ActivityHistory}=await import('../src/web/activity.js');const two=await new ActivityHistory(f.root,f.store,f.store).detail('qq:two-browse');
   assert.equal(two.events.find(e=>e.callId==='a')?.state,'completed');assert.equal(two.events.find(e=>e.callId==='b')?.diagnostic.message,'second failed');assert.equal(two.counts.browse,2);assert.equal(two.usage.total,15);
  }finally{await app.close();f.cleanup();}
+});
+
+test('Neon endpoints read actual record snapshots and interrupt code and candidate through the worker mailbox',async()=>{
+ const {randomUUID}=await import('node:crypto');
+ const {Jobs}=await import('../src/development/jobs.js');
+ const {bridgeViewDir,developmentInbox,consumeDevelopmentInterrupt,cancelWebDevelopment,webCancelReason,processConversationReset}=await import('../src/development/bridge-view.js');
+ const {writePrivateAtomic}=await import('../src/paths.js');
+ const f=fixture(),owner='20002',app=createWebApp(f.root,true),jobs=new Jobs(f.root);
+ const port=23000+Math.floor(Math.random()*20000),{server}=webServer(app,port);
+ const origin='http://127.0.0.1:'+port,headers={authorization:'Bearer '+app.token,'content-type':'application/json'};
+ const read=(route:string)=>fetch(origin+'/api/'+route,{headers});
+ const post=(route:string,body:object)=>fetch(origin+'/api/'+route,{method:'POST',headers,body:JSON.stringify(body)});
+ try{
+  fs.mkdirSync(path.join(f.root,'config'),{recursive:true});
+  fs.writeFileSync(path.join(f.root,'config/development-owner'),owner);
+  for(const dir of [bridgeViewDir,developmentInbox])fs.mkdirSync(path.join(f.root,dir),{recursive:true});
+  const record={id:randomUUID(),kind:'codex',updatedAt:Date.now(),bytes:100};
+  writePrivateAtomic(f.root,bridgeViewDir+'/index.json',JSON.stringify([record]));
+  writePrivateAtomic(f.root,bridgeViewDir+'/codex-'+record.id+'.json',JSON.stringify({ok:true,record,steps:[{role:'tool',title:'执行命令',text:'npm run build'}]}));
+  server.listen(port,'127.0.0.1');
+  await once(server,'listening');
+  assert.equal((await fetch(origin+'/api/neon')).status,401);
+  assert.equal((await post('neon/interrupt',{taskId:'../status'})).status,400);
+  assert.deepEqual((await (await read('neon')).json() as any).records,[record]);
+  assert.equal((await (await read('neon/record?kind=codex&id='+record.id)).json() as any).steps[0].text,'npm run build');
+  assert.equal((await read('neon/record?kind=codex&id=..%2Fstatus')).status,400);
+  assert.equal((await read('neon/record?kind=unknown&id='+record.id)).status,400);
+  for(const [phase,route] of [['code','neon/interrupt'],['candidate','activity/interrupt'],['code','activity/interrupt']] as const){
+   const id=randomUUID(),created=Date.now(),controller=new AbortController();
+   jobs.save({id,owner,phase,goal:'处理开发任务',criteria:[],created,modified:created,round:0,requests:[],trials:[],version:1,grant:'lease'});
+   writePrivateAtomic(f.root,developmentInbox+'/status.json',JSON.stringify({owner,runningTaskId:id,tasks:jobs.status(owner)}));
+   const active=await (await read('activity/active')).json() as any;
+   assert.equal(active.development[0].id,id);
+   assert.equal(active.development[0].interruptible,true);
+   const reply=await post(route,route==='activity/interrupt'&&phase==='code'?{}:{taskId:id});
+   assert.equal(reply.status,200);
+   assert.deepEqual((await reply.json() as any).developmentRequested,[id]);
+   consumeDevelopmentInterrupt(f.root,ids=>{
+    assert.deepEqual(ids,[id]);
+    assert.equal(cancelWebDevelopment(jobs,owner,id,new Map([[id,controller]])),true);
+   });
+   assert.equal(jobs.get(id)?.phase,'cancelled');
+   assert.equal(jobs.get(id)?.reason,webCancelReason);
+   assert.equal(controller.signal.reason.message,'DEV_GRANT_REVOKED');
+  }
+  assert.equal(fs.existsSync(path.join(f.root,developmentInbox,'web-cancel.json')),false);
+  assert.equal((await post('neon/reset-conversation',{})).status,400);
+  const mainConversation={conversationId:randomUUID(),updatedAt:Date.now()};
+  writePrivateAtomic(f.root,bridgeViewDir+'/status.json',JSON.stringify({ok:true,busy:false,mainConversation,updatedAt:Date.now()}));
+  assert.deepEqual((await (await read('neon')).json() as any).bridge.mainConversation,mainConversation);
+  assert.equal((await post('neon/reset-conversation',{conversationId:'forged'})).status,400);
+  const reset=await (await post('neon/reset-conversation',{})).json() as any;
+  assert.deepEqual(await (await post('neon/reset-conversation',{})).json(),reset);
+  let processed=0;
+  await processConversationReset(f.root,async()=>{processed++;});
+  await processConversationReset(f.root,async()=>{processed++;});
+  assert.equal(processed,1);
+  assert.equal((await (await read('neon')).json() as any).conversationReset.id,reset.requestId);
+ }finally{
+  jobs.db.close();
+  server.closeAllConnections();
+  await new Promise<void>(resolve=>server.close(()=>resolve()));
+  await app.close();f.cleanup();
+ }
 });

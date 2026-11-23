@@ -1,0 +1,28 @@
+[Unit]
+Description=DeepSeekFish private memory and history backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+WorkingDirectory=/srv/deepseekfish/app
+ExecStart=/usr/bin/python3 /srv/deepseekfish/app/scripts/backup-state.py run
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/deepseekfish/app/runtime/backup /srv/deepseekfish/app/runtime/data
+ReadWritePaths=/srv/deepseekfish/app/runtime/tieba-account
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0

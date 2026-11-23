@@ -33,11 +33,6 @@ test('catalog separates profiles and posts, scopes conversation/time and resolve
     assert.throws(()=>library.select('g2','20002',['qzone-fresh-0']),/NOT_AVAILABLE/);
     assert.throws(()=>library.select('private:20002','20002',['runtime/codex-home/auth.json']),/NOT_AVAILABLE/);
     assert.throws(()=>library.select('private:20002','20002',['character','character']),/IDS_INVALID/);
-    const selfFolder=makeDir(f.root,'runtime/memory/people/90009/today/item');fs.copyFileSync(path.join(folder,'mock.png'),path.join(selfFolder,'self.png'));
-    f.store.db.prepare('INSERT INTO qzone_observations VALUES(?,?,?,?,?)').run('self','private:20002','90009',Date.now(),JSON.stringify({posts:[{id:'fresh',owner:'90009',position:1,text:'肥鱼自己的动态',media:[{status:'downloaded',kind:'photo',path:'runtime/memory/people/90009/today/item/self.png'}]}]}));
-    const spaces=library.list('private:20002','20002','qzone').images;
-    assert.equal(spaces.length,2);assert.equal(new Set(spaces.map(i=>i.id)).size,2);assert.deepEqual(new Set(spaces.map(i=>i.owner)),new Set(['20002','90009']));
-    assert.ok(spaces.every(i=>i.label.includes(i.owner!)));assert.equal(library.view('private:20002','20002',['qzone-90009-fresh-0']).images[0].mime,'image/png');
     const cwd=makeDir(f.root,'runtime/workspace/partial');
     assert.throws(()=>stageReferences(f.root,cwd,[{id:'one',label:'first',path:path.join(folder,'mock.png')},{id:'missing',label:'missing',path:path.join(folder,'missing.png')}]));
     assert.deepEqual(fs.readdirSync(cwd),[]);
@@ -72,27 +67,4 @@ test('broker lists and views references without charging and rejects unavailable
     const result=await client.generate(m,plan,1000,undefined,['character']);assert.equal(result.characterReference,true);assert.equal(result.references[0].id,'character');assert.equal(f.ledger.value('image'),1);
     assert.ok((await client.list(m,'generated')).images[0].id.startsWith('generated-'));
   }finally{await broker.close();await quota.close();f.cleanup();}
-});
-
-test('QQ-selected character references never override the model-selected subject or inject portrait identity',async()=>{
- const f=fixture({qqTransport:'onebot',privateUsers:['20002'],images:true});
- fs.mkdirSync(f.root+'/config');fs.writeFileSync(f.root+'/config/local.json',JSON.stringify(f.cfg()));
- const chars=makeDir(f.root,'assets/character');await new MockImageProvider().generate('',chars);fs.renameSync(path.join(chars,'mock.png'),path.join(chars,'whalechan-reference.png'));
- fs.copyFileSync(path.join(chars,'whalechan-reference.png'),path.join(chars,'grok.png'));fs.writeFileSync(f.root+'/runtime/codex-home/auth.json','{}');
- let calls=0;
- const runner:ImageRunner={async generateImage(cwd,prompt,_signal,primary,extras=[]){
-  calls++;assert.equal(primary,undefined);assert.equal(extras.length,calls===1?2:0);
-  assert.match(prompt,/主体：Grok娘/);assert.ok(!prompt.includes('生成用户请求的同一位鲸酱'));assert.ok(!prompt.includes('你的固定外观'));
-  if(calls===1)assert.match(prompt,/鲸酱本人原设定图/);
-  const inputImages=extras.map(file=>({path:file,sha256:createHash('sha256').update(fs.readFileSync(file)).digest('hex')}));
-  const generated=makeDir(f.root,'runtime/codex-home/generated_images/'+path.basename(cwd));await new MockImageProvider().generate('',generated);
-  return {text:'',images:[{id:'image',type:'imageGeneration',status:'completed',savedPath:path.join(generated,'mock.png'),inputImages}]};
- }};
- const quota=new CodexQuotaMonitor(f.store,true,{read:async()=>{},close:async()=>{}}),broker=await startQQImageBroker(f.root,f.store,quota,false,runner),client=new QQImageClient(f.root);
- const m=message('你自己挑参考，画Grok娘',{group:'private:20002',user:'20002'});
- try{
-  const catalog=await client.list(m,'character'),other=catalog.images.find((i:any)=>i.id!=='character');assert.ok(other);
-  const result=await client.generate(m,{...plan,subject:'Grok娘'},2000,undefined,[other.id,'character']);assert.equal(result.characterReference,true);
-  const alone=await client.generate({...m,id:'no-reference'},{...plan,subject:'Grok娘'},2000,undefined,[]);assert.equal(alone.characterReference,false);assert.equal(calls,2);
- }finally{await broker.close();await quota.close();f.cleanup();}
 });

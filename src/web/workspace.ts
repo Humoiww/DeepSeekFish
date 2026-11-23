@@ -30,7 +30,7 @@ export class SessionWorkspace {
     };walk(this.cwd,0);return result;
   }
   read(name:unknown):string{
-    const p=this.file(name);if(fs.statSync(p).size>65536)throw new FishError('WORKSPACE_FILE_TOO_LARGE');
+    const p=this.file(name),stat=fs.statSync(p,{throwIfNoEntry:false});if(!stat)throw new FishError('WORKSPACE_FILE_NOT_FOUND');if(stat.size>65536)throw new FishError('WORKSPACE_FILE_TOO_LARGE');
     return fs.readFileSync(p,'utf8');
   }
   write(name:unknown,content:unknown):{name:string;bytes:number}{

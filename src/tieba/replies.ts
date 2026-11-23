@@ -2,10 +2,12 @@ import {FishError} from '../types.js';
 import {pbNumber as number,pbBytes as bytes,pbString as string,parseFields,protoMultipart,type PBField as Field} from './protobuf.js';
 
 export interface TiebaReply {
- id:string;threadId:string;parentPostId:string|null;isFloor:boolean;time:number;
- forum:string;author:{id:string;name:string};text:string;url:string;
+ id:string;threadId:string;parentPostId:string|null;replyToPostId?:string|null;targetStatus?:'verified'|'unresolved';targetError?:string;isFloor:boolean;time:number;
+ floor?:number|null;replyTo?:{id:string|null;name:string|null}|null;
+ forum:string;author:{id:string;name:string};text:string;url:string;replyTarget?:string;threadReplyTarget?:string;
 }
 export interface TiebaReplyPage {page:number;hasMore:boolean;replies:TiebaReply[]}
+export const threadReplyTarget=(threadId:string)=>'https://tieba.baidu.com/p/'+threadId;
 // Only the small read-only ReplyMe schema is decoded here. IDs stay bigint /
 // strings; unknown protobuf fields are skipped, never executed or logged.
 export function replyRequest(bduss:string,page:number){
@@ -29,7 +31,10 @@ export function replyPage(body:Buffer,page:number):TiebaReplyPage{
   const f=fields(row.b!),user=sub(f,9),id=validId(value(f,2)),threadId=validId(value(f,1)),uid=validId(value(user,2)),time=Number(value(f,3))*1000;
   if(!id||!threadId||!uid||!Number.isSafeInteger(time)||time<=0)throw new FishError('TIEBA_REPLIES_FORMAT_CHANGED');
   const latest=f.filter(x=>x.n===28&&x.b).at(-1),fragments=latest?fields(latest.b!).filter(x=>x.n===1&&x.b).map(x=>text(fields(x.b!),2)).join(''):text(f,6);
-  replies.push({id,threadId,parentPostId:validId(value(f,14))||null,isFloor:value(f,7)>0n,time,forum:text(f,5).slice(0,100),author:{id:uid,name:(text(user,4)||text(user,3)).slice(0,100)},text:fragments.slice(0,1000),url:'https://tieba.baidu.com/p/'+threadId+'?pid='+id+'#'+id});
+  // Field14 is the referenced message, which may itself be a sub-reply.
+  // The account reader resolves the outer floor before exposing replyTarget.
+  const replyToPostId=validId(value(f,14))||null,isFloor=value(f,7)>0n,url='https://tieba.baidu.com/p/'+threadId+'?pid='+id+'#'+id;
+  replies.push({id,threadId,parentPostId:null,replyToPostId,isFloor,time,forum:text(f,5).slice(0,100),author:{id:uid,name:(text(user,4)||text(user,3)).slice(0,100)},text:fragments.slice(0,1000),url,threadReplyTarget:threadReplyTarget(threadId),...(!isFloor?{replyTarget:url}:{targetStatus:'unresolved' as const})});
  }
  return {page,hasMore:value(paging,6)>0n,replies};
 }

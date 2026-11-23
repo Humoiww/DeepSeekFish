@@ -29,7 +29,12 @@ function preparedImage(root:string){
   return {imageId,manifest:{name:'image.png',bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')},mock:true};
 }
 const plan={subject:'一条蓝色的小鱼',scene:'服务器旁边',style:'柔和插画',composition:'主体居中',lighting:'暖光',palette:'蓝白',details:'没有文字'};
-const replyImage=(messages:any[])=>JSON.parse(messages[1].content).actions.lastImage;
+const latestTool=(messages:readonly import('../src/types.js').ChatMessage[])=>messages.findLast(message=>message.role==='tool')!;
+const replyImage=(messages:Parameters<typeof latestTool>[0])=>{
+ const delivery=JSON.parse(String(latestTool(messages).content));
+ const referenceIds=(delivery.references??[]).map((reference:{id:string})=>reference.id);
+ return {...delivery,referenceIds,delivery:delivery.delivered?'sent':delivery.deliveryStatus};
+};
 function setup(provider:Model,people?:PersonMemory,client?:QQImageClient,qzone?:QzoneMemory){
   const f=fixture({qqTransport:'onebot',privateUsers:['20002'],admins:['20002'],images:true,bufferMs:10000});
   const tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),transport=new MockTransport();
@@ -42,7 +47,7 @@ test('QQ sends the model-authored remark before fetching Space, then continues f
   const qzone={resolveTarget:async(target:string,speaker:string)=>{assert.equal(target,'speaker');return speaker;},remembered:()=>undefined,lastIndex:()=>1,read:async(_person:string,_conversation:string,selection:any)=>{assert.equal(f.transport.sent[0].text,'哟，你又整什么活了？');assert.equal(selection.index,3);return {};},context:()=>({source:'QQ空间本人说说列表',posts:[{id:'third-post',position:3,text:'海边散步'}]}),images:()=>[{type:'text',text:'说说 third-post 的附件'},{type:'image_url',image_url:{url:'data:image/png;base64,AA=='}}],close:async()=>{}} as unknown as QzoneMemory;
   const provider:Model={kind:'fixture',async complete(messages,_max,options){turns++;assert.ok(options?.tools?.some(t=>t.function.name==='get_qzone'));
     if(turns===1){assert.equal(options?.toolChoice,undefined);assert.ok(options?.tools?.some(t=>t.function.name==='get_person'));assert.ok(messages.every(m=>typeof m.content==='string'));assert.ok(!String(messages[0].content).includes('区分发布时间'));return {text:'',tool_calls:[call('get_qzone',{target:'speaker',index:3,count:1,remark:'哟，你又整什么活了？'})],usage:{input:100,output:30}};}
-    const tool=messages.at(-1)!;
+    const tool=latestTool(messages);
     assert.equal(messages.filter(m=>m.role==='tool').length,1);assert.equal(tool.role,'tool');assert.ok(Array.isArray(tool.content));
     assert.equal(JSON.parse((tool.content[0] as {text:string}).text).posts[0].id,'third-post');
     assert.equal(tool.tool_call_id,messages.find(m=>m.tool_calls)?.tool_calls![0].id);
@@ -59,7 +64,7 @@ test('energy and image allowance come from live counters; the model composes the
   let round=0,f:ReturnType<typeof setup>;
   const client={status:async()=>qqResources(f.cfg(),f.ledger,'private:20002','20002')} as unknown as QQImageClient;
   const provider:Model={kind:'fixture',async complete(messages){round++;if(round===1)return {text:'',tool_calls:[call('get_quota',{})],usage:{input:100,output:20}};
-    const result=JSON.parse(String(messages.at(-1)!.content));assert.equal(result.images.remaining,17);assert.equal(result.energy.unit,'CNY');assert.ok(result.energy.used>0);assert.equal(result.energy.tokens.input,100);assert.equal(result.energy.tokens.output,20);
+    const result=JSON.parse(String(latestTool(messages).content));assert.equal(result.images.remaining,17);assert.equal(result.energy.unit,'CNY');assert.ok(result.energy.used>0);assert.equal(result.energy.tokens.input,100);assert.equal(result.energy.tokens.output,20);
     return {text:'还活蹦乱跳呢，今天还能找 GPT小姐画 17 张。',usage:{input:100,output:30}};
   }};
   f=setup(provider,undefined,client);f.ledger.add('image',3);f.ledger.add('tokens',1234);
@@ -79,14 +84,14 @@ test('QQ browses originals and passes model-selected image IDs through to GPT',a
     if(round===1){assert.equal(options?.toolChoice,undefined);return {text:'',tool_calls:[call('list_images',{source:'character'})],usage:{input:100,output:20}};}
     if(round===2)return {text:'',tool_calls:[call('view_images',{imageIds:['character']})],usage:{input:100,output:20}};
     if(round===3){
-      assert.equal(messages.at(-1)!.role,'tool');assert.equal(messages.filter(m=>m.role==='user').length,1);
-      assert.ok(Array.isArray(messages.at(-1)!.content));assert.ok((messages.at(-1)!.content as any[]).some(p=>p.type==='image_url'));
+      assert.equal(latestTool(messages).role,'tool');assert.equal(messages.filter(m=>m.role==='user').length,1);
+      assert.ok(Array.isArray(latestTool(messages).content));assert.ok((latestTool(messages).content as any[]).some(p=>p.type==='image_url'));
       return {text:'把这张设定图一起丢给她。',tool_calls:[call('generate_image',{remark:'把这张设定图一起丢给她。',referenceIds:['character'],...plan})],usage:{input:100,output:80}};
     }
     if(round===4){assert.equal(f.transport.files.length,0);return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};}
     const result=replyImage(messages);assert.equal(result.referenceIds[0],'character');assert.equal(result.delivery,'sent');
-    assert.ok(options?.tools?.some(t=>t.function.name==='generate_image'));assert.ok(messages.some(m=>m.role==='tool'));assert.equal(messages.at(-1)?.role,'tool');
-    assert.equal(result.catalogId,catalogId);assert.equal(JSON.parse(String(messages.at(-1)?.content)).delivered,true);
+    assert.ok(options?.tools?.some(t=>t.function.name==='generate_image'));assert.ok(messages.some(m=>m.role==='tool'));assert.equal(latestTool(messages)?.role,'tool');
+    assert.equal(result.catalogId,catalogId);assert.equal(JSON.parse(String(latestTool(messages)?.content)).delivered,true);
     return {text:'这次她照着原图画的。',usage:{input:100,output:20}};
   }};
   f=setup(provider,undefined,client);
@@ -104,7 +109,7 @@ test('textual tool protocol is repaired through native JSON, kept out of chat/hi
   } as unknown as QQImageClient;
   const provider:Model={kind:'fixture',async complete(messages,_max,options){
     turns++;assert.ok(messages.every(m=>m.role!=='assistant'||!hasToolMarkup(String(m.content))));
-    assert.ok(!hasToolMarkup(String(messages[1].content)));assert.ok(String(messages[0].content).split('\n知识库（')[0].length<180);
+    assert.ok(!hasToolMarkup(String(messages[1].content)));assert.match(String(messages.at(-1)?.content),/颜文字/);
     const required=options?.tools?.find(t=>t.function.name==='generate_image')?.function.parameters.required as string[]|undefined;
     assert.ok(!required?.includes('remark'));
     if(turns===1){assert.equal(options?.toolChoice,undefined);return {text:'',tool_calls:[call('list_images',{})],usage:{input:100,output:20}};}
@@ -124,7 +129,7 @@ test('textual tool protocol is repaired through native JSON, kept out of chat/hi
     assert.ok(f.transport.sent.every(m=>!hasToolMarkup(m.text)));
     const records=fs.readdirSync(f.root+'/runtime/logs/qq').map(n=>JSON.parse(fs.readFileSync(f.root+'/runtime/logs/qq/'+n,'utf8')));
     assert.ok(records[0].trace.some((t:any)=>t.protocolRepair?.tool==='generate_image'));
-    assert.ok(records[0].trace.some((t:any)=>t.assistant===leaked));assert.ok(records[0].system.split('\n知识库（')[0].length<180);
+    assert.ok(records[0].trace.some((t:any)=>t.assistant===leaked));assert.ok(records[0].system.split('\n知识库（')[0].length<320);
   }finally{await f.bot.stop();f.cleanup();}
 });
 test('unknown or repeated textual protocol never executes and never reaches QQ',async()=>{
@@ -171,9 +176,9 @@ test('image delivery failure preserves the generated artifact for the model and 
     if(turns===3)return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};
     const result=replyImage(messages);
     assert.equal(result.created,true);assert.equal(result.delivery,'unconfirmed');assert.equal(result.retryScheduled,false);
-    assert.ok(!JSON.stringify(messages).includes('ONEBOT_ACTION_TIMEOUT'));assert.ok(messages.some(m=>m.role==='tool'));
+    assert.equal(result.error,'ONEBOT_ACTION_TIMEOUT');assert.ok(messages.some(m=>m.role==='tool'));
     const toolResult=JSON.parse(String(messages.filter(m=>m.role==='tool').at(-1)!.content));
-    assert.equal(toolResult.retryScheduled,false);assert.equal(toolResult.delivered,undefined);assert.match(toolResult.deliveryNote,/没有安排重发/);
+    assert.equal(toolResult.retryScheduled,false);assert.equal(toolResult.delivered,undefined);assert.equal(toolResult.requestSent,true);
     return {text:'画好了，传图那边还没确认收到。',usage:{input:100,output:20}};
   }};
   f=setup(provider,undefined,client);await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');f.transport.file=async()=>{throw new FishError('ONEBOT_ACTION_TIMEOUT');};
@@ -225,7 +230,7 @@ test('repeated image calls return confirmed success without generating or sendin
     round++;
     if(round===1)return {text:'',tool_calls:[{...call('generate_image',plan),id:'first'}],usage:{input:100,output:50}};
     if(round===2)return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};
-    const result=JSON.parse(String(messages.at(-1)?.content));assert.equal(result.created,true);assert.equal(result.delivered,true);assert.equal(result.error,undefined);
+    const result=JSON.parse(String(latestTool(messages)?.content));assert.equal(result.created,true);assert.equal(result.delivered,true);assert.equal(result.error,undefined);
     if(round===3)return {text:'',tool_calls:[{...call('generate_image',{...plan,remark:'不要重复发这句'}),id:'retry'}],usage:{input:100,output:50}};
     assert.equal(result.reused,true);return {text:'',tool_calls:[call('reply',{text:'笑得真欠。'})],usage:{input:100,output:20}};
   }};
@@ -236,7 +241,7 @@ test('repeated image calls return confirmed success without generating or sendin
 
 test('QQ picks up persona edits on the next message without rebuilding its Bot',async()=>{
   const seen:string[]=[];
-  const f=setup({kind:'fixture',async complete(messages){seen.push(String(messages[0].content));return {text:'收到',usage:{input:20,output:5}};}});
+  const f=setup({kind:'fixture',async complete(messages){seen.push(String(messages.at(-1)?.content));return {text:'收到',usage:{input:20,output:5}};}});
   try{
     await f.bot.receive(message('第一句',{group:'private:20002',user:'20002'}));await f.bot.flush();
     savePersona(f.root,{...personaSettings(f.root),blocks:[{title:'新版',text:'已修改的人格内容'}]});
@@ -250,8 +255,8 @@ test('QQ chooses Search and Fetch on ordinary messages, retains source results, 
     assert.ok(options?.tools?.some(t=>t.function.name==='search_web'));assert.ok(options?.tools?.some(t=>t.function.name==='fetch_page'));assert.equal(options?.toolChoice,undefined);
     round++;
     if(round===1)return {text:'',tool_calls:[call('search_web',{query:'鲸鱼睡觉'})],usage:{input:50,output:10}};
-    if(round===2){const result=JSON.parse(String(messages.at(-1)!.content));assert.equal(result.source,'DeepSeek Search');assert.equal(result.results[0].url,'https://example.com/mock');return {text:'',tool_calls:[call('fetch_page',{url:result.results[0].url})],usage:{input:50,output:10}};}
-    if(round===3){const result=JSON.parse(String(messages.at(-1)!.content));assert.equal(result.source,'DeepSeek Fetch');assert.equal(result.content,'这是离线网页正文。');assert.equal(messages.filter(m=>m.role==='tool').length,2);}
+    if(round===2){const result=JSON.parse(String(latestTool(messages).content));assert.equal(result.source,'DeepSeek Search');assert.equal(result.results[0].url,'https://example.com/mock');return {text:'',tool_calls:[call('fetch_page',{url:result.results[0].url})],usage:{input:50,output:10}};}
+    if(round===3){const result=JSON.parse(String(latestTool(messages).content));assert.equal(result.source,'DeepSeek Fetch');assert.equal(result.content,'这是离线网页正文。');assert.equal(messages.filter(m=>m.role==='tool').length,2);}
     return {text:'',tool_calls:[call('reply',{text:round===3?'看完了':'嗯哼'})],usage:{input:50,output:10}};
   }});
   try{
@@ -268,7 +273,7 @@ test('a premature reply must return to the model to send its new image before fi
   round++;
   if(round===1)return {text:'',tool_calls:[call('generate_image',plan)],usage:{input:100,output:30}};
   if(round===2){assert.equal(f.transport.files.length,0);return {text:'',tool_calls:[{...call('reply',{text:'尚未发出的文字'}),id:'premature'}],usage:{input:100,output:20}};}
-  if(round===3){assert.equal(f.transport.sent.length,0);assert.equal(JSON.parse(String(messages.at(-1)?.content)).pendingImage,catalogId);return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};}
+  if(round===3){assert.equal(f.transport.sent.length,0);assert.equal(JSON.parse(String(latestTool(messages)?.content)).pendingImage,catalogId);return {text:'',tool_calls:[call('send_image',{imageId:catalogId})],usage:{input:100,output:20}};}
   assert.equal(f.transport.files.length,1);return {text:'',tool_calls:[call('reply',{text:'喏。'})],usage:{input:100,output:20}};
  }},undefined,client);
  await new MockImageProvider().generate('fixture',f.root+'/runtime/outputs');

@@ -2,7 +2,7 @@
 """Deploy the human-only Tieba login surface into the existing browser worker.
 No account state, app settings, keys or machine network configuration is copied.
 """
-import argparse,datetime,hashlib,json,os,pwd,shutil,sqlite3,subprocess,time,urllib.request
+import argparse,datetime,hashlib,json,os,pwd,shutil,sqlite3,subprocess,tempfile,time,urllib.request
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--root',type=Path,default=Path('/srv/deepseekfish/app'));p.add_argument('--hold-qq',action='store_true',help='Leave QQ worker/path stopped for an explicitly authorized one-shot validation; caller must restore them.');args=p.parse_args()
 if os.geteuid()!=0:raise SystemExit('Run with sudo; only the existing app/capture units are managed.')
@@ -18,6 +18,8 @@ if actual!='Google Chrome for Testing 156.0.8078.47':raise SystemExit('Browser d
 files=['AGENTS.md','src/capture/cdp.ts','src/capture/server.ts','src/capture/tieba-browser.ts','src/tieba/session.ts','src/tieba/client.ts','src/tieba/posting.ts','src/tieba/replies.ts','src/tieba/reply-watch.ts','src/agent/bot.ts','src/exploration/tools.ts','src/exploration/state.ts','src/exploration/worker.ts','src/search/tieba.ts','src/search/public-web.ts','src/web/app.ts','src/web/server.ts','src/web/tailnet.ts','src/web/public/index.html','src/web/public/web.css','src/web/public/tieba.js','scripts/install-tieba-session.py','scripts/migrate-state.py','docs/tieba-account.md','scripts/smoke-tieba-posting.mjs']
 files.extend(['src/tieba/app-post.ts','src/tieba/protobuf.ts','src/tieba/web-post.ts','third_party/dsh-tieba-dive.LICENSE','docs/tieba-reply-transport.md'])
 files.append('src/tieba/moderator.ts')
+files.append('src/paths.ts')
+files.extend(['src/tieba/daily-post.ts','src/tieba/queue.ts','src/tieba/reply-target.ts'])
 files.extend(p.relative_to(source).as_posix() for p in sorted((source/'docs/tieba').glob('*.md')))
 files.extend(['README.md','docs/README.md','docs/quickstart.md'])
 files.extend(['src/exploration/prompt.ts','docs/tieba-publishing-review.md','docs/tieba-autonomous-acceptance.md','scripts/smoke-tieba-web.mjs'])
@@ -70,7 +72,7 @@ try:
   # The first successful human check will initialize preview for that UID.
   if who and str(who.get('id','')).isdigit():
    policy.write_text(json.dumps({'mode':'preview','accountId':str(who['id'])}));os.chown(policy,0,worker.pw_gid);policy.chmod(0o640)
- install_text(Path('/etc/systemd/system/deepseekfish-capture.service.d/tieba.conf'),'[Service]\nReadWritePaths='+str(private)+'\n')
+ install_text(Path('/etc/systemd/system/deepseekfish-capture.service.d/tieba.conf'),'[Service]\nTimeoutStopSec=55\nReadWritePaths='+str(private)+'\n')
  for unit in ['deepseekfish-web.service','deepseekfish-qq.service']:
   install_text(Path('/etc/systemd/system')/(unit+'.d')/'tieba.conf','[Service]\nInaccessiblePaths=-'+str(private)+'\n')
  (backup/'files.json').write_text(json.dumps(records,indent=2))
@@ -98,7 +100,16 @@ try:
  if any(hashlib.sha256((source/name).read_bytes()).hexdigest()!=digest for name,digest in hashes.items()):raise RuntimeError('Installed file differs from build')
  dirty=subprocess.check_output(['git','-c','safe.directory='+str(source),'-C',str(source),'status','--porcelain','--untracked-files=no'],text=True).strip()
  manifest={'revision':revision,'workingTreeModified':bool(dirty),'deployedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'backup':str(backup),'files':hashes}
- record=root/'runtime/logs/tieba-deployment.json';record.write_text(json.dumps(manifest,indent=2));record.chmod(0o600)
+ record=root/'runtime/logs/tieba-deployment.json'
+ with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=record.parent,prefix=record.name+'.',suffix='.tmp',delete=False) as output:
+  temporary=Path(output.name)
+  try:
+   json.dump(manifest,output,indent=2)
+   output.flush()
+   os.fchmod(output.fileno(),0o640)
+   temporary.replace(record)
+  finally:
+   temporary.unlink(missing_ok=True)
  print(json.dumps({'deployed':True,'revision':revision,'backup':str(backup),'files':len(files),'browser':actual,'profilePreserved':True,'healthChecked':True,'qqHeld':args.hold_qq,'unrelatedPids':baseline}))
 except BaseException:
  for dest,prior in reversed(records):

@@ -13,10 +13,26 @@ import { Tasks } from '../src/codex/tasks.js';
 import { MockTaskRunner } from '../src/codex/runner.js';
 import { Store } from '../src/storage/db.js';
 import { MemoryJournal } from '../src/memory/journal.js';
+import {createApp} from '../src/app.js';
 
 const reply=(message:any,usage={prompt_tokens:20,completion_tokens:10})=>new Response(JSON.stringify({choices:[{message}],usage}));
 const call=(id:string,name:string,args:unknown)=>({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
 function web(mock=true,http?:typeof fetch){const f=fixture();const app=createWebApp(f.root,mock,http);return {f,app,async close(){await app.close();f.cleanup();}};}
+
+test('retrieval and summary settings default on and change live through shared WebUI metadata',async()=>{
+ const w=web(false),other=createWebApp(w.f.root,false),qq=createApp(w.f.root,true);
+ try{
+  for(const key of ['groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'] as const){assert.equal(w.app.status().settings[key],true);assert.equal(qq.cfg()[key],true);}
+  w.app.configure({groupChatSearch:false,curiosityPublicSearch:false,curiosityAutoSummary:false});
+  for(const key of ['groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'] as const){assert.equal(w.app.status().settings[key],false);assert.equal(other.status().settings[key],false);assert.throws(()=>qq.set(key,true),/SETTING_NOT_MUTABLE/);}
+  assert.throws(()=>w.app.configure({curiosityAutoSummary:'false'}),/INVALID_WEB_SETTINGS/);
+  w.app.configure({groupChatSearch:true,curiosityPublicSearch:true,curiosityAutoSummary:true});
+  assert.equal(other.status().settings.curiosityAutoSummary,true);
+  assert.equal(qq.ledger.value('tokens'),0,'createApp never starts a background model worker');
+  const html=fs.readFileSync(new URL('../../src/web/public/index.html',import.meta.url),'utf8');
+  for(const id of ['group-chat-search','curiosity-public-search','curiosity-auto-summary'])assert.ok(html.includes('id="'+id+'"'));
+ }finally{await qq.curiositySummary.stop();await qq.bot.stop();qq.store.close();await other.close();await w.close();}
+});
 
 test('WebUI archives both sides and recalls older records only when explicitly requested in that session',async()=>{
   let payload:any;const w=web(false,(async(_url:any,opts:any)=>{payload=JSON.parse(opts.body);return reply({content:'收到。'});}) as typeof fetch);

@@ -1,0 +1,31 @@
+[Unit]
+Description=DeepSeekFish Neon and Codex development bridge
+Requires=deepseekfish-agy-bridge.socket
+After=network-online.target deepseekfish-agy-bridge.socket
+
+[Service]
+Type=simple
+User=fishops
+Group=fishops
+WorkingDirectory=/home/fishops/DeepSeekFish
+Environment=HOME=/home/fishops
+Environment=PATH=/home/fishops/.local/bin:/srv/deepseekfish/app/runtime/tools/node/bin:/usr/local/bin:/usr/bin:/bin
+Environment=AGY_BRIDGE_SOCKET=/run/deepseekfish-agy-bridge.sock
+Environment=AGY_BIN=/home/fishops/.local/bin/agy
+Environment=CODEX_NATIVE_SOCKET=/home/fishops/.codex/app-server-control/app-server-control.sock
+Environment=AGY_STAGE_TIMEOUT_MS=600000
+Environment=AGY_APP_ROOT=/srv/deepseekfish/app
+Environment=AGY_STATE_DIR=/home/fishops/DeepSeekFish/runtime/agy-bridge
+ExecStart=/srv/deepseekfish/app/runtime/tools/node/bin/node /srv/deepseekfish/app/dist/src/development/agy-bridge-server.js
+KillMode=control-group
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+MemoryHigh=900M
+MemoryMax=1200M
+OOMScoreAdjust=500
+OOMPolicy=continue
+TasksMax=384
+Restart=on-failure
+RestartSec=3s

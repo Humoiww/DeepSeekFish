@@ -50,7 +50,13 @@ test('local reset retains reservations, attempts and unrelated usage, and refuse
     assert.equal(f.ledger.value('image'),0);assert.equal(f.ledger.value('imageAttempts'),1);assert.equal(f.ledger.value('codex'),1);assert.equal(f.ledger.value('codexMs'),200);
     f.ledger.resetImages();assert.equal(f.ledger.value('codexMs'),200);
     assert.equal((f.store.db.prepare('SELECT count(*) AS n FROM reservations').get() as any).n,3);
-    const held=f.ledger.reserve('codex','g','u');f.store.db.prepare("UPDATE reservations SET state='unknown' WHERE id=?").run(held);assert.throws(()=>f.ledger.resetImages(),/BUSY_OR_UNCERTAIN/);
+    const held=f.ledger.reserve('codex','g','u');
+    f.store.db.prepare("UPDATE reservations SET state='unknown' WHERE id=?").run(held);
+    assert.doesNotThrow(()=>f.ledger.resetImages());
+    const image=f.ledger.reserveImageJob('web:test','u',1000);
+    f.store.db.prepare("UPDATE reservations SET state='unknown' WHERE id=?").run(image.image);
+    f.ledger.settle(image.codex);
+    assert.throws(()=>f.ledger.resetImages(),/BUSY_OR_UNCERTAIN/);
   }finally{f.cleanup();}
 });
 test('image day cap is independent of Codex quota and task/time caps; real 429 is reported without locking later requests',async()=>{

@@ -1,6 +1,7 @@
 [Unit]
 Description=Private Tailscale QQ login gateway
-After=deepseekfish-napcat.service
+Requires=deepseekfish-napcat-gateway.socket
+After=deepseekfish-napcat.service deepseekfish-napcat-gateway.socket
 Wants=deepseekfish-napcat.service
 
 [Service]
