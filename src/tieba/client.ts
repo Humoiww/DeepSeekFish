@@ -50,6 +50,7 @@ export class TiebaAccountClient {
  publish(input:PublishInput,requestId:string,authorizedRetryOf?:string){const feedback=publishInputFeedback(input);return feedback?Promise.resolve(feedback):this.rpc('publish',{input:publishInput(input),requestId,...(authorizedRetryOf?{authorizedRetryOf}:{})});}
  history(offset=0){return this.rpc('history',{offset});}
  queue(offset=0,activeOnly=false){return this.rpc('queue',{offset,...(activeOnly?{activeOnly}:{})});}
+ publicationQueue(){return this.rpc('queue',{publications:true});}
  async replyQueue(offset=0,activeOnly=false,selectedId?:string){
   try{return await this.rpc('queue',{offset,...(activeOnly?{activeOnly}:{}),replies:true,...(selectedId?{selectedId}:{})});}
   catch(error){if(!(error instanceof FishError)||error.code!=='TIEBA_INPUT_INVALID')throw error;return this.queue(offset,activeOnly);}

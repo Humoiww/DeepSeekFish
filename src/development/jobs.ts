@@ -29,6 +29,16 @@ export type Job={
 };
 export type Lease={id:string;grant:string;version:number};
 const terminal=(job:Job)=>['done','blocked','cancelled'].includes(job.phase);
+const pendingIncoming='handled IS NULL AND requested IS NOT NULL';
+const incomingAction="json_extract(body,'$.intent.action')";
+const ordinarySend=`${incomingAction}<>'cancel' AND json_extract(body,'$.activityChainId') IS NULL
+ AND substr(json_extract(body,'$.intent.brief'),1,length('[activity-chain:'))<>'[activity-chain:'`;
+const incomingOrder="ORDER BY coalesce(json_extract(body,'$.at'),requested),requested,rowid";
+function queuedRequest(body:unknown):Request{
+ const request=JSON.parse(String(body)) as Request;
+ if(request.intent&&request.intent.action!=='cancel')request.intent.action='send';
+ return request;
+}
 export function boundActivityChain(shared:Store,owner:string,request:Request|undefined){
  const intent=request?.intent;
  const marker=intent?.action==='send'?/^(\[activity-chain:[a-f0-9-]{36}\])\n/.exec(intent.brief)?.[1]:undefined;
@@ -105,22 +115,39 @@ export class Jobs{
   return this.db.prepare('DELETE FROM incoming WHERE requested IS NULL AND received<? RETURNING source').all(now-3600000).map(row=>String(row.source));
  }
  pending(kind:'all'|'cancel'|'send'='all'):Request|undefined{
-  const action="json_extract(body,'$.intent.action')";
-  // The native bridge uses `send` to steer the active turn. A new chain's
-  // discussion gets its own turn, while regular follow-ups can still steer.
-  const filter=kind==='all'?'':kind==='cancel'?` AND ${action}='cancel'`:
-   ` AND ${action}<>'cancel' AND substr(json_extract(body,'$.intent.brief'),1,length('[activity-chain:'))<>'[activity-chain:'`;
-  const row=this.db.prepare('SELECT body FROM incoming WHERE handled IS NULL AND requested IS NOT NULL'+filter+' ORDER BY requested,rowid LIMIT 1').get();
-  if(!row)return;
-  const request=JSON.parse(String(row.body));
-  if(request.intent&&request.intent.action!=='cancel')request.intent.action='send';
-  return request;
+  const filter=kind==='all'?'':kind==='cancel'?` AND ${incomingAction}='cancel'`:` AND ${ordinarySend}`;
+  const row=this.db.prepare(`SELECT body FROM incoming WHERE ${pendingIncoming}${filter} ${incomingOrder} LIMIT 1`).get();
+  return row?queuedRequest(row.body):undefined;
+ }
+ createPending(owner:string,request:Request,backend?:Job['backend']){
+  const action=request.intent;
+  if(action?.action!=='send')throw new FishError('DEV_ACTION_INVALID');
+  const rows=this.db.prepare(`SELECT body FROM incoming WHERE ${pendingIncoming} AND ${ordinarySend} ${incomingOrder}`).all();
+  const ordinary=rows.map(row=>queuedRequest(row.body));
+  const requests=ordinary.some(item=>item.source===request.source)?ordinary:[request];
+  const first=requests[0].intent;
+  if(first?.action!=='send')throw new FishError('DEV_ACTION_INVALID');
+  const criteria=[...new Set(requests.flatMap(item=>item.intent?.action==='send'?item.intent.criteria:[]))];
+  const job=this.create(owner,request,first.goal,criteria,backend,requests);
+  for(const item of requests)this.handled(item);
+  return job;
+ }
+ acceptSteer(lease:Lease,source:string,turnId:string){
+  this.tx(()=>{
+   const current=this.guard(lease,'code');
+   const row=this.db.prepare(`SELECT body FROM incoming WHERE source=? AND ${pendingIncoming} AND ${ordinarySend}`).get(source);
+   if(!row)return;
+   const request=queuedRequest(row.body);
+   this.handled(request);
+   this.save({...current,requests:[...current.requests,request],
+    followUps:[...(current.followUps??[]),{request,turnId,state:'accepted'}]});
+  });
  }
  handled(request:Request){this.db.prepare('UPDATE incoming SET handled=? WHERE source=?').run(Date.now(),request.source);}
  defer(request:Request){this.db.prepare('UPDATE incoming SET handled=NULL WHERE source=?').run(request.source);}
  cancelMessages(at:number){
-  this.db.prepare(`UPDATE incoming SET handled=? WHERE handled IS NULL AND requested IS NOT NULL
-    AND json_extract(body,'$.intent.action')<>'cancel' AND json_extract(body,'$.at')<=?`).run(Date.now(),at);
+  this.db.prepare(`UPDATE incoming SET handled=? WHERE ${pendingIncoming} AND ${ordinarySend}
+    AND json_extract(body,'$.at')<=?`).run(Date.now(),at);
  }
  get(id:string):Job|undefined{const row=this.db.prepare('SELECT body FROM development WHERE id=?').get(id);return row?JSON.parse(String(row.body)):undefined;}
  list(active=true):Job[]{return this.db.prepare("SELECT body FROM development "+(active?"WHERE phase IN ('code','candidate','deploy','live') ":"")+"ORDER BY created "+(active?"":"DESC LIMIT 20")).all().map(row=>JSON.parse(String(row.body)));}
@@ -182,12 +209,12 @@ export class Jobs{
     ORDER BY (phase='done') DESC,created DESC LIMIT 1`).get(owner);
   return row?JSON.parse(String(row.body)) as Job:undefined;
  }
- create(owner:string,request:Request,goal:string,criteria:string[],backend?:Job['backend']){
+ create(owner:string,request:Request,goal:string,criteria:string[],backend?:Job['backend'],requests=[request]){
   if(this.list().length)throw new FishError('DEV_CODEX_BUSY');
   const recent=backend==='agy'?undefined:this.conversation(owner);
   const previous=recent?.backend==='agy'?undefined:recent;
   const id=randomUUID(),now=Date.now();
-  const job:Job={id,owner,grant:randomBytes(32).toString('hex'),version:1,requests:[request],goal,criteria,backend,
+  const job:Job={id,owner,grant:randomBytes(32).toString('hex'),version:1,requests,goal,criteria,backend,
    phase:'code',created:now,modified:now,round:0,trials:[],workspaceId:previous?.workspaceId??previous?.id??id,
    thread:previous?.thread,threadPending:previous?.threadPending,priorTurn:previous?.turn??previous?.priorTurn};
   this.save(job);

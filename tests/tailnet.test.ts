@@ -29,7 +29,7 @@ test('tailnet gateway validates origin, preserves auth/stream, strips approval a
       assert.equal((await call(route)).status,200);
       assert.equal((await call(route,{},'POST')).status,403);
     }
-    for(const route of ['/api/neon/interrupt','/api/activity/interrupt','/api/neon/reset-conversation']){
+    for(const route of ['/api/neon/interrupt','/api/activity/interrupt','/api/neon/reset-conversation','/api/tieba/dismiss']){
       assert.equal((await call(route,{},'POST')).status,200);
       assert.equal((await call(route,{Origin:'https://evil.example'},'POST')).status,403);
       assert.equal((await call(route)).status,403);

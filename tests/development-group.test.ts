@@ -7,6 +7,7 @@ import {BudgetedModel} from '../src/agent/model.js';
 import {Tasks} from '../src/codex/tasks.js';
 import {MockTaskRunner} from '../src/codex/runner.js';
 import {developmentSource} from '../src/development/intake.js';
+import {Jobs} from '../src/development/jobs.js';
 import {MockImageProvider} from '../src/image/provider.js';
 import {PersonMemory} from '../src/memory/people.js';
 import {QzoneMemory} from '../src/memory/qzone.js';
@@ -29,6 +30,39 @@ function event(extra:Record<string,unknown>={}){
  return {post_type:'message',message_type:'group',self_id:self,user_id:owner,group_id:group,
   message_id:'1',time:Math.floor(Date.now()/1000),message:[ping,words],...extra};
 }
+
+test('development intake merges ordinary owner requests in time order and records confirmed live follow-ups only once',()=>{
+ const f=fixture(),jobs=new Jobs(f.root);
+ const at=Date.now();
+ const send=(source:string,time:number,brief=source,activityChainId?:string)=>{
+  jobs.record({source,messageId:source,text:source,at:time,activityChainId});
+  jobs.request(source,at,{action:'send',goal:source,brief,criteria:[source,'共同要求']});
+ };
+ try{
+  send('补充二',at+2);
+  send('任务链问题',at+1,'[activity-chain:chain-id]\n任务链问题','chain-id');
+  send('原需求',at);
+  send('补充一',at+1);
+  const job=jobs.tx(()=>jobs.createPending(owner,jobs.pending()!,'agy'));
+  assert.deepEqual(jobs.list().map(entry=>entry.id),[job.id]);
+  assert.deepEqual(job.requests.map(entry=>entry.source),['原需求','补充一','补充二']);
+  assert.equal(job.goal,'原需求');
+  assert.deepEqual(job.criteria,['原需求','共同要求','补充一','补充二']);
+  assert.equal(jobs.pending('send'),undefined);
+  assert.equal(jobs.pending()?.source,'任务链问题');
+  send('执行中追问',at+3);
+  jobs.acceptSteer(job,'执行中追问','turn-1');
+  jobs.acceptSteer(job,'执行中追问','turn-1');
+  assert.equal(jobs.pending('send'),undefined);
+  assert.equal(jobs.get(job.id)?.followUps?.length,1);
+  assert.equal(jobs.get(job.id)?.requests.at(-1)?.source,'执行中追问');
+  send('旧积压',at+4);
+  send('打断后新需求',at+6);
+  jobs.tx(()=>jobs.cancelMessages(at+5));
+  assert.equal(jobs.pending('send')?.source,'打断后新需求');
+  assert.equal(jobs.pending()?.source,'任务链问题');
+ }finally{jobs.db.close();f.cleanup();}
+});
 
 test('development sources accept the bound owner in enabled groups with ordinary group wake rules',()=>{
  const get=(values:Record<string,unknown>={})=>developmentSource(normalizeOneBot(event(values),self)!,owner,policy);

@@ -3,7 +3,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {FishError} from '../types.js';
 import {hash} from './workspace.js';
 import {maxRecordBytes,allowedBridgePath,conversationPattern,maxBridgeResponse,maxChangeBytes,maxChanges,maxFileBytes,taskIdPattern,
- type BridgeRecord,type BridgeRecordKind,type BridgeRecordSummary,type AgyCancelResult,type AgyStatus,type AgyTurnRequest,type AgyTurnResult} from './agy-bridge-types.js';
+ type BridgeRecord,type BridgeRecordKind,type BridgeRecordSummary,type AgyCancelResult,type AgyStatus,type AgySteerRequest,type AgySteerResult,type AgyTurnRequest,type AgyTurnResult} from './agy-bridge-types.js';
 
 export function decodeAgyChanges(result:AgyTurnResult,taskId:string){
  if(result?.ok!==true||result.taskId!==taskId||!['reply_only','need_clarification','approved','escalated'].includes(result.outcome)||
@@ -11,6 +11,7 @@ export function decodeAgyChanges(result:AgyTurnResult,taskId:string){
    !Array.isArray(result.changes)||result.changes.length>maxChanges||
    result.outcome!=='approved'&&result.changes.length||
    !Number.isSafeInteger(result.codexRetries)||result.codexRetries<0||
+   result.steered!==undefined&&(!Array.isArray(result.steered)||result.steered.some(receipt=>!receipt||typeof receipt.source!=='string'||!/^[a-f0-9]{64}$/.test(receipt.source)||typeof receipt.turnId!=='string'||!taskIdPattern.test(receipt.turnId)))||
    result.outcome==='approved'&&(result.summary?.verdict!=='approve'||!result.summary.buildPassed||!result.summary.testPassed)||
    result.conversationId!==undefined&&(typeof result.conversationId!=='string'||!conversationPattern.test(result.conversationId))){
   throw new FishError('DEV_AGY_INVALID_RESPONSE');
@@ -86,6 +87,12 @@ export class AgyClient {
 
  cancel(taskId?:string){
   return this.request<AgyCancelResult>('POST','/v1/cancel',{taskId},AbortSignal.timeout(3000));
+ }
+
+ async steer(input:AgySteerRequest,signal:AbortSignal){
+  const result=await this.request<AgySteerResult>('POST','/v1/steer',input,AbortSignal.any([signal,AbortSignal.timeout(6500)]));
+  if(typeof result.accepted!=='boolean'||result.accepted&&(typeof result.turnId!=='string'||!taskIdPattern.test(result.turnId)))throw new FishError('DEV_AGY_INVALID_RESPONSE');
+  return result;
  }
 
  private async cancelAndWait(taskId:string){

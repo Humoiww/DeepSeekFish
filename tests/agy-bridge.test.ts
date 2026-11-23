@@ -15,6 +15,7 @@ import {files,revision} from '../src/development/workspace.js';
 
 const tempRoot=os.tmpdir();
 const session='11111111-1111-4111-8111-111111111111';
+const expiredThread='22222222-2222-4222-8222-222222222222';
 const agyScript=`
  const [events,scenario,...args]=process.argv.slice(2);
  const review=args.some(arg=>arg.endsWith('review.schema.json'));
@@ -26,8 +27,8 @@ const agyScript=`
  }
  const resumed=args.includes('--conversation')?args[args.indexOf('--conversation')+1]:undefined;
  const task=/DeepSeekFish bridge task ([a-f0-9-]{36})/.exec(args[1])[1];
- const conversation=resumed??task;
- if(resumed==='expired-conversation'){
+ const conversation=resumed??(review&&scenario==='review-session-lost'?'replacement-review':task);
+ if(resumed==='expired-conversation'||review&&scenario==='review-session-lost'&&resumed===task){
   console.log(JSON.stringify({status:'ERROR',error:{code:'CONVERSATION_NOT_FOUND',message:'conversation file not found'}}));
   process.exit(1);
  }
@@ -37,7 +38,7 @@ const agyScript=`
   const response=scenario==='review-retries'&&codexTurns<=2
    ? {verdict:'retry_codex',retryFeedback:'修正问题 '+codexTurns,replyToFeiyu:'已退回 Codex 修正。'}
    : {verdict:'approve',replyToFeiyu:'候选接口已验收。'};
-  console.log(JSON.stringify({conversation_id:'review-session',response}));
+  console.log(JSON.stringify({conversation_id:conversation,response}));
  }else if(scenario==='clarify'&&!resumed){
   console.log(JSON.stringify({session_id:conversation,response:JSON.stringify({
    decision:'need_clarification',replyToFeiyu:'要传什么参数？',
@@ -96,6 +97,8 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
  const nativeHttp=createServer();
  const {WebSocketServer}=require('ws');
  const nativeWs=new WebSocketServer({server:nativeHttp});
+ let finishSteer:(()=>void)|undefined;
+ let steeringTurn:string|undefined;
  nativeWs.on('connection',(ws:any)=>{
   ws.on('message',(wire:Buffer)=>{
    const {id,method,params}=JSON.parse(wire.toString());
@@ -104,15 +107,22 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
    if(method==='initialize')return reply();
    if(method==='initialized')return;
    if(method==='account/read')return reply({account:{type:'chatgpt'}});
-   if(method==='thread/start'){
+   if(method==='thread/start'||method==='thread/resume'){
     assert.equal(params.cwd,source);
-    assert.equal(params.ephemeral,false);
     assert.equal(params.sandbox,'workspace-write');
     assert.equal(params.approvalPolicy,'on-request');
     assert.equal(params.approvalsReviewer,'auto_review');
     assert.equal(params.model,undefined);
     assert.equal(params.config,undefined);
-    log({stage:'native-thread',params});
+    if(method==='thread/resume'){
+     assert.equal(params.excludeTurns,true);
+     log({stage:'native-resume',threadId:params.threadId});
+     if(params.threadId===expiredThread)return ws.send(JSON.stringify({id,error:{code:-32602,message:'no rollout found for thread id '+expiredThread}}));
+     assert.equal(params.threadId,session);
+    }else{
+     assert.equal(params.ephemeral,false);
+     log({stage:'native-thread',params});
+    }
     return reply({thread:{id:session,cwd:source},sandbox:{type:'workspaceWrite'},approvalPolicy:'on-request',approvalsReviewer:'auto_review'});
    }
    if(method==='turn/start'){
@@ -124,6 +134,11 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
     send('item/started',{threadId:session,turnId,item:{type:'commandExecution',command:'read fixture'}});
     reply({turn:{id:turnId,status:'inProgress'}});
     if(scenario==='cancel')return;
+    if(scenario==='steer'){
+     steeringTurn=turnId;
+     finishSteer=()=>send('turn/completed',{threadId:session,turn:{id:turnId,status:'completed'}});
+     return;
+    }
     if(scenario==='delayed'){
      const timer=setTimeout(()=>send('turn/completed',{threadId:session,turn:{id:turnId,status:'completed'}}),150);
      ws.once('close',()=>clearTimeout(timer));
@@ -142,6 +157,12 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
     }
     return send('turn/completed',{threadId:session,turn:{id:turnId,status:'completed',
      items:[{type:'agentMessage',phase:'final_answer',text:'已修改。'}]}});
+   }
+   if(method==='turn/steer'){
+    assert.equal(params.threadId,session);
+    assert.equal(params.expectedTurnId,steeringTurn);
+    log({stage:'steer',threadId:params.threadId,turnId:params.expectedTurnId,stdin:params.input[0].text,source:params.clientUserMessageId});
+    return reply({turnId:steeringTurn});
    }
    if(method==='turn/interrupt'){
     assert.equal(params.threadId,session);
@@ -186,8 +207,8 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
   installedRevision:revision(files(installed)),...input,
  });
  const trace=()=>fs.readFileSync(events,'utf8').trim().split('\n').filter(Boolean)
-  .map(line=>JSON.parse(line) as {stage:string;command?:string;args?:string[];stdin?:string;threadId?:string;turnId?:string});
- return {client,request,trace,source,installed,stateDir,async cleanup(){
+  .map(line=>JSON.parse(line) as {stage:string;command?:string;args?:string[];stdin?:string;threadId?:string;turnId?:string;source?:string});
+ return {client,request,trace,source,installed,stateDir,finishSteer:()=>finishSteer?.(),async cleanup(){
   server.close();
   await once(server,'close');
   nativeWs.close();
@@ -298,7 +319,7 @@ test('Neon reviews task-only changes and preserves unrelated checkout edits and 
   const review=trace[5].args![1];
   assert.match(review,/\+export const answer = 42/);
   assert.doesNotMatch(review,/src\/unrelated.ts|\+\/\/ local author's edit/);
-  assert.equal(resumedId(trace[5].args!),undefined);
+  assert.equal(resumedId(trace[5].args!),request.taskId);
   assert.equal(result.conversationId,request.taskId);
   assert.equal((await f.client.status()).mainConversation?.conversationId,request.taskId);
   assert.match(fs.readFileSync(path.join(f.source,'src/index.ts'),'utf8'),/local author's edit/);
@@ -332,12 +353,87 @@ test('Neon can request two revisions on the same Codex thread and approve the fi
   assert.match(executions[1].stdin!,/修正问题 1/);
   assert.match(executions[2].stdin!,/修正问题 2/);
   const reviews=trace.filter(event=>event.stage==='review').map(event=>{
+   assert.equal(resumedId(event.args!),request.taskId);
    const prompt=event.args![1];
    return JSON.parse(prompt.slice(prompt.lastIndexOf('\n\n')+2)).codexRetries;
   });
   assert.deepEqual(reviews,[0,1,2]);
   assert.equal(trace.filter(event=>event.stage==='verify').length,6);
  }finally{await f.cleanup();}
+});
+
+test('Neon Review replaces a lost native conversation and the next triage resumes it',async()=>{
+ const f=await fixture('review-session-lost');
+ try{
+  const signal=new AbortController().signal,request=f.request();
+  const result=await f.client.turn(request,signal);
+  assert.equal(result.outcome,'approved');
+  assert.equal(result.conversationId,'replacement-review');
+  const reviews=f.trace().filter(event=>event.stage==='review');
+  assert.deepEqual(reviews.map(event=>resumedId(event.args!)),[request.taskId,undefined]);
+  const firstTrace=f.trace().length;
+  await f.client.turn(f.request(),signal);
+  assert.equal(resumedId(f.trace()[firstTrace].args!),'replacement-review');
+ }finally{await f.cleanup();}
+});
+
+test('Codex resumes one persisted native thread across tasks and resets together with Neon',async()=>{
+ const f=await fixture('no-change',state=>{
+  fs.mkdirSync(state,{mode:0o700});
+  fs.writeFileSync(path.join(state,'main-codex-thread.json'),JSON.stringify({threadId:expiredThread,updatedAt:1}));
+ });
+ try{
+  const signal=new AbortController().signal,first=f.request();
+  assert.equal((await f.client.turn(first,signal)).codexSessionId,session);
+  const state=path.join(f.stateDir,'main-codex-thread.json');
+  assert.equal(JSON.parse(fs.readFileSync(state,'utf8')).threadId,session);
+  const second=await f.client.turn(f.request(),signal);
+  assert.equal(second.codexSessionId,session);
+  assert.equal(second.conversationId,first.taskId);
+  const threadEvents=()=>f.trace().filter(event=>['native-thread','native-resume'].includes(event.stage));
+  assert.deepEqual(threadEvents().map(event=>[event.stage,event.threadId]),[
+   ['native-resume',expiredThread],['native-thread',undefined],['native-resume',session],
+  ]);
+  await f.client.resetConversation();
+  assert.equal(fs.existsSync(state),false);
+  assert.equal((await f.client.status()).mainConversation,undefined);
+  const third=f.request();
+  assert.equal((await f.client.turn(third,signal)).conversationId,third.taskId);
+  assert.equal(threadEvents().at(-1)?.stage,'native-thread');
+ }finally{await f.cleanup();}
+});
+
+test('socket steer sends a follow-up to the current native turn once and includes it in Neon Review',async()=>{
+ const f=await fixture('steer'),controller=new AbortController();
+ const request=f.request({supplements:[{brief:'原有排队补充',ownerMessage:'先合并这句',at:1000}]});
+ const input={taskId:request.taskId,source:'d'.repeat(64),brief:'只补这个角落',ownerMessage:'增加新的验收条件',at:2000};
+ const run=f.client.turn(request,controller.signal);
+ void run.catch(()=>{});
+ try{
+  assert.deepEqual(await f.client.steer({...input,taskId:randomUUID()},controller.signal),{ok:true,accepted:false});
+  let receipt=await f.client.steer(input,controller.signal);
+  const deadline=Date.now()+5000;
+  while(!receipt.accepted&&Date.now()<deadline){
+   await delay(20);
+   receipt=await f.client.steer(input,controller.signal);
+  }
+  assert.equal(receipt.accepted,true);
+  assert.equal(receipt.turnId,f.trace().find(event=>event.stage==='codex')?.turnId);
+  assert.deepEqual(await f.client.steer(input,controller.signal),receipt);
+  const steers=f.trace().filter(event=>event.stage==='steer');
+  assert.equal(steers.length,1);
+  assert.equal(steers[0].source,input.source);
+  assert.match(steers[0].stdin!,/增加新的验收条件/);
+  f.finishSteer();
+  const result=await run;
+  assert.equal(result.outcome,'approved');
+  assert.deepEqual(result.steered,[{source:input.source,turnId:receipt.turnId}]);
+  const trace=f.trace();
+  assert.match(trace.find(event=>event.stage==='triage')!.args![1],/先合并这句/);
+  assert.match(trace.find(event=>event.stage==='codex')!.stdin!,/先合并这句/);
+  assert.match(trace.find(event=>event.stage==='review')!.args![1],/增加新的验收条件/);
+  assert.deepEqual(await f.client.steer(input,controller.signal),{ok:true,accepted:false});
+ }finally{controller.abort();await run.catch(()=>{});await f.cleanup();}
 });
 
 test('an explicit positive revision limit escalates without reporting a retry that never ran',async()=>{
@@ -419,26 +515,30 @@ test('socket cancellation and AbortSignal interrupt the active native turn and k
    const signal=new AbortController(),request=f.request(),previous=f.trace().length;
    const call=f.client.turn(request,signal.signal);
    const rejection=assert.rejects(call,explicit?/DEV_AGY_CANCELLED/:/owner cancelled/);
-   const deadline=Date.now()+5000;
-   let turn=f.trace().slice(previous).find(event=>event.stage==='codex');
-   while(!turn&&Date.now()<deadline){
-    await delay(15);
-    turn=f.trace().slice(previous).find(event=>event.stage==='codex');
-   }
-   assert.ok(turn?.turnId);
-   const status=await f.client.status();
-   assert.equal(status.stage,'codex');
-   assert.ok(status.recentEvents?.some(event=>event.title==='Codex 原生会话已打开'));
-   await assert.rejects(f.client.turn(f.request(),new AbortController().signal),/DEV_AGY_BUSY/);
-   assert.equal((await f.client.cancel(randomUUID())).cancelled,false);
-   if(explicit)assert.equal((await f.client.cancel(request.taskId)).cancelled,true);
-   else signal.abort(new Error('owner cancelled'));
-   await rejection;
-   assert.equal((await f.client.status()).busy,false);
-   const interrupt=f.trace().slice(previous).find(event=>event.stage==='interrupt');
-   assert.deepEqual(interrupt,{stage:'interrupt',threadId:session,turnId:turn.turnId});
-   assert.equal(f.trace().slice(previous).some(event=>event.stage==='verify'),false);
-   assert.equal(fs.readFileSync(path.join(f.source,'runtime/preserve'),'utf8'),'original');
+   void rejection.catch(()=>{});
+   try{
+    const deadline=Date.now()+5000;
+    let turn=f.trace().slice(previous).find(event=>event.stage==='codex');
+    while(!turn&&Date.now()<deadline){
+     await delay(15);
+     turn=f.trace().slice(previous).find(event=>event.stage==='codex');
+    }
+    assert.ok(turn?.turnId);
+    const status=await f.client.status();
+    assert.equal(status.stage,'codex');
+    const threadEvent=explicit?'Codex 原生会话已打开':'Codex 主线程已续接';
+    assert.ok(status.recentEvents?.some(event=>event.title===threadEvent));
+    await assert.rejects(f.client.turn(f.request(),new AbortController().signal),/DEV_AGY_BUSY/);
+    assert.equal((await f.client.cancel(randomUUID())).cancelled,false);
+    if(explicit)assert.equal((await f.client.cancel(request.taskId)).cancelled,true);
+    else signal.abort(new Error('owner cancelled'));
+    await rejection;
+    assert.equal((await f.client.status()).busy,false);
+    const interrupt=f.trace().slice(previous).find(event=>event.stage==='interrupt');
+    assert.deepEqual(interrupt,{stage:'interrupt',threadId:session,turnId:turn.turnId});
+    assert.equal(f.trace().slice(previous).some(event=>event.stage==='verify'),false);
+    assert.equal(fs.readFileSync(path.join(f.source,'runtime/preserve'),'utf8'),'original');
+   }finally{signal.abort();await call.catch(()=>{});}
   }
  }finally{await f.cleanup();}
 });

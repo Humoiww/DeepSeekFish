@@ -31,9 +31,12 @@ export type AgyStatus={
 };
 export type AgyCancelRequest={taskId?:string};
 export type AgyCancelResult={ok:true;cancelled:boolean;taskId?:string};
+export type AgySupplement={brief:string;ownerMessage:string;at:number};
+export type AgySteerRequest=AgySupplement&{taskId:string;source:string};
+export type AgySteerResult={ok:true;accepted:boolean;turnId?:string};
 export type AgyTurnRequest={
  taskId:string;mode:AgyMode;brief:string;ownerMessage:string;installedRevision:string;
- repairReason?:string;lastDelivery?:AgyDelivery;
+ repairReason?:string;lastDelivery?:AgyDelivery;supplements?:AgySupplement[];
 };
 export type AgyChange={name:string;sha256:string|null;contentBase64:string|null};
 export type CodexSpec={
@@ -48,7 +51,7 @@ export type Review={
 };
 export type AgyTurnResult={
  ok:true;taskId:string;outcome:'reply_only'|'need_clarification'|'approved'|'escalated';
- replyToFeiyu:string;conversationId?:string;codexSessionId?:string;codexRetries:number;
+ replyToFeiyu:string;conversationId?:string;codexSessionId?:string;codexRetries:number;steered?:{source:string;turnId:string}[];
  summary:{decision:Triage['decision'];verdict?:Review['verdict'];changedFiles?:string[];
   buildPassed?:boolean;testPassed?:boolean;patchArchive?:string};
  changes:AgyChange[];
@@ -79,11 +82,14 @@ export const reviewSchema=object({
  replyToFeiyu:string(4000),
 },['verdict','replyToFeiyu']);
 
+const supplementFields={brief:string(8000),ownerMessage:string(8000,0),at:{type:'integer'} as const};
 export const turnSchema=object({
  taskId:string(36),mode:enumOf('development','chain_discussion'),brief:string(8000),ownerMessage:string(8000,0),
  installedRevision:string(64),repairReason:string(8000),lastDelivery:object({text:string(600),at:{type:'integer'}},['text','at']),
+ supplements:{type:'array',items:object(supplementFields,['brief','ownerMessage','at'])},
 },['taskId','mode','brief','ownerMessage','installedRevision']);
 
+export const steerSchema=object({taskId:string(36),source:string(64),...supplementFields},['taskId','source','brief','ownerMessage','at']);
 export const resetConversationSchema=object({},[]);
 export const cancelSchema=object({taskId:string(36)},[]);
 

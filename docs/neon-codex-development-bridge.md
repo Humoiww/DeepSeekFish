@@ -89,7 +89,7 @@
 | 现象 | 根因定位 | 改造措施 |
 | --- | --- | --- |
 | 5 分钟内连发 6 轮相同记忆提问；04:27–04:31 对一句闲聊连发 3 轮讨论 | `src/qq/activity-chain.ts` 没有单链讨论次数上限；换步骤/改措辞/传 `followUpTo` 都会生成新 `[activity-chain:uuid]` 并反复唤醒开发后端 | 在 `activity_chains` 增加 `discussion_count INTEGER NOT NULL DEFAULT 0`（SQLite migration），在 `ActivityChains` 强制 `maxDiscussionsPerChain = 2`（计入建链 `discussion` 与中途 `ask_development`）。达上限时 `ask_development` 返回结构化结果 `{ limitReached: true, maxDiscussions: 2, lastDiscussion: ... }`，不排队新后端任务，让肥鱼基于已有结论继续步骤或结束链 |
-| 54.1 MB 单条永久线程串味、角色错乱、纯问答乱跑 `exec` | `src/development/jobs.ts:166-170` 与 `src/development/codex.ts` 始终继承上一任务的 `thread` | `agy` 模式下每次 `delegate_codex` 在宿主机 app-server 新开持久线程（同一任务返工沿用该线程）；Neon 的普通分诊复用同一个原生主会话，任务链讨论和 Diff Review 各开独立会话 |
+| 纯问答误进 Codex 改码 | 旧通道将日常问答和改码交给同一个执行者 | Neon 在同一主会话完成普通分诊和 Diff Review，只有明确委派才打开 Codex 主线程。任务链讨论单独处理 |
 | 每轮无条件附加过期的 `lastDeployment` (`matchesCurrentSource: false`) 污染讨论 | `src/development/codex.ts:226-228` 对所有轮次（包括纯讨论）都拼接历史部署回执 | `agy` 后端不无条件拼接历史 `lastDeployment`；仅传递当前实时基线摘要（`installedRevision`、是否与最近一次自动部署一致、若为任务链则明确标记 `mode: "chain_discussion"`） |
 | 闲聊触发重型开发/建链 | `bot.ts:138-140` / `intake.ts` / `activity-chain.ts` 文案把所有事都引导向「跟 GPT 小姐聊」 | 面向肥鱼明确区分日常聊天、找 **Neon小猫** 问开发/提需求、与找 **GPT 小姐** 画图；即使肥鱼发来闲聊或已实现的功能询问，Neon小猫 Stage 1 直接 `reply_only` 毫秒/秒级消化，0 Codex 调用 |
 
@@ -114,8 +114,8 @@ flowchart TD
     AgyTriage -->|"decision=need_clarification\n(需求不清 / 确认工具形态)"| ClarifyReturn["返回澄清问题 + conversationId\n(沿用 Neon 原生主会话)"]
     AgyTriage -->|"decision=delegate_codex\n(输出 codexSpec)"| Workspace["记录主仓库改码前基线"]
 
-    Workspace -->|"新建原生线程"| CodexExec["Codex app-server\n主仓库改码，桥接串行验收"]
-    CodexExec -->|"本轮快照差异与构建测试输出"| AgyReview["Stage 2: Diff Review\nagy -p --output-format json\n--json-schema review.schema.json\n--effort high --mode plan"]
+    Workspace -->|"续接原生主线程"| CodexExec["Codex app-server\n主仓库改码，桥接串行验收"]
+    CodexExec -->|"本轮快照差异、验证输出和已送达追问"| AgyReview["Stage 2: Diff Review\n续接 Neon 主会话\n--json-schema review.schema.json"]
 
     AgyReview -->|"verdict=retry_codex\n(默认不限返工轮数)"| CodexResume["同一线程 turn/start\n按 reviewFeedback 修复并重测"]
     CodexResume --> AgyReview
@@ -193,7 +193,8 @@ flowchart TD
        "ownerMessage": "主人本轮私聊/群聊原话（已脱敏）",
        "installedRevision": "sha256",
        "repairReason": "可选，若 candidate/deploy 阶段失败回退到此任务时的构建/部署错误摘要",
-       "lastDelivery": {"text": "上一项开发交付的一行真实回执", "at": 1795320000000}
+       "lastDelivery": {"text": "上一项开发交付的一行真实回执", "at": 1795320000000},
+       "supplements": [{"brief": "积压的补充需求", "ownerMessage": "主人原话", "at": 1795320010000}]
      }
      ```
    - 响应体（JSON，长连接等待完成，服务端每 15s 或通过 `/v1/status` 暴露实时阶段；客户端 HTTP timeout 设为无硬截断，由 `AbortSignal` 与桥接器阶段超时控制）：
@@ -206,6 +207,7 @@ flowchart TD
        "conversationId": "本轮普通分诊使用的原生会话 ID，桥接保存并在下轮自动复用",
        "codexSessionId": "可选，本次原生 Codex 线程 ID（审计用）",
        "codexRetries": 0,
+       "steered": [{"source": "sha256", "turnId": "uuid"}],
        "summary": {
          "decision": "reply_only | need_clarification | delegate_codex",
          "verdict": "approve | retry_codex | escalate_to_owner",
@@ -232,6 +234,10 @@ flowchart TD
      - 仅当 `outcome === "approved"` 时才填充非空 `changes`；其他情况 `changes` 必为空数组 `[]`。
      - 变更文件数量上限 `250`，单文件上限与 `deploy.py` 一致，且路径必须通过与 `deploy.py` 相同的安全白名单校验（仅允许 `src`, `assets`, `docs`, `tests`, `third_party`, `prompts`, `personas`，且禁止 `src/development/**`）。
      - 若任务本身改不到代码（例如 Codex 核查后发现无需改动），Neon小猫在 Stage 2 直接以 `reply_only` 或 `approved`（空 `changes`）收尾，不走无意义部署。
+
+4. **`POST /v1/steer`**
+   - 请求带 `taskId`、原消息的 `source`、`brief`、`ownerMessage` 和 `at`。有匹配的原生 Codex 轮次时调用 `turn/steer`，返回 `{ ok: true, accepted: true, turnId }`。同一个 `source` 只送达一次。
+   - 返回 `accepted: false` 时 worker 保留消息，等待可接收的轮次或合并到下一项任务。确认送达的补充也会交给 Neon 审阅。
 
 ### 6.3 Stage 1：Neon小猫分诊与规格化（`agy` CLI 调用规范）
 
@@ -320,7 +326,7 @@ flowchart TD
 
 ### 6.4 Coding Stage：原生 Codex 与主仓库验证
 
-桥接复用 `RpcProcess` 和宿主机的 Unix WebSocket。每项任务在 `/home/fishops/DeepSeekFish` 开持久线程，使用 `workspace-write`、`on-request` 和 `auto_review`。主人可以在原生界面查看进度、补充要求或中断。同一任务返工向同一个线程发下一次 `turn/start`。模型与 effort 默认沿用守护进程配置。
+桥接复用 `RpcProcess` 和宿主机的 Unix WebSocket。Codex 在 `/home/fishops/DeepSeekFish` 使用 `workspace-write`、`on-request` 和 `auto_review`。主线程 ID 保存在私有 `runtime/agy-bridge/main-codex-thread.json`。后续任务通过 `thread/resume` 续接，首次使用或线程已失效时才新建。同一任务返工继续在原线程发 `turn/start`。主人可以在原生界面查看进度、补充要求或中断。模型与 effort 默认沿用守护进程配置。
 
 桥接用受管文件的前后快照生成差异。验收在主仓库先跑一次 `npm run build`，再用 `node --test --test-isolation=none --test-concurrency=1 dist/tests/*.test.js` 串行测试，两步使用 384 MiB Node 堆。完成后重新扫描，核对源码与候选一致，再把差异和实际测试结果交给 Neon Review。
 
@@ -333,6 +339,7 @@ flowchart TD
   -p "<stage2PromptWithDiffAndTestLogs>" \
   --output-format json \
   --json-schema /path/to/review.schema.json \
+  --conversation <mainConversationId> \
   --effort high \
   --settings '{"agentMode":"plan"}' \
   --print-timeout 585s \
@@ -379,9 +386,11 @@ flowchart TD
 
 ### 6.6 `worker.ts` 后端抽象与 `jobs.ts` 变更
 
-普通分诊在私有 `runtime/agy-bridge/main-conversation.json` 保存 `conversationId` 和 `updatedAt`。上下文由 Antigravity 原生管理。提供方明确报告会话失效时，清除旧 ID 后补试一次。部署状态取自 worker 的最终回执，后续分诊只补入一行交付结果。Diff Review 和任务链讨论各用独立会话。
+普通分诊和 Diff Review 共用私有 `runtime/agy-bridge/main-conversation.json` 保存的主会话。上下文由 Antigravity 原生管理。提供方明确报告会话失效时，重新建立后写回。下次分诊可收到 worker 的交付回执。任务链讨论使用独立会话。
 
-WebUI「Neon / Codex」显示主会话短 ID。「新开 Neon 对话」经 worker 转发到桥接 `POST /v1/reset-conversation`。重置清除下一轮使用的 ID，运行中的任务可照常结束，已有日志可继续查看。
+WebUI「Neon / Codex」显示 Neon 主会话短 ID。「新开开发对话」通过 `POST /v1/reset-conversation` 清除 Neon 和 Codex 下次将使用的 ID。运行中的任务可照常结束，已有日志可继续查看。
+
+普通开发需求在启动前按消息时间合并成一个任务。改码期间收到的追问优先实时送给当前 Codex 轮次，未送达的追问保留在队列。主人手动打断时同时清除当时积压的普通开发需求。
 
 1. **新增模块**：
    - `src/development/agy-bridge-types.ts`：请求/响应类型、JSON Schema 常量与路径白名单校验。

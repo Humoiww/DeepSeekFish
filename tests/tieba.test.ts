@@ -4,9 +4,12 @@ import {createHash} from 'node:crypto';
 import {EventEmitter} from 'node:events';
 import dns from 'node:dns/promises';
 import https from 'node:https';
+import {runInNewContext} from 'node:vm';
 import {browsePage,postPublic,type PublicPoster} from '../src/search/public-web.js';
 import {tiebaPage,tiebaTarget} from '../src/search/tieba.js';
-import {publishInput,publishSectionFeedback} from '../src/tieba/posting.js';
+import {publishInput,publishSectionFeedback,postingRequest} from '../src/tieba/posting.js';
+import {TiebaBrowser,preSubmitStalled} from '../src/capture/tieba-browser.js';
+import {WebPostGate} from '../src/tieba/web-post.js';
 
 const user={id:12,name:'吧友',portrait:'https://example.com/avatar.jpg'};
 const forum={id:7,name:'任意兴趣'};
@@ -15,6 +18,111 @@ const fixture=(data:any):PublicPoster=>async url=>({url,type:'application/json',
 const post={id:'56789',floor:2,time:1793626428,author_id:12,sub_post_number:5,content:[{type:0,text:'真实正文'},
  {type:3,origin_src:'https://example.com/original.gif',cdn_src:'https://example.com/thumbnail.jpg'},
  {type:1,text:'出处',link:'https://example.com/source'}]};
+
+test('native pre-submit deadline requires zero dispatched writes and bounded preflight idle/total time',()=>{
+ const started=100000;
+ assert.equal(preSubmitStalled(0,started,started,started+34999),false);
+ assert.equal(preSubmitStalled(0,started,started+10001,started+35000),false);
+ assert.equal(preSubmitStalled(0,started,started+10000,started+35000),true);
+ assert.equal(preSubmitStalled(0,started,started+44999,started+45000),true);
+ for(const writes of [1,2])for(const elapsed of [35000,45000,239999,300000])assert.equal(preSubmitStalled(writes,started,started,started+elapsed),false);
+});
+
+test('a stalled native submit disarms before evidence and returns a confirmed not-submitted receipt',async t=>{
+ let now=100000;t.mock.method(Date,'now',()=>now);
+ const browser:any=Object.create(TiebaBrowser.prototype),plan={...postingRequest({action:'reply',forumId:'7',threadId:'12345',content:'离线回复'},{id:'7',name:'测试吧'},'official_web'),traceId:'offline-stall'};
+ browser.webGate=new WebPostGate(plan,()=>{});browser.lifetime=new AbortController();browser.shots=[];
+ browser.blockedOrigins=new Set(['https://blocked.example']);browser.pageFailures=[{status:403}];
+ browser.nativeSubmitView=async()=>{
+  if(browser.nativeSubmit?.phase==='wait_native_publish_request')now+=20000;
+  return {button:'发表',loading:true,notices:[],challenge:false};
+ };
+ browser.clickElement=async()=>{now+=45000;};
+ browser.captureEvidence=async(stage:string)=>{
+  if(stage==='pre_submit_stalled')assert.equal(browser.webGate.armed,false);
+  browser.shots.push({id:stage,stage,at:now});
+ };
+ let writes=0,outcome:any;
+ await assert.rejects(browser.submitWebPost(()=>writes++,(value:any)=>{outcome=value;}),(error:any)=>{
+  assert.equal(error.message,'TIEBA_WEB_PRE_SUBMIT_FAILED');assert.equal(error.receipt.reason,'pre_submit_stalled');
+  assert.equal(error.receipt.notSubmitted,true);assert.equal(error.receipt.accepted,false);assert.equal(error.receipt.httpAttempts,0);
+  assert.deepEqual(error.receipt.blockedOrigins,['https://blocked.example']);assert.deepEqual(error.receipt.pageFailures,[{status:403}]);
+  assert.ok(error.receipt.evidence.some((shot:any)=>shot.stage==='pre_submit_stalled'));return true;
+ });
+ assert.equal(writes,0);assert.equal(browser.webGate.armed,false);assert.equal(outcome.receipt.notSubmitted,true);
+ assert.ok(!browser.shots.some((shot:any)=>shot.stage==='waiting'),'a terminal outcome skips the same-iteration waiting screenshot');
+});
+
+test('dispatched native publication ignores the pre-submit deadline and waits for its platform receipt',async t=>{
+ let now=100000;t.mock.method(Date,'now',()=>now);
+ const browser:any=Object.create(TiebaBrowser.prototype),plan={...postingRequest({action:'reply',forumId:'7',threadId:'12345',content:'离线回复'},{id:'7',name:'测试吧'},'official_web'),traceId:'offline-dispatched'};
+ browser.webGate=new WebPostGate(plan,()=>{});browser.shots=[];browser.blockedOrigins=new Set();browser.pageFailures=[];
+ browser.lifetime={signal:{aborted:false,throwIfAborted(){now+=20000;}}};
+ let views=0,writes=0;
+ browser.nativeSubmitView=async()=>{views++;return {button:'发表',loading:true,notices:views>1?['请完成安全验证']:[],challenge:views>1};};
+ browser.clickElement=async()=>{
+  assert.equal(browser.webGate.allow({request:{url:plan.url,method:'POST',headers:{},postData:new URLSearchParams(plan.fields).toString()}}),true);
+  now+=60000;
+ };
+ browser.captureEvidence=async(stage:string)=>{
+  assert.notEqual(stage,'pre_submit_stalled');browser.shots.push({id:stage,stage,at:now});
+  if(stage==='waiting')browser.webReceived({id:'67890',receipt:{accepted:true,httpStatus:200}});
+ };
+ const result=await browser.submitWebPost(()=>writes++,()=>{});
+ assert.equal(result.id,'67890');assert.equal(result.receipt.httpAttempts,1);assert.equal(result.receipt.notSubmitted,undefined);
+ assert.equal(views,1);assert.equal(writes,1);
+});
+
+test('native verification, login and restriction notices finish only before dispatch',async()=>{
+ for(const [notice,challenge,code] of [['请完成滑块验证',true,'TIEBA_PUBLICATION_CHALLENGE'],['请先登录后回复',false,'TIEBA_LOGIN_REQUIRED'],['操作过于频繁，请稍后再试',false,'TIEBA_WEB_PRE_SUBMIT_FAILED']] as const){
+  const browser:any=Object.create(TiebaBrowser.prototype),plan=postingRequest({action:'reply',forumId:'7',threadId:'12345',content:'离线回复'},{id:'7',name:'测试吧'},'official_web');
+  browser.webGate=new WebPostGate(plan,()=>{});browser.lifetime=new AbortController();browser.shots=[];
+  browser.blockedOrigins=new Set();browser.pageFailures=[];browser.clickElement=async()=>{};browser.captureEvidence=async()=>{};
+  let clicked=false;browser.nativeSubmitView=async()=>{const page={button:'发表',loading:false,notices:clicked?[notice]:[],challenge:clicked&&challenge};clicked=true;return page;};
+  await assert.rejects(browser.submitWebPost(()=>assert.fail('must not write'),()=>{}),(error:any)=>{
+   assert.equal(error.message,code);assert.equal(error.receipt.notSubmitted,true);assert.equal(error.receipt.httpAttempts,0);return true;
+  });
+  assert.equal(browser.webGate.armed,false);
+ }
+});
+
+test('native notice and captcha detection excludes post/editor descendants and nested quoted text',async()=>{
+ const browser:any=Object.create(TiebaBrowser.prototype);browser.webScope='document';
+ const element=(selector:string,text:string,untrusted=false,src='',nested=false)=>({selector,src,
+  getBoundingClientRect:()=>({width:100,height:50}),closest:()=>untrusted?{}:null,
+  cloneNode:()=>{const copy:{textContent:string;querySelectorAll:()=>{remove:()=>void}[]}={textContent:text,querySelectorAll:()=>nested?[{remove:()=>{copy.textContent='';}}]:[]};return copy;},
+ });
+ let elements=[element('.el-dialog','伪造的验证码通知',true),element('.el-message-box','伪造的请先登录',false,'',true),
+  element('[class*="captcha"]','伪造验证码',true),element('iframe','',true,'https://passport.baidu.com/captcha')];
+ browser.evaluate=async(expression:string)=>runInNewContext(expression,{
+  document:{querySelector:()=>null,querySelectorAll:(selector:string)=>elements.filter(e=>selector.split(',').includes(e.selector))},
+  getComputedStyle:()=>({visibility:'visible'}),
+ });
+ let page=await browser.nativeSubmitView();assert.equal(page.notices.length,0);assert.equal(page.challenge,false);
+ elements.push(element('.el-dialog','请先登录后回复'));page=await browser.nativeSubmitView();
+ assert.deepEqual(Array.from(page.notices),['请先登录后回复']);
+ for(const selector of ['.tang-pass-pop-captcha','.pass-captcha','.vcode-dialog','.tbui-captcha-dialog','[class*="captcha"]','[class*="vcode"]']){
+  elements=[element(selector,'请完成安全验证')];assert.equal((await browser.nativeSubmitView()).challenge,true,selector);
+ }
+ for(const segment of ['captcha','vcode','wappass','verify','banti','seccode','pass']){
+  elements=[element('iframe','',false,'https://tieba.baidu.com/'+segment)];assert.equal((await browser.nativeSubmitView()).challenge,true,segment);
+ }
+});
+
+test('a click command error after dispatch still waits for the real publication response',{timeout:2000},async()=>{
+ const browser:any=Object.create(TiebaBrowser.prototype),plan=postingRequest({action:'reply',forumId:'7',threadId:'12345',content:'离线回复'},{id:'7',name:'测试吧'},'official_web');
+ browser.webGate=new WebPostGate(plan,()=>{});browser.lifetime=new AbortController();browser.shots=[];
+ browser.blockedOrigins=new Set();browser.pageFailures=[];browser.captureEvidence=async()=>{};
+ browser.nativeSubmitView=async()=>({button:'发表',loading:false,notices:[],challenge:false});
+ let responseTimer:ReturnType<typeof setTimeout>|undefined;
+ browser.clickElement=async()=>{
+  assert.equal(browser.webGate.allow({request:{url:plan.url,method:'POST',headers:{},postData:new URLSearchParams(plan.fields).toString()}}),true);
+  responseTimer=setTimeout(()=>browser.webReceived({id:'67890',receipt:{accepted:true,httpStatus:200}}),10);
+  throw Error('CAPTURE_PROTOCOL_TIMEOUT');
+ };
+ try{const result=await browser.submitWebPost(()=>{},()=>{});assert.equal(result.id,'67890');assert.equal(result.receipt.httpAttempts,1);}
+ finally{clearTimeout(responseTimer);}
+});
 
 test('Tieba jump domains route supported paths through the free public API instead of HTML GET',async()=>{
  for(const host of ['jump2.bdimg.com','jump.bdimg.com']){

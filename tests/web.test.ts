@@ -5,7 +5,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { request } from 'node:http';
 import { fixture } from './helpers.js';
-import { createWebApp } from '../src/web/app.js';
+import { createWebApp,createTiebaDismissals } from '../src/web/app.js';
 import { webServer } from '../src/web/server.js';
 import { SessionWorkspace } from '../src/web/workspace.js';
 import type { WireMessage } from '../src/web/model.js';
@@ -18,6 +18,48 @@ import {createApp} from '../src/app.js';
 const reply=(message:any,usage={prompt_tokens:20,completion_tokens:10})=>new Response(JSON.stringify({choices:[{message}],usage}));
 const call=(id:string,name:string,args:unknown)=>({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
 function web(mock=true,http?:typeof fetch){const f=fixture();const app=createWebApp(f.root,mock,http);return {f,app,async close(){await app.close();f.cleanup();}};}
+
+test('Tieba UI acknowledgments persist in the WebUI store with restore overrides',()=>{
+ const f=fixture();let store=new Store(f.root,'webui.sqlite');
+ const failed={id:'old',state:'done',createdAt:1,finishedAt:2,result:{outcome:'failed',error:'TIEBA_LOGIN_REQUIRED'}},snapshot={active:[],completed:[failed]};
+ try{
+  createTiebaDismissals(store).dismiss({requestId:'old'});store.close();store=new Store(f.root,'webui.sqlite');
+  let dismissal=createTiebaDismissals(store);
+  assert.equal(dismissal.queue(snapshot).completed[0].dismissed,true);
+  dismissal.dismiss({all:true});dismissal.dismiss({restore:true,requestId:'old'});
+  store.close();store=new Store(f.root,'webui.sqlite');dismissal=createTiebaDismissals(store);
+  assert.equal(dismissal.queue(snapshot).completed[0].dismissed,false);
+  assert.equal(dismissal.queue({active:[],completed:[{...failed,id:'other'}]}).completed[0].dismissed,true);
+  const at=Number(store.getMeta('tieba:dismissed-all-at'))+1;
+  assert.equal(dismissal.queue({active:[],completed:[{...failed,id:'later',finishedAt:at}]}).completed[0].dismissed,false);
+  const attempt={requestId:'later',startedAt:1,at,result:failed.result};
+  assert.equal(dismissal.status({},attempt).attentionDismissed,false);
+  assert.equal(dismissal.attempt(attempt).dismissed,false);
+  dismissal.dismiss({all:true});assert.equal(dismissal.queue(snapshot).completed[0].dismissed,true);
+  assert.deepEqual(failed.result,{outcome:'failed',error:'TIEBA_LOGIN_REQUIRED'});
+ }finally{store.close();f.cleanup();}
+});
+
+test('Tieba dismiss-all uses legacy verification timestamps and recognizes incomplete challenge results',()=>{
+ const f=fixture(),store=new Store(f.root,'webui.sqlite'),dismissal=createTiebaDismissals(store);
+ const detectedAt=Date.now()-1000,legacy={publication:{needsHuman:true,detectedAt}};
+ try{
+  assert.equal(dismissal.status(legacy,null).attention.problem,true);
+  assert.equal(dismissal.status(legacy,null).attentionDismissed,false);
+  dismissal.dismiss({all:true});const futureAt=Number(store.getMeta('tieba:dismissed-all-at'))+1;
+  assert.equal(dismissal.status(legacy,null).attentionDismissed,true);
+  assert.equal(dismissal.status({publication:{needsHuman:true,detectedAt:futureAt}},null).attentionDismissed,false);
+  const work={requestId:'legacy-challenge',created:detectedAt-1000,stage:'challenge',result:{receipt:{httpAttempts:0}}};
+  const original=JSON.stringify(work);
+  const before=dismissal.status({...legacy,publicationWork:work},null);
+  assert.equal(before.attention.problem,true);assert.equal(before.attentionDismissed,true);
+  assert.equal(before.attention.result.error,'TIEBA_PUBLICATION_CHALLENGE');
+  const after=dismissal.status({publication:{needsHuman:true,detectedAt:futureAt},publicationWork:work},null);
+  assert.equal(after.attention.problem,true);assert.equal(after.attentionDismissed,false);
+  assert.deepEqual(after.publicationWork.result,work.result);
+  assert.equal(JSON.stringify(work),original,'classification leaves the stored platform receipt intact');
+ }finally{store.close();f.cleanup();}
+});
 
 test('retrieval and summary settings default on and change live through shared WebUI metadata',async()=>{
  const w=web(false),other=createWebApp(w.f.root,false),qq=createApp(w.f.root,true);

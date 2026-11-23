@@ -30,6 +30,7 @@ function sendTiebaFrame(req: import('node:http').IncomingMessage, res: import('n
 export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
   let bootstrap=randomBytes(32).toString('hex'),expires=Date.now()+300000;
   const origin=`http://127.0.0.1:${port}`;
+  const tiebaStatus=()=>typeof app.tiebaStatus==='function'?app.tiebaStatus():app.tieba.status();
   const server=createServer(async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'");
@@ -73,15 +74,21 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       }
       if(!equal(req.headers.authorization??'','Bearer '+app.token)){res.statusCode=401;throw new FishError('LOCAL_AUTH_REQUIRED');}
       let value:unknown;
-      if(req.method==='GET'&&url.pathname==='/api/tieba')value=await app.tieba.status();
+      if(req.method==='GET'&&url.pathname==='/api/tieba')value=await tiebaStatus();
+      else if(req.method==='GET'&&url.pathname==='/api/tieba/queue'&&url.searchParams.get('publications')==='1')value=await app.tieba.publicationQueue();
       else if(req.method==='GET'&&url.pathname==='/api/tieba/sections')value=await app.tiebaSections();
       else if(req.method==='GET'&&['/api/tieba/actions','/api/tieba/queue'].includes(url.pathname)){
         const offset=Number(url.searchParams.get('offset')??0);if(!Number.isSafeInteger(offset)||offset<0||offset>100000)throw new FishError('TIEBA_INPUT_INVALID');
         const activeOnly=url.searchParams.get('activeOnly')==='1';
         const selectedId=url.searchParams.get('selectedId')??undefined;
         if(selectedId!==undefined&&(!selectedId||selectedId.length>240))throw new FishError('TIEBA_INPUT_INVALID');
+        const filter=url.searchParams.get('filter');
+        if(filter!==null&&!['all','attention','dismissed'].includes(filter))throw new FishError('TIEBA_INPUT_INVALID');
+        const filteredReplies=url.pathname==='/api/tieba/queue'&&url.searchParams.get('replies')==='1'&&filter!==null&&typeof app.tiebaReplyQueue==='function';
         value=url.pathname==='/api/tieba/actions'?await app.tieba.history(offset):
-          url.searchParams.get('replies')==='1'?await app.tieba.replyQueue(offset,activeOnly,selectedId):await app.tieba.queue(offset,activeOnly);
+          filteredReplies?await app.tiebaReplyQueue(offset,activeOnly,selectedId,filter):
+            url.searchParams.get('replies')==='1'?await app.tieba.replyQueue(offset,activeOnly,selectedId):await app.tieba.queue(offset,activeOnly);
+        if(url.pathname==='/api/tieba/queue'&&typeof app.tiebaQueue==='function'&&!filteredReplies)value=app.tiebaQueue(value);
       }
       else if(req.method==='GET'&&url.pathname==='/api/tieba/frame'){
         sendTiebaFrame(req,res,await app.tieba.frame());return;
@@ -91,7 +98,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         const frame=evidence?await app.tieba.publicationEvidence(requestId,evidence):await app.tieba.publicationFrame(requestId);
         res.setHeader('Content-Type','image/png');res.setHeader('X-Tieba-Frame-At',String(frame.at));res.setHeader('X-Tieba-Frame-Live',String(frame.live));res.setHeader('X-Tieba-Frame-Request',frame.requestId);res.end(frame.bytes);return;
       }
-      else if(req.method==='GET'&&url.pathname==='/api/status')value={...app.status(),tieba:await app.tieba.status(),tiebaAttempt:app.tiebaAttempt()};
+      else if(req.method==='GET'&&url.pathname==='/api/status')value={...app.status(),tieba:await tiebaStatus(),tiebaAttempt:app.tiebaAttempt()};
       else if(req.method==='GET'&&url.pathname==='/api/exploration')value=app.exploration.status();
       else if(req.method==='GET'&&url.pathname==='/api/companion')value=app.companion();
       else if(req.method==='GET'&&url.pathname==='/api/exploration/journal')value=app.exploration.journal({...Object.fromEntries(url.searchParams),offset:Number(url.searchParams.get('offset')??0),removed:url.searchParams.get('removed')==='true'});
@@ -127,7 +134,11 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         res.setHeader('Content-Security-Policy',"default-src 'none'; sandbox");res.end(content);return;
       }else if(req.method==='POST'){
         const b=await body(req);
-        if(url.pathname==='/api/tieba/sections')value=app.saveTiebaSections(b);
+        if(url.pathname==='/api/tieba/dismiss'){
+          if(typeof app.tiebaDismiss!=='function')throw new FishError('TIEBA_ACTION_DENIED');
+          value=app.tiebaDismiss(b);
+        }
+        else if(url.pathname==='/api/tieba/sections')value=app.saveTiebaSections(b);
         else if(url.pathname.startsWith('/api/tieba/')){
           const action=url.pathname.slice(11);
           try{
@@ -147,6 +158,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
             else if(action==='read')value=await app.tiebaRead(b);
             else throw new FishError('TIEBA_ACTION_DENIED');
             if(!['input'].includes(action))app.tiebaAudit(action,value);
+            if(value&&typeof value==='object'&&'profileSaved' in value&&typeof app.tiebaStatusView==='function')value=app.tiebaStatusView(value);
           }catch(e){if(action!=='input')app.tiebaAudit(action,{error:codeOf(e)});throw e;}
         }
         else if(url.pathname==='/api/sessions')value=app.createSession();

@@ -7,12 +7,13 @@ import {conversationAllowed,type Config} from '../config.js';
 import {publicUrl} from '../search/provider.js';
 import {dailyPostHint,setDailyPostHint} from '../tieba/daily-post.js';
 import {tiebaReplyBadge} from '../tieba/reply-badge.js';
+import {tiebaPatrolStatus} from '../tieba/patrol-watch.js';
 import type {PublishInput} from '../tieba/posting.js';
 import {importExplorationLinks,rememberExplorationLinks} from './links.js';
 
 export const random=()=>randomInt(0,0x100000000)/0x100000000;
-export type ExplorationSettings={enabled:boolean;owner:string;minMinutes:number;maxMinutes:number;probability:number;maxRunMinutes:number;runTokens:number;allowImages:boolean;allowPublicPosts:boolean};
-export const explorationDefaults:ExplorationSettings={enabled:false,owner:'',minMinutes:9,maxMinutes:11,probability:0.028,maxRunMinutes:60,runTokens:0,allowImages:false,allowPublicPosts:false};
+export type ExplorationSettings={enabled:boolean;tiebaPatrol:boolean;owner:string;minMinutes:number;maxMinutes:number;probability:number;maxRunMinutes:number;runTokens:number;allowImages:boolean;allowPublicPosts:boolean};
+export const explorationDefaults:ExplorationSettings={enabled:false,tiebaPatrol:true,owner:'',minMinutes:9,maxMinutes:11,probability:0.028,maxRunMinutes:60,runTokens:0,allowImages:false,allowPublicPosts:false};
 export const interval=(s:ExplorationSettings,rng=random)=>Math.round((s.minMinutes+(s.maxMinutes-s.minMinutes)*rng())*60000);
 export const expectedPerDay=(s:ExplorationSettings)=>1440/((s.minMinutes+s.maxMinutes)/2)*s.probability;
 export type ExplorationRun={id:string;owner:string;trigger:string;state:string;created:number;started:number|null;finished:number|null;lease:number;lock:string|null;error:string|null;tokens:number;web_tokens:number;web_nano:number;unknown_tokens:number;shared:number;note:string|null;cancel:number;instruction?:string|null};
@@ -111,7 +112,7 @@ export class ExplorationState{
   save(input:any){
     const previous=this.settings(),s={...previous,...input};
     if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!Object.hasOwn(explorationDefaults,k))||
-      ['enabled','allowImages','allowPublicPosts'].some(k=>typeof s[k]!=='boolean')||typeof s.owner!=='string'||s.owner!==''&&!/^[1-9]\d{0,19}$/.test(s.owner)||
+      ['enabled','tiebaPatrol','allowImages','allowPublicPosts'].some(k=>typeof s[k]!=='boolean')||typeof s.owner!=='string'||s.owner!==''&&!/^[1-9]\d{0,19}$/.test(s.owner)||
       !Number.isFinite(s.minMinutes)||s.minMinutes<0.1||s.minMinutes>10080||!Number.isFinite(s.maxMinutes)||s.maxMinutes<s.minMinutes||s.maxMinutes>10080||
       !Number.isFinite(s.probability)||s.probability<0||s.probability>1||!Number.isFinite(s.maxRunMinutes)||s.maxRunMinutes<1||s.maxRunMinutes>1440||
       !Number.isSafeInteger(s.runTokens)||s.runTokens<0||s.runTokens>10000000)throw new FishError('EXPLORATION_SETTINGS_INVALID');
@@ -128,7 +129,7 @@ export class ExplorationState{
     this.store.db.prepare("UPDATE exploration_runs SET state='interrupted',finished=?,error='PROCESS_INTERRUPTED',lock=NULL,lease=0 WHERE state='running' AND lease<=?").run(this.now(),this.now());
     this.store.db.prepare("UPDATE exploration_runs SET state='cancelled',finished=? WHERE state='queued' AND cancel=1").run(this.now());
     // A stale manual queue is not a collection of work to catch up after offline time.
-    this.store.db.prepare("UPDATE exploration_runs SET state='interrupted',finished=?,error='QUEUED_WHILE_OFFLINE' WHERE state='queued' AND trigger NOT IN ('tieba_reply','tieba_mention') AND created<?").run(this.now(),this.now()-3600000);
+    this.store.db.prepare("UPDATE exploration_runs SET state='interrupted',finished=?,error='QUEUED_WHILE_OFFLINE' WHERE state='queued' AND trigger NOT IN ('tieba_reply','tieba_mention','tieba_patrol') AND created<?").run(this.now(),this.now()-3600000);
   }
   /** Called inside the caller's transaction, so event receipts and enqueue
    * commit together. Reused active runs are never overwritten. */
@@ -220,6 +221,7 @@ export class ExplorationState{
     };
     return {settings:s,expectedPerDay:expectedPerDay(s),schedule:this.store.db.prepare('SELECT * FROM exploration_schedule WHERE id=1').get(),
       tiebaReplies:notificationStatus('reply'),tiebaMentions:notificationStatus('mention'),
+      tiebaPatrol:{...tiebaPatrolStatus(this.store),enabled:this.cfg().enabled&&this.cfg().search&&s.enabled&&s.tiebaPatrol},
       tiebaRedDot:tiebaReplyBadge(this.store),
       tiebaDailyPost:dailyPostHint(this.store,this.now()),
       active:this.store.db.prepare(`SELECT * FROM exploration_runs WHERE ${active}`).get()??null,last:this.store.db.prepare('SELECT * FROM exploration_runs ORDER BY created DESC LIMIT 1').get()??null,

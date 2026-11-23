@@ -1,6 +1,6 @@
 'use strict';
 (()=>{
- const dialog=$('exploration-dialog'),numbers=['minMinutes','maxMinutes','probability','maxRunMinutes','runTokens'],checks=['enabled','allowImages','allowPublicPosts'];
+ const dialog=$('exploration-dialog'),numbers=['minMinutes','maxMinutes','probability','maxRunMinutes','runTokens'],checks=['enabled','tiebaPatrol','allowImages','allowPublicPosts'];
  const states={queued:'等待后台接手',running:'进行中',completed:'已完成',paused:'错误',failed:'错误',cancelled:'已停止',interrupted:'进程中断'};
  const errorText=e=>({EXPLORATION_DECISION_STALLED:'模型连续三次没有返回工具调用',EXPLORATION_TIME_BUDGET:'达到本次探索的时长上限',EXPLORATION_TOKEN_BUDGET:'本次探索的 token 额度不足'})[e]||e;
  let poll,dirty=false,loading=false,postHintSaving=false,offset=0,next=null;
@@ -18,6 +18,7 @@
    $('exploration-run').disabled=!s.settings.owner||!!s.active;$('exploration-cancel').disabled=!s.active;
    if(s.tiebaRedDot){const b=s.tiebaRedDot,p=node('p'),dot=node('span','',b.redDot?'● ':'○ ');dot.style.color=b.redDot?'#ef6464':'#94a3b8';p.append(node('strong','','贴吧小红点：'),dot,node('span','',b.message+' · 最近检查（香港）'+date(b.checkedAt)+(b.clearedAt?' · 最近清除 '+date(b.clearedAt):'')));box.append(p);}
    for(const [label,w] of [['贴吧回复',s.tiebaReplies],['贴吧 @',s.tiebaMentions]])if(w){const p=node('p');p.append(node('strong','',label+'：'),node('span','',!s.settings.enabled?'随自主探索关闭':w.lastError?w.lastError+(w.paused?' · 请在贴吧账号页检查登录':''):w.pending?.count?'已收到 '+w.pending.count+' 条 · 唤醒时间（香港）'+date(w.pending.due):'最近检查 '+date(w.lastCheck)));box.append(p);}
+   if(s.tiebaPatrol){const w=s.tiebaPatrol,p=node('p'),status=w.enabled?'开启':!s.settings.tiebaPatrol?'关闭':!s.settings.enabled?'随自主探索关闭':'等待启用聊天与联网';p.append(node('strong','','贴吧巡视：'),node('span','',status+' · '+w.forums.map(f=>f.name+'吧').join('、')+' · 待看 '+w.pending+' 条 · 最近检查（香港）'+date(w.lastCheck)+(w.lastError?' · '+w.lastError:'')));box.append(p);}
    if(s.tiebaDailyPost){
     const h=s.tiebaDailyPost,p=node('p'),toggle=node('button','post-hint-toggle',h.attemptedToday?'标记未发':'标记已发');
     toggle.type='button';toggle.disabled=postHintSaving;toggle.title='切换今天的发帖提醒状态';

@@ -31,6 +31,8 @@ export function toolArgs(raw:string){
 }
 
 export function actionState(value:any):string{
+  if(value?.deliveryStatus==='queued'||value?.queued===true)return 'queued';
+  if(value?.deliveryStatus==='running'&&value?.submissionStatus==='running')return 'running';
   if(value?.visibility==='removed_by_system'||value?.deliveryStatus==='deleted')return 'deleted';
   if(value?.deliveryStatus==='accepted')return 'accepted';
   if(['unavailable','login_required','blocked','error'].includes(value?.status))return 'failed';
@@ -81,7 +83,7 @@ export class UnreadFeedback {
     if(!value||typeof value!=='object')return;
     const failure=value.memory?.ok===false?value.memory:value;
     const items=Array.isArray(value.images)?value.images.filter((x:any)=>x?.error||x?.deliveryStatus==='unconfirmed'):[];
-    if(['completed','accepted'].includes(actionState(value)))return;
+    if(['completed','accepted','queued','running'].includes(actionState(value)))return;
     const summary=(v:any)=>{
       const fields=['error',...publicFields,'step','accepted','notSubmitted','pageNotice','errorMessage','errorCode','visibility','state','submitted','published','url','attemptedTokens','limit','version','imageId','fileId','id','position','message','status','notice'];
       const compact:Record<string,any>={};

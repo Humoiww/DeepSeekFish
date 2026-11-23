@@ -3,7 +3,7 @@
   document.addEventListener('exploration-history',async e=>{closeDrawers();for(const id of ['activity-state','activity-conversation','activity-from','activity-to','activity-query'])$(id).value='';$('activity-kind').value='exploration';offset=0;$('activity-dialog').showModal();await refresh(true);if(e.detail)await openDetail('exploration:'+e.detail);});
   const kindNames={qq:'QQ 对话',web:'网页对话',news:'早间新闻',memory:'记忆回顾',diary:'空间动态',image:'Codex 生图',audit:'系统事件',exploration:'自主探索',development:'开发任务',chain:'连续任务链'};
   const stateNames={accepted:'平台已受理',deleted:'已被平台删除',unconfirmed:'送达未确认',paused:'已暂停',cancelled:'已停止',interrupted:'重启中断',completed:'已完成',failed:'失败',partial:'部分失败',running:'进行中',pending:'等待结果',unknown:'状态未记录'};
-  const toolNames={save_curiosity_summary:'保存会话好奇心',skip_curiosity_summary:'本段无需记录',list_conversations:'查看授权会话',search_memory:'检索记忆',read_memory:'回看记忆',read_curiosity:'翻阅好奇心日志',write_curiosity:'更新好奇心日志',read_exploration:'回看探索',send_message:'主动私聊',propose_project:'提出创意',finish_exploration:'结束闲逛',publish_qzone:'发布空间',reply:'回复消息',search_web:'联网搜索',fetch_page:'查询网页',browse_page:'浏览网页',download_image:'下载图片',generate_image:'请求生图',send_image:'发送成图',send_meme:'发送表情',list_images:'浏览图库',view_images:'查看原图',collect_meme:'收藏表情',remember_images:'记录图片',get_knowledge:'读取知识库',update_knowledge:'更新知识库',recall_chat:'翻阅聊天历史',read_forward:'读取转发记录',get_qzone:'读取空间动态',get_person:'查看 QQ 资料',get_quota:'查看额度',read_tool_result:'继续读取工具结果',draft_news:'准备新闻',finish_memory:'完成记忆回顾',image_plan:'设计画面',codex_record:'Codex 返回结果'};
+  const toolNames={save_curiosity_summary:'保存会话好奇心',skip_curiosity_summary:'本段无需记录',list_conversations:'查看授权会话',search_memory:'检索记忆',read_memory:'回看记忆',read_curiosity:'翻阅好奇心日志',write_curiosity:'更新好奇心日志',read_exploration:'回看探索',report_tieba_conflict:'上报大肥鱼吧引战',send_message:'主动私聊',propose_project:'提出创意',finish_exploration:'结束闲逛',publish_qzone:'发布空间',reply:'回复消息',search_web:'联网搜索',fetch_page:'查询网页',browse_page:'浏览网页',download_image:'下载图片',generate_image:'请求生图',send_image:'发送成图',send_meme:'发送表情',list_images:'浏览图库',view_images:'查看原图',collect_meme:'收藏表情',remember_images:'记录图片',get_knowledge:'读取知识库',update_knowledge:'更新知识库',recall_chat:'翻阅聊天历史',read_forward:'读取转发记录',get_qzone:'读取空间动态',get_person:'查看 QQ 资料',get_quota:'查看额度',read_tool_result:'继续读取工具结果',draft_news:'准备新闻',finish_memory:'完成记忆回顾',image_plan:'设计画面',codex_record:'Codex 返回结果'};
   let offset=0,next=null,selected=null,sequence=0,detailSequence=0,searchTimer,listRequest,items=[];
   const number=n=>Number(n||0).toLocaleString('zh-CN');
   const splitKnown=u=>Number.isSafeInteger(u?.cachedInput)&&Number.isSafeInteger(u?.uncachedInput);
@@ -40,7 +40,7 @@
   }
   function tag(state){return node('span','activity-state state-'+state,stateNames[state]||state);}
   const pageActions=new Set(['browse_page','fetch_page','download_image']);
-  const messageActions=new Set(['reply','send_message','send_image','send_file','send_meme']);
+  const messageActions=new Set(['reply','send_message','send_image','send_file','send_meme','report_tieba_conflict']);
   const publicationActions=new Set(['publish_tieba','publish_qzone']);
   const timelineToolNames={get_tieba_replies:'查看贴吧回复',get_tieba_account:'查看贴吧账号',get_tieba_sections:'查看贴吧分区',
     check_tieba_publication:'复查贴吧发言',send_file:'发送文件',request_development:'交给 Neon小猫处理',activity_chain_start:'建立连续任务链',

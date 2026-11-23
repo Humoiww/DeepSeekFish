@@ -2,6 +2,7 @@
 (()=>{
  const dialog=$('tieba-dialog'),screen=$('tieba-frame');let frameUrl,working=false,drag,frameSerial=0,screenMode='login',currentStatus,lastAttempt,refreshing=false,shownRequest,announced='',pendingOpen=false,verified='',evidenceKey='',evidenceUrls=[];
  function failureText(code,receipt={}){
+  if(receipt.reason==='pre_submit_stalled'||receipt.submission?.phase==='pre_submit_stalled')return '官网在发布前长时间没有继续，本次已安全结束，尚未发出发布请求。可查看现场截图并手动处理；程序不会自动重发。';
   if(receipt.guardReason==='content_mismatch')return '官网生成的待发送正文与原稿核对不一致，已停在发送前；展开诊断可查看具体差异。';
   if(receipt.guardReason==='section_mismatch')return '官网生成的分区与肥鱼所选不一致，本次没有提交。';
   if(['TIEBA_WEB_SECTION_NOT_VISIBLE','TIEBA_WEB_SECTION_NOT_SELECTED'].includes(code))return '未能在官网编辑器确认所选分区，本次没有提交。';
@@ -17,16 +18,50 @@
   try{const r=await fetch('/api/'+path,{method:value===undefined?'GET':'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:value===undefined?undefined:JSON.stringify(value),signal:controller.signal});const data=await r.json();if(!r.ok)throw Error(data.error||'REQUEST_FAILED');return data;}
   catch(e){if(e.name==='AbortError')throw Error('等待超时。发布结果可能尚未返回，请刷新状态或只读检查结果，勿重复提交。');throw e;}finally{clearTimeout(timer);}
  }
- let queueLoading=false,queueData,queueKey='',selectedQueueId,selectedQueueItem,queueDetailKey='';
+ let queueLoading=false,queueData,queueKey='',selectedQueueId,selectedQueueItem,queueDetailKey='',queueFilter='all',dismissing=false;
  const queueChecks=new Map();
  const queueActions={publish:'发言',verify:'核对发言结果',account:'读取账号与关注列表',replies:'读取回复通知',mentions:'读取 @ 通知',read:'读帖',start:'打开登录',check:'确认登录','publication-start':'准备原回复','publication-submit':'提交原回复','publication-check':'核对公开结果',input:'操作官网页面',frame:'更新官网画面','publication-frame':'更新发言画面',moderator:'吧务申请',logout:'退出账号',close:'释放官网窗口'};
- const submissionStages={native_page_notice:'官网页面出现提示（不是发布API回执）',publish_request_blocked:'发布请求在本地核对时未获放行',click_publish:'点击官网发布按钮',wait_native_publish_request:'等待官网完成发布前处理，尚未发起发布请求',await_publication_response:'发布请求已发起，等待贴吧返回回执',publication_response_received:'已收到发布请求的结果'};
+ const submissionStages={pre_submit_stalled:'官网发布前处理停滞，已结束且未提交',native_page_notice:'官网页面出现提示（不是发布API回执）',publish_request_blocked:'发布请求在本地核对时未获放行',click_publish:'点击官网发布按钮',wait_native_publish_request:'等待官网完成发布前处理，尚未发起发布请求',await_publication_response:'发布请求已发起，等待贴吧返回回执',publication_response_received:'已收到发布请求的结果'};
  const queueOutcomes={timeout:'执行超时',preview:'预演（未发布）',public:'公开成功',accepted:'已受理，待公开确认',challenge:'需要人工验证',failed:'出现问题',unknown:'结果不确定',removed:'已被系统删除',interrupted:'服务重启中断',done:'已完成'};
  const queueTime=at=>at?new Date(at).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong',hour12:false}):'未记录';
+ const paceTime=at=>new Date(at).toLocaleTimeString('zh-CN',{timeZone:'Asia/Hong_Kong',hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+ const pacingLabel=item=>item.state==='queued'&&item.scheduledAt?(item.queuePosition?'排队第 '+item.queuePosition+' 条':'排队中')+' · 预计 '+paceTime(item.scheduledAt)+' 发送':'';
  const recordRange=(offset,count,total)=>count?`${offset+1}–${offset+count} / ${total}`:`0 / ${total}`;
  const visibleLabels={public:'公开正文可见',author_only:'账号侧已找到，公开未确认',not_observed:'本次未找到匹配正文',no_longer_observed:'此前公开，本次未找到',removed_by_system:'回收站确认系统删除'};
- const queueLabel=item=>item.state==='cleaning'?'超时清理中':item.state==='running'?'处理中':item.state==='queued'?'等待中':
+ const queueLabel=item=>item.state==='cleaning'?'超时清理中':item.state==='running'?'处理中':item.state==='queued'?pacingLabel(item)||'等待中':
    visibleLabels[item.result?.visibility]||queueOutcomes[item.result?.outcome]||'已完成';
+ const isProblem=item=>item.problem??(!['queued','running','cleaning'].includes(item.state)&&!item.result?.publicVerified&&item.result?.visibility!=='public'&&!!(item.result?.error||['challenge','failed','unknown','removed','interrupted','timeout'].includes(item.result?.outcome)));
+ const statusTone=item=>item.dismissed?'muted':['running','queued','cleaning'].includes(item.state)?'live':isProblem(item)?'warning':item.result?.publicVerified||item.result?.outcome==='public'?'success':'neutral';
+ const shortTime=at=>at?new Date(at).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'时间未记录';
+ function statusPill(item){const pill=node('span','tieba-status-pill',item.dismissed?'已忽略 · '+queueLabel(item):queueLabel(item));pill.dataset.tone=statusTone(item);return pill;}
+ function dismissButton(item){
+  const button=node('button','quiet-button',item.dismissed?'取消忽略':'忽略当前条目');button.type='button';
+  const requestId=item.metadata?.requestId??item.requestId??item.result?.requestId??item.id;
+  button.onclick=()=>void dismissIssue(item.dismissed?{restore:true,requestId}:{requestId});return button;
+ }
+ async function dismissIssue(payload){
+  if(dismissing)return;dismissing=true;pendingOpen=false;
+  const message=$('tieba-dismiss-message');message.textContent='正在保存提醒设置…';
+  try{
+   await call('tieba/dismiss',payload);queueKey='';queueDetailKey='';
+   await status();await refreshQueue();
+   message.textContent=payload.restore?'已恢复这条提醒。':payload.all?'已忽略现有问题，之后的新问题仍会提醒。':'已忽略这条提醒，可在「已忽略」中恢复。';
+  }catch(e){message.textContent='未能保存忽略设置：'+failureText(e.message);$('tieba-alert-text').textContent=message.textContent;}
+  finally{dismissing=false;}
+ }
+ document.addEventListener('click',e=>{
+  const button=e.target.closest('button[data-tieba-dismiss]');if(!button||button.disabled)return;
+  const action=button.dataset.tiebaDismiss;
+  if(action==='all')void dismissIssue({all:true});
+  else{
+   const item=action==='selected'?selectedQueueItem:action==='publication'?currentStatus?.publicationWork:currentStatus?.attention;
+   const requestId=item?.metadata?.requestId??item?.requestId??item?.result?.requestId??item?.id;
+   if(requestId)void dismissIssue(item.dismissed?{restore:true,requestId}:{requestId});
+  }
+ });
+ for(const button of document.querySelectorAll('[data-tieba-filter]'))button.onclick=()=>{
+  queueFilter=button.dataset.tiebaFilter;queueKey='';if(queueData)renderQueue(queueData);void refreshQueue(0);
+ };
  async function verifyQueueReply(requestId){
   if(queueChecks.get(requestId)?.checking)return;
   queueChecks.set(requestId,{checking:true});renderQueueSelection();
@@ -85,17 +120,29 @@
   const box=$('tieba-queue-detail'),overview=$('tieba-account-overview');box.hidden=!item;overview.hidden=!!item;
   if(!item){box.replaceChildren();return;}
   box.replaceChildren();
-  const m=item.metadata||{},requestId=m.requestId??item.result?.requestId,check=queueChecks.get(requestId);
+  const m=item.metadata||{},requestId=m.requestId??item.result?.requestId??item.id,check=queueChecks.get(requestId);
   const currentProof=check?.result&&(check.result.verifiedAt??0)>=(item.result?.verifiedAt??0)?check.result:undefined;
   const r={...item.result,...currentProof},receipt=r.receipt||{};
   const heading=node('div','tieba-reply-heading'),close=node('button','quiet-button','返回账号');
   close.type='button';close.onclick=()=>selectQueueReply(undefined);
-  heading.append(node('h3','','回帖详情 · '+queueLabel({...item,result:r})),close);box.append(heading);
+  const title=node('div');title.append(node('span','eyebrow','REPLY · 回复记录'),node('h3','','回帖详情'));
+  heading.append(title,statusPill({...item,result:r}),close);box.append(heading);
+  const toolbar=node('div','tieba-actions tieba-detail-toolbar');
+  if(item.dismissed||isProblem(item))toolbar.append(dismissButton(item));
+  if(isProblem(item)&&!item.dismissed){const all=node('button','quiet-button','忽略所有条目');all.type='button';all.onclick=()=>void dismissIssue({all:true});toolbar.append(all);}
+  box.append(toolbar);
+  const meta=node('dl','tieba-meta-grid');
+  for(const [label,value] of [['进入队列',queueTime(item.createdAt)],['处理结束',item.finishedAt?queueTime(item.finishedAt):'—'],['贴吧 ID',m.forumId||'—'],['帖子 / 父楼',[m.threadId,m.postId].filter(Boolean).join(' / ')||'—']]){const pair=node('div');pair.append(node('dt','',label),node('dd','',value));meta.append(pair);}
+  box.append(meta);
+  if(pacingLabel(item))box.append(node('p','hint',pacingLabel(item)+'（香港时间）。发言按1分钟到1分20秒随机间隔排队放行；预计时间随前序操作完成更新，排队时间不计入执行上限。'));
+  if(m.title)box.append(node('strong','',m.title));if(m.content)box.append(node('blockquote','tieba-quoted-content',m.content));
+  const diagnostics=node('details','tieba-diagnostics');diagnostics.append(node('summary','','运行细节与平台提示'));
+  const diagnosticLine=(...elements)=>diagnostics.append(...elements);
   if(requestId){
    const recoverable=r.error==='TIEBA_PUBLICATION_CHALLENGE'||r.submitted===false&&receipt.notSubmitted===true;
    if(recoverable){
     const button=node('button','primary-button',r.error==='TIEBA_PUBLICATION_CHALLENGE'?'打开本条人工验证':'打开本条官网编辑器');
-    button.type='button';button.onclick=()=>void openReply(requestId);box.append(button);
+    button.type='button';button.onclick=()=>void openReply(requestId);toolbar.prepend(button);
    }
    box.append(rowProgress,rowError,rowControls);placeControls();
    if(r.evidence?.length)box.append(recordEvidence(requestId,r.evidence));
@@ -104,16 +151,15 @@
   if(item.startedAt)times.push('开始处理：'+queueTime(item.startedAt)+'；等待 '+((item.startedAt-item.createdAt)/1000).toFixed(1)+' 秒');
   if(item.finishedAt)times.push('处理结束：'+queueTime(item.finishedAt));
   if(m.source!=='publication_history'&&item.limitMs)times.push('执行上限：'+item.limitMs/1000+' 秒（排队时间不计入）');
-  box.append(node('p','hint',times.join('\n')));
+  diagnosticLine(node('p','hint',times.join('\n')));
   if(m.source==='publication_history')box.append(node('p','hint','来自已有发言记录；并非本次新排队或重发。'));
-  if(m.threadId||m.forumId)box.append(node('p','','吧 ID：'+(m.forumId||'—')+'；帖子：'+(m.threadId||'—')+(m.postId?'；父楼：'+m.postId:'')+(m.subPostId?'；子回复：'+m.subPostId:'')));
-  if(m.target)box.append(node('p','hint',m.target));
-  if(r.resolvedTarget)box.append(node('p','','目标层级已校正：父楼 '+r.resolvedTarget.parentPostId+(r.resolvedTarget.subPostId?'；目标子回复 '+r.resolvedTarget.subPostId:'')));
-  if(m.title)box.append(node('strong','',m.title));if(m.content)box.append(node('pre','',m.content));
+  if(m.subPostId)diagnosticLine(node('p','','子回复：'+m.subPostId));
+  if(m.target)diagnosticLine(node('p','hint',m.target));
+  if(r.resolvedTarget)diagnosticLine(node('p','','目标层级已校正：父楼 '+r.resolvedTarget.parentPostId+(r.resolvedTarget.subPostId?'；目标子回复 '+r.resolvedTarget.subPostId:'')));
   const canVerify=item.canVerify??!!(r.submitted===true||r.id||['accepted','unknown','public','removed'].includes(r.outcome));
   if(requestId&&(canVerify||check)){
    const read=node('button','quiet-button',check?.checking?'正在查贴吧正文…':'核对贴吧正文');
-   read.type='button';read.disabled=!!check?.checking;read.onclick=()=>void verifyQueueReply(requestId);box.append(read);
+   read.type='button';read.disabled=!!check?.checking;read.onclick=()=>void verifyQueueReply(requestId);toolbar.prepend(read);
   }
   if(check?.error)box.append(node('p','form-error',check.error));
   if(r.checks||check?.result){
@@ -125,10 +171,10 @@
     box.append(node('p','hint','这次未能读取公开正文'+(publicRead.error?' · '+failureText(publicRead.error):'。')));
   }
   if(r.error)box.append(node('p','form-error',failureText(r.error,receipt)));
-  if(receipt.errorMessage)box.append(node('p','','平台回执：'+receipt.errorMessage));
-  if(receipt.pageNotice)box.append(node('p','','官网页面提示：'+receipt.pageNotice));
-  if(receipt.requestCounterSource==='native_publish_interception')box.append(node('p','',receipt.httpAttempts>0?'官网发布请求已发起：'+receipt.httpAttempts+' 次；'+(r.id?'取得发言 ID '+r.id:receipt.accepted===true?'平台已受理，尚无有效发言 ID':'是否受理以实际回执为准'):'官网尚未发起发布请求'+(receipt.notSubmitted?'，本次已结束。':'，仍在发布前处理。')));
-  if(receipt.submission){const v=receipt.submission.page;box.append(node('p','', '官网提交阶段：'+(submissionStages[receipt.submission.phase]||receipt.submission.phase)+(v?.loading?'；发布按钮仍在加载':'')));if(v?.notices?.length)box.append(node('p','','官网通知：'+v.notices.join('；')));}
+  if(receipt.errorMessage)diagnosticLine(node('p','','平台回执：'+receipt.errorMessage));
+  if(receipt.pageNotice)diagnosticLine(node('p','','官网页面提示：'+receipt.pageNotice));
+  if(receipt.requestCounterSource==='native_publish_interception')diagnosticLine(node('p','',receipt.httpAttempts>0?'官网发布请求已发起：'+receipt.httpAttempts+' 次；'+(r.id?'取得发言 ID '+r.id:receipt.accepted===true?'平台已受理，尚无有效发言 ID':'是否受理以实际回执为准'):'官网尚未发起发布请求'+(receipt.notSubmitted?'，本次已结束。':'，仍在发布前处理。')));
+  if(receipt.submission){const v=receipt.submission.page;diagnosticLine(node('p','', '官网提交阶段：'+(submissionStages[receipt.submission.phase]||receipt.submission.phase)+(v?.loading?'；发布按钮仍在加载':'')));if(v?.notices?.length)diagnosticLine(node('p','','官网通知：'+v.notices.join('；')));}
   if(r.notice)box.append(node('p','hint',r.notice));
   if(r.diagnostic)box.append(node('p','form-error','具体异常：'+[r.diagnostic.name,r.diagnostic.message].filter(Boolean).join('：')));
   if(r.timeout){const t=r.timeout,p=t.phase||{},stages={publish:'发言处理',publication_submit:'提交官网发言',publication_prepare:'准备官网编辑器',verify_publication:'核对公开结果',publication_check:'核对公开结果',open_thread:'打开帖子',wait_reply_entry:'等待回复入口',locate_reply_target:'定位回复对象',fill_reply_editor:'打开并填写编辑器',open_forum:'打开贴吧',wait_thread_entry:'等待发帖入口',wait_thread_editor:'加载发帖编辑器',await_publication_response:'等待贴吧发布回执',publication_response_received:'已收到发布回执，等待后续核对',read:'读取帖子',replies:'读取回复通知',frame:'获取官网截图',account:'读取账号信息',login:'打开登录页面',verify:'验证账号'};
@@ -142,7 +188,8 @@
   if(r.submitted===false)box.append(node('p','','本次未提交成功。'));else if(r.submitted===true)box.append(node('p','','平台已受理。'+(r.publicVerified?'已实际确认公开可见。':'尚未确认公开可见。')));
   const target=r.url||(/^[1-9]\d{0,19}$/.test(m.threadId)?'https://tieba.baidu.com/p/'+m.threadId:undefined);
   if(target){try{const u=new URL(target);if(u.protocol==='https:'&&u.hostname==='tieba.baidu.com'){const a=node('a','','打开贴吧帖子');a.href=u.href;a.target='_blank';a.rel='noopener noreferrer';box.append(a);}}catch{}}
-  if(requestId)box.append(node('p','hint','发言请求：'+requestId));
+  if(requestId)diagnosticLine(node('p','hint','发言请求：'+requestId));
+  box.append(diagnostics);
   if(item.steps?.length){
    const details=node('details'),steps=node('ol');
    for(const step of item.steps)steps.append(node('li','',(queueActions[step.action]||step.action)+' · '+queueLabel({...step,result:step})+' · '+queueTime(step.createdAt)+(step.error?' · '+failureText(step.error):'')));
@@ -171,6 +218,8 @@
    button.classList.toggle('selected',selected);button.setAttribute('aria-pressed',String(selected));
   }
   const requestId=selectedQueueItem?.metadata?.requestId??selectedQueueItem?.result?.requestId;
+  const ignore=$('tieba-queue-ignore-actions').querySelector('[data-tieba-dismiss="selected"]');
+  ignore.disabled=!selectedQueueItem||!isProblem(selectedQueueItem)||selectedQueueItem.dismissed;
   const key=JSON.stringify([selectedQueueItem,queueChecks.get(requestId)]);
   if(key!==queueDetailKey){queueDetailKey=key;renderQueueDetail(selectedQueueItem);}
  }
@@ -181,18 +230,23 @@
  }
  function renderQueue(snapshot){
   const data=replyView(snapshot);queueData=data;
-  const key=JSON.stringify([data.counts,data.active,data.completed,data.offset,data.hasMore]);
+  const pacing=data.publishPacing,pacingActive=pacing?.nextPublishAt>Date.now();
+  const key=JSON.stringify([data.counts,data.issueCounts,data.active,data.completed,data.offset,data.hasMore,queueFilter,pacing,pacingActive]);
   if(key!==queueKey){
    queueKey=key;
-   $('tieba-queue-counts').textContent=data.view==='replies'?'处理中 '+data.counts.running+' · 等待 '+data.counts.queued+' · 已结束 '+data.counts.completed:'当前页回帖';
-   const box=$('tieba-queue-list'),items=[...data.active,...data.completed];box.replaceChildren();
-   if(!items.length)box.append(node('p','hint','这一页没有回帖。'));
+   $('tieba-queue-counts').textContent=data.view==='replies'?'处理中 '+data.counts.running+' · 等待 '+data.counts.queued+' · 已结束 '+(data.counts.totalCompleted??data.counts.completed):'回帖记录';
+   if(pacingActive)$('tieba-queue-counts').textContent+=' · 发言间隔 '+pacing.intervalMs/1000+'–'+(pacing.maxIntervalMs??pacing.intervalMs)/1000+' 秒随机放行，下次可发送 '+paceTime(pacing.nextPublishAt)+'（香港时间）';
+   const allItems=data.completed,attention=data.issueCounts?.attention??allItems.filter(i=>isProblem(i)&&!i.dismissed).length,ignored=data.issueCounts?.dismissed??allItems.filter(i=>i.dismissed).length;
+   for(const button of document.querySelectorAll('[data-tieba-filter]')){const f=button.dataset.tiebaFilter;button.setAttribute('aria-pressed',String(f===queueFilter));button.textContent=f==='all'?'全部':f==='attention'?'需处理 ('+attention+')':'已忽略 ('+ignored+')';}
+   $('tieba-queue-ignore-actions').hidden=!attention;
+   const box=$('tieba-queue-list'),items=allItems.filter(i=>queueFilter==='dismissed'?i.dismissed:!i.dismissed&&(queueFilter!=='attention'||isProblem(i)));box.replaceChildren();
+   if(!items.length)box.append(node('p','tieba-queue-empty',queueFilter==='dismissed'?'没有已忽略的回复。':queueFilter==='attention'?'没有需要处理的问题。':'还没有可显示的回复。'));
    for(const item of items){
     const button=node('button','tieba-queue-card');button.type='button';button.dataset.replyId=item.id;
     button.dataset.outcome=['queued','running','cleaning'].includes(item.state)?item.state:item.result?.outcome||item.state;
     const m=item.metadata||{};
-    button.append(node('strong','tieba-reply-preview',(m.content||m.title||'帖子 '+(m.threadId||'—')).slice(0,100)),
-      node('span','hint',queueLabel(item)+' · '+queueTime(item.createdAt)));
+    const top=node('span','tieba-queue-card-top');top.append(statusPill(item),node('time','',shortTime(item.createdAt)));
+    button.append(top,node('strong','tieba-reply-preview',(m.content||m.title||'帖子 '+(m.threadId||'—')).slice(0,160)),node('span','hint',m.threadId?'帖子 '+m.threadId:m.title||'回复记录'));
     button.onclick=()=>selectQueueReply(item.id);box.append(button);
    }
    $('tieba-queue-page').textContent=data.view==='replies'?recordRange(data.offset,data.completed.length,data.counts.completed):'第 '+(Math.floor(data.offset/data.limit)+1)+' 页';
@@ -205,21 +259,68 @@
  }
  async function refreshQueue(offset=queueData?.offset??0){
   if(queueLoading||!dialog.open||$('tieba-account-panel').hidden||document.hidden)return;
-  queueLoading=true;updateQueuePagination();
+  queueLoading=true;updateQueuePagination();const requestedFilter=queueFilter;
   try{
-   const params=new URLSearchParams({offset:String(offset),replies:'1'});
+   const params=new URLSearchParams({offset:String(offset),replies:'1',filter:requestedFilter});
    if(selectedQueueId)params.set('selectedId',selectedQueueId);
    const data=await api('tieba/queue?'+params);
-   renderQueue(data);
+   if(requestedFilter===queueFilter)renderQueue(data);
   }catch(e){queueKey='';$('tieba-queue-counts').textContent='队列读取失败：'+e.message;}
-  finally{queueLoading=false;updateQueuePagination();}
+  finally{queueLoading=false;updateQueuePagination();if(requestedFilter!==queueFilter)void refreshQueue(0);}
  }
  $('tieba-queue-refresh').onclick=()=>void refreshQueue();
  $('tieba-queue-prev').onclick=()=>{if(queueData?.offset)void refreshQueue(Math.max(0,queueData.offset-queueData.limit));};
  $('tieba-queue-next').onclick=()=>{if(queueData?.hasMore)void refreshQueue(queueData.offset+queueData.limit);};
- setInterval(()=>void refreshQueue(),2500);
+ let pendingLoading=false,pendingKey='';
+ function countdown(at){
+  const seconds=Math.max(0,Math.ceil((at-Date.now())/1000));
+  return seconds?seconds+' 秒后':'可放行，等待执行';
+ }
+ function updateCountdowns(){
+  if(!dialog.open||$('tieba-pending-panel').hidden||document.hidden)return;
+  for(const label of $('tieba-pending-panel').querySelectorAll('[data-tieba-countdown]'))label.textContent=countdown(Number(label.dataset.tiebaCountdown));
+ }
+ function until(at){
+  const label=node('strong','tieba-pending-clock',countdown(at));label.dataset.tiebaCountdown=at;return label;
+ }
+ async function refreshPending(){
+  if(pendingLoading||!dialog.open||document.hidden)return;
+  pendingLoading=true;
+  try{
+   const data=await api('tieba/queue?publications=1'),items=data.active,counts=data.counts;
+   if(!Array.isArray(items))throw Error('队列接口未就绪');
+   const badge=$('tieba-pending-count');badge.hidden=!items.length;badge.textContent=items.length;
+   $('tieba-pending-status').textContent='进行中 '+counts.running+' · 排队 '+counts.queued+(data.workerBusy&&!counts.running?' · 工作器正在执行其他操作':'');
+   const next=data.publishPacing?.nextPublishAt,key=JSON.stringify([next,items]);
+   if(key!==pendingKey){
+    pendingKey=key;
+    const release=$('tieba-pending-release'),box=$('tieba-pending-list');
+    if(next)release.replaceChildren('下次放行 '+paceTime(next)+' · ',until(next));
+    else release.textContent='当前无间隔等待';
+    box.replaceChildren();
+    if(!items.length)box.append(node('p','tieba-queue-empty','没有正在处理或排队的发言。'));
+    for(const item of [...items].sort((a,b)=>Number(a.state==='queued')-Number(b.state==='queued'))){
+     const m=item.metadata||{},card=node('article','tieba-queue-card');
+     const type=m.action==='thread'?'发新帖':m.action==='comment'||['floor','subreply'].includes(m.replyScope)?'楼中楼':m.action==='reply'?'回帖':'发言';
+     card.append(node('strong','tieba-reply-preview',m.title||m.content||(m.threadId?'帖子 '+m.threadId:type)));
+     card.append(node('span','hint',type+' · '+(item.state==='queued'?'第 '+item.queuePosition+' 位':queueLabel(item))));
+     card.append(node('span','hint','入队 '+queueTime(item.createdAt)));
+     if(item.scheduledAt){
+      const when=node('span','hint','预计 '+queueTime(item.scheduledAt)+' · ');when.append(until(item.scheduledAt));card.append(when);
+     }else if(item.startedAt)card.append(node('span','hint','已开始 '+queueTime(item.startedAt)));
+     box.append(card);
+    }
+   }
+   updateCountdowns();
+  }catch(e){$('tieba-pending-status').textContent='排队状态读取失败：'+e.message;}
+  finally{pendingLoading=false;}
+ }
+ $('tieba-pending-refresh').onclick=()=>void refreshPending();
+ setInterval(()=>{void refreshQueue();void refreshPending();},2500);
+ setInterval(updateCountdowns,1000);
  function render(s){
   currentStatus=s;
+  if(Object.hasOwn(s,'latestAttempt'))lastAttempt=s.latestAttempt;
   const interactive=['publication','application'].includes(s.interaction),application=s.moderatorWork&&s.moderatorWork.created>=(s.publicationWork?.created||0)?s.moderatorWork:null;
   const lines=[labels[s.state]||s.state];
   if(s.identity)lines.push('当前账号：'+s.identity.name+' · UID '+s.identity.id);
@@ -231,6 +332,9 @@
   if(s.lastError)lines.push('最近操作：'+failureText(s.lastError.code,s.publicationWork?.result?.receipt));
   if(!application&&s.publication?.needsHuman)lines.push('这次请求收到贴吧安全验证（'+s.publication.error+'）。已登录不代表发言验证已通过。'+(s.publication.detectedAt?'\n触发时间：'+new Date(s.publication.detectedAt).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong'}):''));
   $('tieba-status').textContent=lines.join('\n');$('tieba-status').style.whiteSpace='pre-wrap';
+  const accountBadge=$('tieba-account-badge');accountBadge.textContent=s.state==='logged_in'?'已登录':s.state==='waiting_login'?'等待登录':s.state==='expired'?'登录失效':'待确认';accountBadge.dataset.tone=s.state==='logged_in'?'success':s.state==='waiting_login'?'live':'neutral';
+  const facts=$('tieba-account-facts');facts.replaceChildren();
+  for(const [label,value] of [['当前账号',s.identity?s.identity.name+' · '+s.identity.id:s.lastIdentity?s.lastIdentity.name+'（上次确认）':'尚未确认'],['账号状态',labels[s.state]||s.state],['官网窗口',s.browserRunning?'运行中':'已关闭'],['最近验证',s.verifiedAt?queueTime(s.verifiedAt):'尚未验证']]){const pair=node('div');pair.append(node('dt','',label),node('dd','',value));facts.append(pair);}
   screenMode=interactive?s.interaction:'login';
   $('tieba-login').hidden=!(s.browserRunning&&(s.state==='waiting_login'||['publication','application'].includes(s.interaction)));
   $('tieba-start').disabled=interactive;$('tieba-check').disabled=interactive;
@@ -242,17 +346,18 @@
   $('tieba-publication-preview').textContent=w?(w.input.action==='thread'?'新主题 '+w.input.title:'帖子 '+w.input.threadId)+'\n'+w.input.content:'';
   const stepNames={open_thread:'打开目标帖子',wait_reply_entry:'等待回复入口',locate_reply_target:'定位目标楼层或子回复',fill_reply_editor:'打开并填写编辑器',open_forum:'打开目标吧',wait_thread_entry:'等待发帖入口',wait_thread_editor:'加载新帖编辑器'};
   const receipt=w?.result?.receipt;
+  if(receipt?.reason==='pre_submit_stalled'||receipt?.submission?.phase==='pre_submit_stalled')$('tieba-publication-state').textContent=failureText(w?.result?.error,receipt);
   if(receipt?.step)$('tieba-publication-state').textContent+='\n卡在：'+(stepNames[receipt.step]||receipt.step);
   if(receipt?.page?.notice)$('tieba-publication-state').textContent+='\n官网文字：'+receipt.page.notice;
   if(receipt?.pageNotice)$('tieba-publication-state').textContent+='\n官网页面提示：'+receipt.pageNotice;
   if(receipt?.submission)$('tieba-publication-state').textContent+='\n'+(submissionStages[receipt.submission.phase]||receipt.submission.phase);
-  let evidenceBox=$('tieba-evidence');if(!evidenceBox){evidenceBox=node('section');evidenceBox.id='tieba-evidence';$('tieba-publication').after(evidenceBox);}
+  let evidenceBox=$('tieba-evidence');if(!evidenceBox){evidenceBox=node('details','tieba-card tieba-collapse');evidenceBox.id='tieba-evidence';$('tieba-publication').append(evidenceBox);}
   const shots=w?.evidence||[],key=(w?.requestId||'')+JSON.stringify(shots);
   let diagnosticBox=$('tieba-diagnostic');if(!diagnosticBox){diagnosticBox=node('details');diagnosticBox.id='tieba-diagnostic';$('tieba-publication').append(diagnosticBox);}diagnosticBox.hidden=!w?.result?.error;
   if(w?.result?.error){diagnosticBox.replaceChildren(node('summary','','技术诊断（内部码、失败步骤和正文差异）'),node('pre','',JSON.stringify({code:w.result.error,step:receipt?.step,click:receipt?.click,contentDifference:receipt?.contentDifference,page:receipt?.page,httpAttempts:receipt?.httpAttempts,notSubmitted:receipt?.notSubmitted,pageNotice:receipt?.pageNotice,submission:receipt?.submission},null,2)));}
   if(key!==evidenceKey){evidenceKey=key;for(const u of evidenceUrls)URL.revokeObjectURL(u);evidenceUrls=[];evidenceBox.replaceChildren();
-   if(shots.length)evidenceBox.append(node('h3','','本次官网现场截图'));
-   const shotNames={after_reply_click:'点击回复按钮后',after_reply_click_retry:'重新打开未展开的回复框后',prepared:'正文已填好（未提交）',prepare_failed:'自动准备失败现场',before_submit:'点击发布前',after_click:'点击发布后',response:'请求返回后的官网画面',unconfirmed:'未收到确认时的画面',waiting:'等待官网发布过程中的最新画面',submission_ended:'本次提交结束时的现场'};
+   evidenceBox.hidden=!shots.length;evidenceBox.append(node('summary','','本次官网现场截图 · '+shots.length));
+   const shotNames={pre_submit_stalled:'发布前停滞（尚未提交）',after_reply_click:'点击回复按钮后',after_reply_click_retry:'重新打开未展开的回复框后',prepared:'正文已填好（未提交）',prepare_failed:'自动准备失败现场',before_submit:'点击发布前',after_click:'点击发布后',response:'请求返回后的官网画面',unconfirmed:'未收到确认时的画面',waiting:'等待官网发布过程中的最新画面',submission_ended:'本次提交结束时的现场'};
    for(const shot of shots){const d=node('details'),summary=node('summary','',(shotNames[shot.stage]||shot.stage)+' · '+new Date(shot.at).toLocaleTimeString('zh-CN',{timeZone:'Asia/Hong_Kong',hour12:false}));d.append(summary);const requestId=w.requestId;
     d.addEventListener('toggle',async()=>{if(!d.open||d.dataset.loaded)return;d.dataset.loaded='loading';const note=node('p','hint','正在读取此次操作实际截图…');d.append(note);try{const r=await fetch('/api/tieba/publication-frame?'+new URLSearchParams({requestId,evidence:shot.id}),{headers:{authorization:'Bearer '+token},cache:'no-store'});if(!r.ok)throw Error((await r.json()).error||'截图读取失败');const u=URL.createObjectURL(await r.blob());if(!d.isConnected){URL.revokeObjectURL(u);return;}evidenceUrls.push(u);const img=node('img');img.src=u;img.alt=summary.textContent;img.style.maxWidth='100%';d.append(img);note.remove();d.dataset.loaded='yes';}catch(e){note.textContent=e.message;delete d.dataset.loaded;}});evidenceBox.append(d);
    }
@@ -264,13 +369,27 @@
   $('tieba-publication-start').hidden=stage==='confirmed';
   const activeId=application?.requestId||w?.requestId,a=lastAttempt&&(lastAttempt.requestId===activeId||lastAttempt.startedAt>=Math.max(w?.created||0,application?.created||0))?lastAttempt:null,matched=a?.requestId===activeId,result=application?.result|| (matched&&w?.result?w.result:a?.result||w?.result),request=application?{action:'moderator_application',content:application.declaration,forumId:application.forumId}:a?.request||w?.input;
   if(shownRequest&&shownRequest!==activeId){shownRequest=undefined;frameSerial++;screen.hidden=true;screen.removeAttribute('src');if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=undefined;}}
-  const blocked=result?.error&&!(result.error==='TIEBA_PUBLICATION_NEEDS_HUMAN'&&!s.publication?.needsHuman)||!application&&s.publication?.needsHuman&&stage==='challenge';
+  const queued=result?.deliveryStatus==='queued'||result?.queued===true;
+  const problem=!queued&&(s.attention?.problem??(result?.error&&!(result.error==='TIEBA_PUBLICATION_NEEDS_HUMAN'&&!s.publication?.needsHuman)||!application&&s.publication?.needsHuman&&stage==='challenge'));
+  const blocked=problem&&!s.attentionDismissed;
   $('tieba-attention').hidden=!blocked;
   $('tieba-alert').hidden=!blocked;
   const issue=result?.issue,detail=issue?'参数 '+issue.field+'：'+issue.reason:result?.receipt?.errorMessage||(result?.error?failureText(result.error,result?.receipt):'')||(application?'官网申请结果尚未确认':'贴吧要求安全验证');
   $('tieba-alert-text').textContent=(application?'肥鱼的小吧主申请需要处理：':'肥鱼的贴吧发言需要处理：')+detail;
-  $('tieba-attempt').hidden=!a&&!w&&!application;
-  $('tieba-attempt-detail').textContent=[application?'小吧主申请 · 吧ID '+application.forumId:request?.threadId?'帖子 '+request.threadId:request?.title?'新主题 '+request.title:'',result?.stage==='input_validation'?'本地参数校验未通过，请求没有发往贴吧':result?.stage==='running'?'正在处理这次请求':result?.applicationStatus==='pending_approval'?'申请已提交，等待吧主审批':result?.applicationStatus==='already_moderator'?'官网确认已是小吧主':result?.applicationStatus==='eligible'?'官网允许填写申请感言，尚未提交':result?.published?'已确认公开可见':result?.deliveryStatus==='accepted'?'贴吧已接收，正在核对公开结果':detail,request?.content||'',a?.requestId||activeId||''].filter(Boolean).join('\n');
+  $('tieba-attempt').hidden=!a&&!w&&!application||!!w&&!application&&(!a||matched)&&!queued;
+  const queuedDetail=queued?['已进入贴吧通用排队，按1分钟到1分20秒随机间隔自动发送，勿重试勿重复发',result.queuePosition?'排队第 '+result.queuePosition+' 条':'',result.scheduledAt?'预计 '+paceTime(result.scheduledAt)+' 发送（香港时间）':''].filter(Boolean).join(' · '):'';
+  $('tieba-attempt-detail').textContent=[application?'小吧主申请 · 吧ID '+application.forumId:request?.threadId?'帖子 '+request.threadId:request?.title?'新主题 '+request.title:'',queued?queuedDetail:result?.stage==='input_validation'?'本地参数校验未通过，请求没有发往贴吧':result?.stage==='running'?'正在处理这次请求':result?.applicationStatus==='pending_approval'?'申请已提交，等待吧主审批':result?.applicationStatus==='already_moderator'?'官网确认已是小吧主':result?.applicationStatus==='eligible'?'官网允许填写申请感言，尚未提交':result?.published?'已确认公开可见':result?.deliveryStatus==='accepted'?'贴吧已接收，正在核对公开结果':detail,request?.content||'',a?.requestId||activeId||''].filter(Boolean).join('\n');
+  for(const [id,item] of [['tieba-attempt',s.attention],['tieba-publication',w]]){
+   const badge=$(id+'-badge'),needsAttention=id==='tieba-attempt'?problem:item?.problem;
+   const waiting=id==='tieba-attempt'&&queued;
+   badge.textContent=waiting?'已进入排队':item?.dismissed?'已忽略':needsAttention?'需处理':'当前记录';badge.dataset.tone=waiting?'live':item?.dismissed?'muted':needsAttention?'warning':'neutral';
+   $(id).dataset.tone=badge.dataset.tone;
+   $(id+'-ignore').hidden=!needsAttention&&!item?.dismissed;
+  }
+  for(const button of document.querySelectorAll('[data-tieba-dismiss="current"],[data-tieba-dismiss="publication"]')){
+   const item=button.dataset.tiebaDismiss==='publication'?w:s.attention;
+   button.disabled=!item?.requestId;button.textContent=item?.dismissed?'取消忽略':'忽略当前条目';
+  }
   if(blocked){
    const key=(a?.requestId||activeId||'')+':'+detail+':'+(w?.result?.receipt?.httpAttempts||0);
    if(key!==announced){announced=key;pendingOpen=true;}
@@ -296,9 +415,11 @@
  async function task(work,label='正在读取，请稍候…'){if(working){$('tieba-operation').textContent='上一项操作仍在等待反馈，可关闭窗口；不会重复提交。';return;}working=true;rowError.textContent='';if(selectedQueueId)rowProgress.textContent=label;$('tieba-error').textContent='';$('tieba-operation').textContent=label;dialog.setAttribute('aria-busy','true');try{await work();}catch(e){$('tieba-error').textContent='操作未完成：'+failureText(e.message,currentStatus?.publicationWork?.result?.receipt);if(selectedQueueId)rowError.textContent=$('tieba-error').textContent;await status().catch(()=>{});}finally{rowProgress.textContent='';working=false;$('tieba-operation').textContent='';dialog.removeAttribute('aria-busy');}}
  let sectionsRevision,sectionsLoading=false;
  const sectionsMessage=$('tieba-sections-message'),sectionsForm=$('tieba-sections-form');
- function showTiebaTab(sections){
-  $('tieba-account-panel').hidden=sections;$('tieba-sections-panel').hidden=!sections;
-  $('tieba-account-tab').setAttribute('aria-pressed',String(!sections));$('tieba-sections-tab').setAttribute('aria-pressed',String(sections));
+ function showTiebaTab(tab){
+  for(const name of ['account','pending','sections']){
+   $('tieba-'+name+'-panel').hidden=name!==tab;
+   $('tieba-'+name+'-tab').setAttribute('aria-pressed',String(name===tab));
+  }
   dialog.scrollTop=0;
  }
  async function loadSections(){
@@ -314,8 +435,9 @@
   }catch(e){sectionsMessage.textContent='暂时读不到实时分区，请重试。';$('tieba-sections-retry').hidden=false;}
   finally{sectionsLoading=false;}
  }
- $('tieba-account-tab').onclick=()=>{showTiebaTab(false);void refreshQueue();};
- $('tieba-sections-tab').onclick=()=>{showTiebaTab(true);if(!sectionsRevision)void loadSections();};
+ $('tieba-account-tab').onclick=()=>{showTiebaTab('account');void refreshQueue();};
+ $('tieba-pending-tab').onclick=()=>{showTiebaTab('pending');void refreshPending();};
+ $('tieba-sections-tab').onclick=()=>{showTiebaTab('sections');if(!sectionsRevision)void loadSections();};
  $('tieba-sections-retry').onclick=loadSections;
  sectionsForm.onsubmit=async e=>{
   e.preventDefault();const button=$('tieba-sections-save');if(button.disabled||sectionsLoading)return;button.disabled=true;
@@ -329,9 +451,9 @@
   }finally{button.disabled=false;}
  };
  const input=v=>task(async()=>{if(!displayedFrame?.scene||screen.hidden||displayedFrame.scene!==currentStatus?.browserScene)throw Error('TIEBA_PUBLICATION_WINDOW_CHANGED');const s=await call('tieba/input',{...v,...displayedFrame});render(s);if(s.frameImage)applyInlineFrame(s,displayedFrame.scene,displayedFrame.requestId);else if(s.browserRunning)await frame();},'正在处理点击；如果点击了发布，正在等待官网回执…');
- function open(){pendingOpen=false;closeDrawers(false);if(!dialog.open)dialog.showModal();void refreshQueue();void task(async()=>{const s=await status();if(s.browserRunning&&(s.state==='waiting_login'||['publication','application'].includes(s.interaction)))await frame();});}
+ function open(){pendingOpen=false;closeDrawers(false);if(!dialog.open)dialog.showModal();void refreshQueue();void refreshPending();void task(async()=>{const s=await status();if(s.browserRunning&&(s.state==='waiting_login'||['publication','application'].includes(s.interaction)))await frame();});}
  function maybeOpen(){if(!pendingOpen||document.hidden||document.querySelector('dialog[open]')&&!dialog.open)return;if(!dialog.open)open();else pendingOpen=false;}
- $('tieba-button').onclick=open;$('tieba-alert-open').onclick=()=>{selectQueueReply(undefined);open();showTiebaTab(false);};
+ $('tieba-button').onclick=open;$('tieba-alert-open').onclick=()=>{showTiebaTab('account');selectQueueReply(undefined);open();};
  $('tieba-start').onclick=()=>task(async()=>{render(await call('tieba/start',{}));await frame();},'正在打开官方登录页面…');
  $('tieba-account-refresh').onclick=()=>task(async()=>{const a=await api('tieba/account',{});$('tieba-following').textContent=a.account.name+' · UID '+a.account.id+'\n'+a.following.map(f=>f.name+'吧 · '+f.id).join('\n');$('tieba-posting-policy').textContent=(a.posting.needsHuman?'上次请求收到贴吧验证要求；不阻止新的独立请求。\n':'')+(a.posting.mode==='preview'?'预演模式：只保存，不真实发布；仅已关注的贴吧允许准备发言。':a.posting.mode==='live'?'仅已关注的贴吧允许真实发言；其他贴吧只读。':'发言配置不可读，当前不能发帖。');});
  let historyPage,historyLoading=false;

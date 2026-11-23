@@ -133,6 +133,10 @@ test('Neon endpoints read actual record snapshots and interrupt code and candida
   for(const [phase,route] of [['code','neon/interrupt'],['candidate','activity/interrupt'],['code','activity/interrupt']] as const){
    const id=randomUUID(),created=Date.now(),controller=new AbortController();
    jobs.save({id,owner,phase,goal:'处理开发任务',criteria:[],created,modified:created,round:0,requests:[],trials:[],version:1,grant:'lease'});
+   const queued=randomUUID();
+   jobs.record({source:queued,messageId:queued,text:'积压追问',at:created});
+   jobs.request(queued,created,{action:'send',brief:'积压追问',goal:'积压追问',criteria:[]});
+   assert.equal(jobs.pending('send')?.source,queued);
    writePrivateAtomic(f.root,developmentInbox+'/status.json',JSON.stringify({owner,runningTaskId:id,tasks:jobs.status(owner)}));
    const active=await (await read('activity/active')).json() as any;
    assert.equal(active.development[0].id,id);
@@ -146,6 +150,7 @@ test('Neon endpoints read actual record snapshots and interrupt code and candida
    });
    assert.equal(jobs.get(id)?.phase,'cancelled');
    assert.equal(jobs.get(id)?.reason,webCancelReason);
+   assert.equal(jobs.pending('send'),undefined);
    assert.equal(controller.signal.reason.message,'DEV_GRANT_REVOKED');
   }
   assert.equal(fs.existsSync(path.join(f.root,developmentInbox,'web-cancel.json')),false);

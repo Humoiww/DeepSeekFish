@@ -10,6 +10,7 @@ import {TiebaBrowser} from './tieba-browser.js';
 import {TiebaOperationQueue} from '../tieba/queue.js';
 import {publishInput} from '../tieba/posting.js';
 import {FishError} from '../types.js';
+import {ProviderError} from '../diagnostics.js';
 import {stageTiebaImage,tiebaImageId,TIEBA_IMAGE_BYTES} from '../tieba/images.js';
 
 const base='/srv/deepseekfish/capture',browser=base+'/browser/chrome-headless-shell';
@@ -63,7 +64,7 @@ async function dispatchTieba(action:string,input:any):Promise<any>{
  if(action==='account')return tieba.account();
  if(action==='verify')return tieba.verifyPublication(input.requestId);
  if(action==='history')return tieba.postingHistory(input.offset??0);
- if(action==='queue')return operations.snapshot(input.offset??0,input.activeOnly??false,input.replies??false,input.selectedId);
+ if(action==='queue')return input.publications?operations.publicationQueue():operations.snapshot(input.offset??0,input.activeOnly??false,input.replies??false,input.selectedId);
  if(action==='replies')return tieba.replies(input.page);
  if(action==='mentions')return tieba.mentions(input.page);
  if(action==='publish')return tieba.publish(input.input,input.requestId,input.authorizedRetryOf);
@@ -110,16 +111,20 @@ const server=createServer(async(req,res)=>{
       const action=req.url.slice(7);
       if(!input||Array.isArray(input)||typeof input!=='object')throw new FishError('TIEBA_INPUT_INVALID');
       if(!['input','read','publish','replies','mentions','verify','publication-start','publication-submit','publication-frame','publication-evidence','moderator','queue','history'].includes(action)&&Object.keys(input).length)throw new FishError('TIEBA_INPUT_INVALID');
-      const allowed:Record<string,string[]>={'publication-start':['requestId'],'publication-submit':['requestId'],queue:['offset','activeOnly','replies','selectedId'],history:['offset'],verify:['requestId'],replies:['page'],mentions:['page'],publish:['input','requestId','authorizedRetryOf'],moderator:['input','requestId'],read:['url'], 'publication-frame':['requestId'],'publication-evidence':['requestId','id']};
+      const allowed:Record<string,string[]>={'publication-start':['requestId'],'publication-submit':['requestId'],queue:['offset','activeOnly','replies','selectedId','publications'],history:['offset'],verify:['requestId'],replies:['page'],mentions:['page'],publish:['input','requestId','authorizedRetryOf'],moderator:['input','requestId'],read:['url'], 'publication-frame':['requestId'],'publication-evidence':['requestId','id']};
       if(allowed[action]&&Object.keys(input).some(k=>!allowed[action].includes(k)))throw new FishError('TIEBA_INPUT_INVALID');
       if(['input','publication-start','publication-submit'].includes(action)&&input.requestId!==undefined&&(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>240))throw new FishError('TIEBA_REQUEST_ID_INVALID');
       if(action==='input'&&input.scene!==undefined&&(typeof input.scene!=='string'||!input.scene||input.scene.length>64))throw new FishError('TIEBA_INPUT_INVALID');
       if(['queue','history'].includes(action)&&input.offset!==undefined&&(!Number.isSafeInteger(input.offset)||input.offset<0||input.offset>100000))throw new FishError('TIEBA_INPUT_INVALID');
       if(action==='queue'&&input.activeOnly!==undefined&&typeof input.activeOnly!=='boolean')throw new FishError('TIEBA_INPUT_INVALID');
       if(action==='queue'&&input.replies!==undefined&&typeof input.replies!=='boolean')throw new FishError('TIEBA_INPUT_INVALID');
+      if(action==='queue'&&input.publications!==undefined&&typeof input.publications!=='boolean')throw new FishError('TIEBA_INPUT_INVALID');
       if(action==='queue'&&input.selectedId!==undefined&&(typeof input.selectedId!=='string'||!input.selectedId||input.selectedId.length>240))throw new FishError('TIEBA_INPUT_INVALID');
       if(action==='publish'){input.input=publishInput(input.input);if(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>240)throw new FishError('TIEBA_REQUEST_ID_INVALID');}
+      if(action==='verify'&&(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>240))throw new FishError('TIEBA_REQUEST_ID_INVALID');
+      const pending=action==='verify'?(operations.pendingPublication(input.requestId)??operations.publicationFallback(input.requestId)):undefined;
       if(['status','history','queue','publication-evidence'].includes(action))value=await dispatchTieba(action,input);
+      else if(pending)value=pending;
       else {
        const s=tieba.status(),work=s.interaction==='application'?s.moderatorWork:s.publicationWork;
        const selectRecord=action==='publication-start'&&input.requestId!==undefined;
@@ -143,10 +148,10 @@ const server=createServer(async(req,res)=>{
           // A queued close belongs to the old window. If it has already ended,
           // there is nothing to close; never close a later user's new page.
           if(action==='close')return {...current,closed:false,closeReason:'window_changed',notice:'原窗口已结束或切换，本次关闭已跳过，当前窗口未被关闭。'};
-          throw new FishError('TIEBA_PUBLICATION_WINDOW_CHANGED');
+          throw new ProviderError('TIEBA_PUBLICATION_WINDOW_CHANGED',{stage:'input_validation',requestSent:false});
          }
          return dispatchTieba(action,input);
-        }),{...(action==='publish'?{payload:input,key:'publish:'+input.requestId}:['frame','publication-frame'].includes(action)?{key:action+':'+(pinned??'login')}:{})});
+        }),{...(action==='publish'?{payload:input,key:'publish:'+input.requestId,returnImmediatelyIfQueued:true}:['frame','publication-frame'].includes(action)?{key:action+':'+(pinned??'login')}:{})});
        }
       }
       clearInterval(heartbeat);if(!res.destroyed)res.end(JSON.stringify(streaming?{rpcVersion:1,value}:value));return;

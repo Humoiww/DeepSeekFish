@@ -53,10 +53,103 @@ const tools=[tool('list_files','列出当前会话工作区内的文件'),
   ...webTools,...browseTools.filter(t=>t.function.name==='browse_page'),...knowledgeTools,
   tool('queue_codex','提出独立 Codex 任务，只进入待审队列，不能执行或批准任务',{task:{type:'string'}},['task'])];
 
+/** Human WebUI acknowledgments only. Never write to the account worker/journal. */
+export function createTiebaDismissals(store:Store){
+  store.db.exec('CREATE TABLE IF NOT EXISTS tieba_dismissed_issues(request_id TEXT PRIMARY KEY,dismissed_at INTEGER NOT NULL)');
+  const watermark=()=>Number(store.getMeta('tieba:dismissed-all-at')??0);
+  const problem=(item:any)=>!['running','queued','cleaning'].includes(item?.state)&&
+    !(item?.result?.publicVerified||item?.result?.published||item?.result?.visibility==='public'||item?.result?.outcome==='public')&&
+    !!(item?.result?.error||['challenge','failed','unknown','removed','interrupted','timeout'].includes(item?.result?.outcome));
+  function annotate(item:any){
+    if(!item)return item;
+    const requestId=item.metadata?.requestId??item.requestId??item.result?.requestId??item.id;
+    const explicit=typeof requestId==='string'?store.db.prepare('SELECT dismissed_at FROM tieba_dismissed_issues WHERE request_id=?').get(requestId) as {dismissed_at:number}|undefined:undefined;
+    const at=Math.max(item.createdAt??item.created??item.startedAt??0,item.finishedAt??0,item.updatedAt??0,item.at??0);
+    const isProblem=problem(item),dismissed=explicit?explicit.dismissed_at>0:isProblem&&at>0&&at<=watermark();
+    return {...item,problem:isProblem,dismissed};
+  }
+  function queue(data:any){
+    const active=(data.active??[]).map(annotate),completed=(data.completed??[]).map(annotate);
+    const items=[...active,...completed];
+    return {...data,active,completed,...(data.selected?{selected:annotate(data.selected)}:{}),dismissedAllAt:watermark(),
+      issueCounts:{attention:items.filter((i:any)=>i.problem&&!i.dismissed).length,dismissed:items.filter((i:any)=>i.dismissed).length}};
+  }
+  function attempt(value:any){return annotate(value&&{...value,createdAt:value.startedAt,state:value.result?.stage==='running'?'running':'done'});}
+  function status(value:any,latestAttempt:any){
+    const work=value.publicationWork,application=value.moderatorWork&&value.moderatorWork.created>=(work?.created??0)?value.moderatorWork:null;
+    const active=application??work,activeId=active?.requestId;
+    const a=latestAttempt&&(latestAttempt.requestId===activeId||latestAttempt.startedAt>=Math.max(work?.created??0,application?.created??0))?latestAttempt:null;
+    const matched=a?.requestId===activeId;
+    const result=application?.result??(matched&&work?.result?work.result:a?.result??work?.result);
+    const needsHuman=!application&&value.publication?.needsHuman;
+    const challenge=needsHuman&&(!result||work?.stage==='challenge'&&!result.error&&!result.outcome);
+    const attention=annotate({requestId:application?.requestId??a?.requestId??activeId,
+      createdAt:application?application.created:a?.startedAt??work?.created,
+      finishedAt:application?application.updatedAt:Math.max(a?.at??0,a?.finishedAt??0,work?.updatedAt??0,needsHuman?value.publication.detectedAt??0:0),
+      state:result?.stage==='running'||!a&&['preparing','started'].includes(active?.stage)?'running':'done',
+      result:result?.error==='TIEBA_PUBLICATION_NEEDS_HUMAN'&&!value.publication?.needsHuman?undefined:
+        challenge?{...result,error:'TIEBA_PUBLICATION_CHALLENGE',outcome:'challenge'}:result});
+    const annotateWork=(w:any)=>w?annotate({...w,state:['preparing','started'].includes(w.stage)?'running':'done'}):w;
+    return {...value,...(work?{publicationWork:annotateWork(work)}:{}),...(value.moderatorWork?{moderatorWork:annotateWork(value.moderatorWork)}:{}),
+      latestAttempt:attempt(latestAttempt),attention,attentionDismissed:attention.dismissed,dismissedAllAt:watermark()};
+  }
+  function dismiss(input:unknown){
+    const b=input as Record<string,unknown>,validId=(id:unknown):id is string=>typeof id==='string'&&id.trim().length>0&&id.length<=240&&!/[\u0000-\u001f\u007f]/.test(id);
+    if(!b||typeof b!=='object'||Array.isArray(b))throw new FishError('TIEBA_INPUT_INVALID');
+    const keys=Object.keys(b),all=b.all===true&&keys.every(k=>['all','requestIds'].includes(k))&&
+      (b.requestIds===undefined||Array.isArray(b.requestIds)&&b.requestIds.length<=500&&b.requestIds.every(validId));
+    const single=validId(b.requestId)&&(keys.length===1||b.restore===true&&keys.length===2&&keys.includes('restore'));
+    if(!all&&!single)throw new FishError('TIEBA_INPUT_INVALID');
+    const at=Date.now();
+    store.transaction(()=>{
+      if(all){
+        // A new dismiss-all also acknowledges items previously restored. The
+        // watermark covers completed problems on every page, never future work.
+        // Optional requestIds are hints, not explicit dismissals of active or
+        // successful items: only problems completed by this watermark qualify.
+        store.db.exec('DELETE FROM tieba_dismissed_issues WHERE dismissed_at=0');
+        store.setMeta('tieba:dismissed-all-at',String(at));
+      }else store.db.prepare('INSERT OR REPLACE INTO tieba_dismissed_issues VALUES (?,?)').run(b.requestId as string,b.restore===true?0:at);
+    });
+    return {ok:true,...(all?{all:true,dismissedAllAt:at}:{requestId:b.requestId,dismissed:b.restore!==true})};
+  }
+  return {queue,status,attempt,dismiss};
+}
+
 export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imageRunner?:ImageRunner,quotaReader?:QuotaReader,publicReader:PublicReader=readPublic,tieba=new TiebaAccountClient()){
   prepare(root);loadSecrets(root);
   const store=new Store(root,mock?'webui-mock.sqlite':'webui.sqlite');
   const budgetStore=new Store(root,mock?'webui-mock-budget.sqlite':'fish.sqlite');
+  const tiebaDismissals=createTiebaDismissals(store);
+  const tiebaAttempt=()=>JSON.parse(budgetStore.getMeta('tieba:last-attempt')??'null');
+  let replyHistory:{key:string;until:number;completed:any[]}|undefined;
+  async function tiebaReplyQueue(offset:number,activeOnly:boolean,selectedId:string|undefined,filter:string){
+    const first=await tieba.replyQueue(0,activeOnly,selectedId);
+    if(first.view!=='replies')return tiebaDismissals.queue(first);
+    const key=JSON.stringify([first.counts.completed,first.completed]);
+    let completed=[...first.completed],page=first;
+    // Filter before paginating, so ignored records on older pages remain
+    // reachable and the filter counts describe the entire reply queue.
+    if(!activeOnly){
+      if(replyHistory?.key===key&&replyHistory.until>Date.now())completed=[...replyHistory.completed];
+      else{
+        while(page.hasMore&&page.limit>0&&page.offset+page.limit<=100000){
+          const next=await tieba.replyQueue(page.offset+page.limit);
+          if(next.offset<=page.offset)break;
+          completed.push(...next.completed);page=next;
+        }
+        // Refresh the head each poll; avoid rereading every historical page
+        // on each 2.5-second UI refresh. Old-page edits refresh within 10s.
+        replyHistory={key,until:Date.now()+10000,completed};
+      }
+      if(first.selected)completed=completed.map(i=>i.id===first.selected.id?first.selected:i);
+    }
+    const annotated=tiebaDismissals.queue({...first,completed});
+    const matches=(i:any)=>filter==='dismissed'?i.dismissed:!i.dismissed&&(filter!=='attention'||i.problem);
+    const finished=annotated.completed.filter(matches),limit=first.limit;
+    return {...annotated,active:annotated.active.filter(matches),completed:finished.slice(offset,offset+limit),
+      counts:{...first.counts,totalCompleted:first.counts.completed,completed:finished.length},offset,limit,hasMore:offset+limit<finished.length};
+  }
   const affect=new Affect(budgetStore);
   const activity=new ActivityHistory(root,store,budgetStore);
   const exploration=new ExplorationState(budgetStore,()=>validateConfig({...loadConfig(root),...JSON.parse(budgetStore.getMeta('settings')??'{}'),...readQQSettings(root)}));
@@ -259,7 +352,10 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   async function close(){accepting=false;await qqBroker?.close();for(const c of active.values())c.abort();await tasks.stop();
     while(active.size)await new Promise(resolve=>setTimeout(resolve,10));await quota.close();store.close();budgetStore.close();}
   return {root,mock,token,
-    exploration,tieba,tiebaAttempt:()=>JSON.parse(budgetStore.getMeta('tieba:last-attempt')??'null'),
+    exploration,tieba,tiebaAttempt:()=>tiebaDismissals.attempt(tiebaAttempt()),
+    tiebaStatus:async()=>tiebaDismissals.status(await tieba.status(),tiebaAttempt()),
+    tiebaStatusView:(value:any)=>tiebaDismissals.status(value,tiebaAttempt()),
+    tiebaQueue:(data:any)=>tiebaDismissals.queue(data),tiebaReplyQueue,tiebaDismiss:(input:unknown)=>tiebaDismissals.dismiss(input),
     companion:()=>affect.status(),configureCompanion:(input:Record<string,unknown>)=>affect.configure(input),
     tiebaSections:()=>tiebaSectionSettings(root),saveTiebaSections:(input:unknown)=>saveTiebaSectionSettings(root,input),
     tiebaRead:async(input:any)=>{if(!input||Object.keys(input).some(k=>!['url','mode'].includes(k))||typeof input.url!=='string'||input.url.length>4096||!['public','account'].includes(input.mode)||!tiebaTarget(new URL(input.url)))throw new FishError('TIEBA_READ_TARGET_DENIED');return input.mode==='account'?tieba.read(input.url):browsePage(input.url,0,undefined,publicReader);},

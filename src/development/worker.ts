@@ -27,7 +27,7 @@ import {cancelWebDevelopment,consumeDevelopmentInterrupt,developmentInbox,proces
 import {bridgeText} from './bridge-records.js';
 import {develop} from './codex.js';
 import {codexAnswers,type Question} from './clarification.js';
-import {boundActivityChain,Jobs,type Job,type Lease} from './jobs.js';
+import {boundActivityChain,Jobs,type Job,type Lease,type Request} from './jobs.js';
 import {changesForRelease,compare,compiledTree,files,localTrial,prepareConversationWorkspace,prepareWorkspace,restoreAuthorityFiles,revision,transfer} from './workspace.js';
 
 const root=process.env.FISH_DEVELOPMENT_ROOT??'/srv/deepseekfish/development';
@@ -138,7 +138,8 @@ const hasText=(value:unknown):value is string=>typeof value==='string'&&!!value.
 function intake(){
  const current=jobs.list().find(job=>job.owner===owner);
  const busy=!!current||controllers.size>0;
- const request=jobs.pending(busy?'cancel':'all');if(!request)return;
+ const request=jobs.pending('cancel')??(busy?undefined:jobs.pending());
+ if(!request)return;
  try{
   jobs.tx(()=>{
    if(!permitted())throw new FishError('DEV_OWNER_UNAVAILABLE');
@@ -147,13 +148,14 @@ function intake(){
    if(action.action==='send'){
     const chain=boundActivityChain(shared,owner,request);
     if(chain!==undefined&&chain?.state!=='waiting_discussion'){jobs.handled(request);return;}
-    jobs.create(owner,request,action.goal,action.criteria,backend);
+    jobs.createPending(owner,request,backend);
    }else{
     if(!current||action.taskId&&action.taskId!==current.id){
+     if(!current&&!action.taskId)jobs.cancelMessages(Date.now());
      jobs.notify('source:'+request.source,'没有找到要停止的进行中任务。');
     }else{
      jobs.save({...current,phase:'cancelled',grant:'',reason:'主人停止',requests:[...current.requests,request]});
-     jobs.cancelMessages(request.at);
+     jobs.cancelMessages(Date.now());
      controllers.get(current.id)?.abort(new FishError('DEV_GRANT_REVOKED'));
     }
    }
@@ -220,7 +222,8 @@ async function packageRelease(job:Job,lease:Lease,cwd:string,tree:ReturnType<typ
  }
 }
 async function neon(lease:Lease,job:Job,cwd:string,signal:AbortSignal){
- if(!agy)throw new FishError('DEV_AGY_BRIDGE_UNAVAILABLE');
+ const client=agy;
+ if(!client)throw new FishError('DEV_AGY_BRIDGE_UNAVAILABLE');
  const first=job.requests[0],chain=!!first?.activityChainId;
  const intent=first?.intent;
  const brief=intent?.action==='send'?intent.brief.replace(/^\[activity-chain:[a-f0-9-]+\]\n/,''):job.goal;
@@ -231,22 +234,49 @@ async function neon(lease:Lease,job:Job,cwd:string,signal:AbortSignal){
   verify:'正在独立验证候选',review:'Neon小猫正在审阅候选',codex_retry:'Codex 正在按独立验收结果修复',
  };
  const track=()=>jobs.update(lease,{backend:'agy',agyStage:stage,turn,codexActivity:{turnId:turn,step:labels[stage],at:Date.now()}});
+ const supplement=(request:Request)=>({at:request.at,ownerMessage:diagnosticSafe(request.text).slice(0,8000),
+  brief:diagnosticSafe(request.intent?.action==='send'?request.intent.brief:request.text).slice(0,8000)});
+ let steering:Promise<void>|undefined,turnEnded=false;
+ const forward=async()=>{
+  while(!turnEnded&&!signal.aborted&&permitted()){
+   const request=jobs.pending('send');
+   if(!request)return;
+   jobs.guard(lease,'code');
+   const result=await client.steer({taskId:job.id,source:request.source,...supplement(request)},signal);
+   if(!result.accepted||!result.turnId||signal.aborted)return;
+   jobs.acceptSteer(lease,request.source,result.turnId);
+  }
+ };
+ const pollFollowUps=()=>{
+  if(chain||turnEnded||signal.aborted||steering||!['codex','codex_retry'].includes(stage))return;
+  steering=forward().catch(()=>{/* Unacknowledged requests remain pending. */}).finally(()=>{steering=undefined;});
+ };
  track();
  const reservation=ledger.reserve('developmentCodex',budgetGroup,owner),started=performance.now();
- const response=await agy.turn({taskId:job.id,mode:chain?'chain_discussion':'development',
+ const polling=setInterval(pollFollowUps,750);
+ polling.unref();
+ const response=await client.turn({taskId:job.id,mode:chain?'chain_discussion':'development',
   brief:diagnosticSafe(brief).slice(0,8000),ownerMessage:diagnosticSafe(first?.text??'').slice(0,8000),
   installedRevision:current,repairReason:job.repair?.slice(0,8000),
+  ...(job.requests.length>1?{supplements:job.requests.slice(1).map(supplement)}:{}),
   lastDelivery:chain?undefined:jobs.lastAgyDelivery(job.owner)},signal,status=>{
    if(status.stage&&status.stage!==stage){
     stage=status.stage;
     track();
    }
-  }).finally(()=>ledger.settle(reservation,undefined,performance.now()-started));
+   pollFollowUps();
+  }).finally(async()=>{
+   turnEnded=true;
+   clearInterval(polling);
+   await steering;
+   ledger.settle(reservation,undefined,performance.now()-started);
+  });
  drainWebCancel();
  signal.throwIfAborted();
  const changes=decodeAgyChanges(response,job.id);
  if(chain&&!['reply_only','escalated'].includes(response.outcome))throw new FishError('DEV_AGY_INVALID_RESPONSE');
  jobs.guard(lease,'code');
+ for(const receipt of response.steered??[])jobs.acceptSteer(lease,receipt.source,receipt.turnId);
  if(changes.length){
   if(revision(files(installation))!==current)throw new FishError('DEV_AGY_BASE_REVISION_MISMATCH');
   // Each bridge result is relative to the immutable production snapshot.
@@ -520,7 +550,10 @@ async function refreshBridgeStatus(){
   });
   await bridgeSync.refreshStatus();
   for(const id of bridgeCancels){
-   if(bridgeSync.status?.activeTaskId===id&&bridgeSync.status.busy)await agy.cancel(id);
+   if(bridgeSync.status?.activeTaskId===id&&bridgeSync.status.busy){
+    const receipt=await agy.cancel(id);
+    if(receipt.cancelled)jobs.tx(()=>jobs.cancelMessages(Date.now()));
+   }
    bridgeCancels.delete(id);
   }
  }catch{/* The last snapshot expires if the bridge cannot be reached. */}

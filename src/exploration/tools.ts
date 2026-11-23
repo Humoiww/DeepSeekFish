@@ -18,7 +18,9 @@ import {redact} from '../storage/db.js';
 import type {TiebaAccountClient} from '../tieba/client.js';
 import {webTools,browseTools} from '../search/tools.js';
 import type {SearchService} from '../search/provider.js';
-import type {browsePage,downloadWebImage} from '../search/public-web.js';
+import type {browsePage,downloadWebImage,PublicPoster} from '../search/public-web.js';
+import {reportTiebaConflictTool,TiebaConflictReports} from '../tieba/conflict-report.js';
+import {BIG_FISH_FORUM} from '../tieba/sections.js';
 import {QQMedia,mediaTools} from '../qq/media.js';
 import {QQImageLibrary} from '../qq/image-library.js';
 import {QQImageClient} from '../qq/image-client.js';
@@ -47,7 +49,7 @@ const extraTools=[
 export interface ExplorationServices{
  root:string;state:ExplorationState;cfg:()=>Config;ledger:Ledger;search:Pick<SearchService,'search'|'fetch'>;transport:Transport;tasks:Tasks;
  media:QQMedia;library:QQImageLibrary;images?:QQImageClient;people?:PersonMemory;qzone?:QzoneMemory;forwards?:ForwardRecords;externalPeople?:ExternalPeople;
- publisher?:()=>Promise<QzonePublisher>;browse?:typeof browsePage;download?:typeof downloadWebImage;tieba?:TiebaAccountClient;
+ publisher?:()=>Promise<QzonePublisher>;browse?:typeof browsePage;download?:typeof downloadWebImage;tieba?:TiebaAccountClient;poster?:PublicPoster;
  readRun:(id:string|undefined,offset:number,query?:string)=>unknown;
 }
 export type ExplorationToolRun=Pick<ExplorationRun,'id'|'owner'|'trigger'|'lock'>;
@@ -101,7 +103,7 @@ export class ExplorationTools{
     const copy=structuredClone(t);delete (copy.function.parameters.properties as any)?.remark;
     if(copy.function.name==='generate_image')copy.function.description='请GPT小姐画图，参考图与画面由你选择；返回图库ID，是否发送由你决定。';return copy;
   });
-  return [...extraTools.filter(t=>t.function.name!=='read_curiosity'||s.cfg().curiosityPublicSearch).filter(t=>t.function.name!=='list_conversations'||s.cfg().groupChatSearch),recall,...(s.externalPeople?[externalPeopleTool]:[]),...contextTools,...knowledgeTools,...(s.cfg().search?[...this.tiebaCapabilities,...webTools,...browseTools]:[]),...chat,
+  return [...extraTools.filter(t=>t.function.name!=='read_curiosity'||s.cfg().curiosityPublicSearch).filter(t=>t.function.name!=='list_conversations'||s.cfg().groupChatSearch),recall,...(s.externalPeople?[externalPeopleTool]:[]),...contextTools,...knowledgeTools,...(s.cfg().search?[...this.tiebaCapabilities,...webTools,...browseTools,reportTiebaConflictTool]:[]),...chat,
     activityChainStatusTool,...memoryIndexTools,...imageLibraryTools(),...(s.transport.attachment?fileTools():[]),
     ...mediaTools([]),...(s.forwards?forwardTools:[]),...(settings.allowPublicPosts&&s.publisher?[tool('publish_qzone','在你自己的QQ空间公开发布图文；与私聊不同，内容会公开。',{text:string,imageId:string},['text','imageId'])]:[])];
  }
@@ -138,6 +140,27 @@ export class ExplorationTools{
    return shared;
   }
   validateToolArguments(offered,args);
+  if(name==='report_tieba_conflict'){
+   s.state.assertOwner(this.run.owner);
+   const reports=new TiebaConflictReports(store,{poster:s.poster}),prepared=await reports.prepare(args,s.cfg().maxChars,this.signal);
+   if(!prepared.ready)return out(prepared.result);
+   this.guard();s.state.assertOwner(this.run.owner);
+   if(!s.cfg().search)throw new FishError('TOOL_NOT_ALLOWED');
+   const report=prepared.report;
+   const reservation=reports.reserve(this.run.owner,report,()=>{
+    privacy?.text(report.message);
+    if(hasToolMarkup(report.message)||report.message.length>s.cfg().maxChars)throw new FishError('INVALID_MESSAGE');
+   });
+   if(reservation.duplicate)return out(reservation.result);
+   const details={threadId:report.threadId,url:report.url,forum:BIG_FISH_FORUM,escalation:report.escalation};
+   const result=await this.effect('tieba-conflict',{reportId:reservation.id,...details,text:report.message},async(dispatch,received)=>{
+    s.state.assertOwner(this.run.owner);dispatch();await s.transport.send(m,report.message);
+    const receipt={...details,reported:true,sent:true,text:report.message,deliveryStatus:'confirmed'};
+    received(receipt);reports.record(reservation.id,receipt);this.recordSent('tieba-conflict:'+reservation.id,report.message);return receipt;
+   });
+   reports.record(reservation.id,result);
+   return out({...details,reported:false,sent:false,...result});
+  }
   if(name==='finish_exploration'){if(args.note!==undefined&&(typeof args.note!=='string'||args.note.length>4000))throw new FishError('INVALID_TOOL_ARGS');return {result:{finished:true,note:args.note??''},finish:true};}
   if(name==='write_curiosity')return out(s.state.writeJournal(this.run.id,args));
   if(name==='read_exploration')return out(s.readRun(args.runId,args.offset??0,args.query));

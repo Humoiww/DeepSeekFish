@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN" data-appearance="glass">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"><meta name="color-scheme" content="light"><title>DeepSeekFish · 本地助手</title><link rel="icon" href="/fish.svg" type="image/svg+xml"><script src="/appearance.js"></script><link rel="stylesheet" href="/web.css?v=neon"><script type="module" src="/web.js?asset=portrait-motion"></script><script src="/web.js?v=neon" defer></script><script src="/neon.js?v=conversation" defer></script><script src="/activity.js?v=neon" defer></script><script src="/exploration.js" defer></script><script src="/tieba.js?v=reply-queue" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"><meta name="color-scheme" content="light"><title>DeepSeekFish · 本地助手</title><link rel="icon" href="/fish.svg" type="image/svg+xml"><script src="/appearance.js"></script><link rel="stylesheet" href="/web.css?v=tieba-issues-2"><script type="module" src="/web.js?asset=portrait-motion"></script><script src="/web.js?v=neon" defer></script><script src="/neon.js?v=conversation" defer></script><script src="/activity.js?v=neon" defer></script><script src="/exploration.js?v=tieba-patrol-1" defer></script><script src="/tieba.js?v=tieba-issues-2" defer></script></head>
 <body>
 <div class="app-shell">
   <!-- Mobile app-shell is a stacking context; keep its backdrop beside the drawers. -->
@@ -28,7 +28,7 @@
     <header class="topbar"><button id="menu-button" class="icon-button mobile-only" aria-label="打开对话列表" aria-controls="sidebar" aria-expanded="false">☰</button><div><span class="model-name" id="model-name">DeepSeek Flash</span><span class="model-chevron">⌄</span><span class="status-pill" id="connection">等待连接</span></div><button id="panel-button" class="quiet-button" aria-controls="workspace-panel" aria-expanded="true">工作区 <span>◫</span></button></header>
     <div id="demo-banner" class="notice" hidden>离线演示模式 · 所有回复和工具选择来自 Mock，不产生 API 费用。正式使用请重新运行启动脚本，不加 --mock。</div>
     <div id="setup-banner" class="notice setup-notice" hidden>还没有连接 DeepSeek。保存 API Key 后，即可在这里开始真实对话。<button id="setup-button">去连接 →</button></div>
-    <div id="tieba-alert" class="notice tieba-alert" role="status" aria-live="polite" hidden><span id="tieba-alert-text"></span><button id="tieba-alert-open" type="button">查看并操作</button></div>
+    <div id="tieba-alert" class="notice tieba-alert" role="status" aria-live="polite" hidden><span id="tieba-alert-text"></span><div class="tieba-alert-actions"><button id="tieba-alert-open" type="button">查看并操作</button><button type="button" data-tieba-dismiss="current">忽略当前条目</button><button type="button" data-tieba-dismiss="all">忽略所有条目</button></div></div>
     <section class="companion-home" id="companion-home" aria-labelledby="companion-title">
       <figure class="companion-portrait">
         <img src="/portrait.webp" width="539" height="628" alt="大肥鱼的正面立绘" fetchpriority="high">
@@ -177,7 +177,7 @@
 <dialog id="neon-dialog" aria-labelledby="neon-title">
   <header class="neon-heading">
     <h2 id="neon-title">Neon / Codex</h2>
-    <button id="neon-reset-conversation" type="button" class="quiet-button" disabled>新开 Neon 对话</button>
+    <button id="neon-reset-conversation" type="button" class="quiet-button" disabled>新开开发对话</button>
     <button id="neon-refresh" type="button" class="quiet-button">刷新</button>
     <button id="neon-close" type="button" class="icon-button" aria-label="关闭开发记录">×</button>
   </header>
@@ -228,6 +228,7 @@
   <form id="exploration-form">
     <fieldset id="exploration-fields" disabled>
       <label class="check"><input id="explore-enabled" type="checkbox">启用随机刻探索</label>
+      <label class="check"><input id="explore-tiebaPatrol" type="checkbox">启用贴吧巡视（每 5 分钟检查大肥鱼吧、肥鱼避难所新帖）</label>
       <label>私聊主人 QQ<select id="explore-owner" required></select><small>来自 QQ 设置中的已授权私聊账号。</small></label>
       <div class="exploration-grid"><label>最短间隔（分钟）<input id="explore-minMinutes" type="number" min="0.1" max="10080" step="0.1" required></label><label>最长间隔（分钟）<input id="explore-maxMinutes" type="number" min="0.1" max="10080" step="0.1" required></label></div>
       <label>每次触发概率（%）<input id="explore-probability" type="number" min="0" max="100" step="0.01" required></label>
@@ -249,39 +250,49 @@
 </dialog>
 
 <dialog id="tieba-dialog" aria-labelledby="tieba-heading">
-  <div class="dialog-heading"><h2 id="tieba-heading">贴吧账号</h2><button type="button" class="icon-button" id="tieba-dismiss" aria-label="关闭贴吧账号">×</button></div>
+  <div class="dialog-heading tieba-dialog-heading"><div><span class="eyebrow">TIEBA · 账号工作台</span><h2 id="tieba-heading">贴吧账号 <span id="tieba-account-badge" class="tieba-status-pill" role="status">读取中</span></h2><p class="hint">查看回复进度，在官网画面处理登录与验证。</p></div><button type="button" class="icon-button" id="tieba-dismiss" aria-label="关闭贴吧账号">×</button></div>
   <div class="tieba-tabs" role="group" aria-label="贴吧设置分页">
-    <button id="tieba-account-tab" type="button" aria-pressed="true" aria-controls="tieba-account-panel">账号与队列</button>
+    <button id="tieba-account-tab" type="button" aria-pressed="true" aria-controls="tieba-account-panel">账号与记录</button>
+    <button id="tieba-pending-tab" type="button" aria-pressed="false" aria-controls="tieba-pending-panel">排队 <span id="tieba-pending-count" class="tieba-pending-count" hidden></span></button>
     <button id="tieba-sections-tab" type="button" aria-pressed="false" aria-controls="tieba-sections-panel">发帖准则</button>
   </div>
   <div class="tieba-layout" id="tieba-account-panel">
-  <aside id="tieba-queue" aria-label="贴吧回帖队列">
-    <div class="tieba-queue-heading"><h3>回帖队列</h3><button id="tieba-queue-refresh" type="button" class="quiet-button">刷新</button></div>
+  <aside id="tieba-queue" aria-label="贴吧回帖记录">
+    <div class="tieba-queue-heading"><h3>回帖记录</h3><button id="tieba-queue-refresh" type="button" class="quiet-button">刷新</button></div>
     <p id="tieba-queue-counts" class="hint" role="status">正在读取队列…</p>
+    <div class="tieba-queue-filters" role="group" aria-label="筛选回帖"><button type="button" data-tieba-filter="all" aria-pressed="true">全部</button><button type="button" data-tieba-filter="attention" aria-pressed="false">需处理 (0)</button><button type="button" data-tieba-filter="dismissed" aria-pressed="false">已忽略 (0)</button></div>
+    <div id="tieba-queue-ignore-actions" class="tieba-actions" hidden><button type="button" class="quiet-button" data-tieba-dismiss="selected">忽略当前条目</button><button type="button" class="quiet-button" data-tieba-dismiss="all">忽略所有条目</button></div><p id="tieba-dismiss-message" class="hint" role="status"></p>
     <div id="tieba-queue-list"></div>
     <div class="tieba-actions tieba-pagination" aria-label="已完成记录分页"><button id="tieba-queue-prev" type="button" class="quiet-button" disabled>上一页</button><span id="tieba-queue-page" class="hint" role="status"></span><button id="tieba-queue-next" type="button" class="quiet-button" disabled>下一页</button></div>
   </aside>
   <div class="tieba-main">
   <section id="tieba-queue-detail" hidden aria-label="队列记录详情"></section>
   <div id="tieba-account-overview">
-  <section id="tieba-attempt" hidden><strong>最新发言情况</strong><p id="tieba-attempt-detail"></p></section>
-  <p id="tieba-operation" role="status" aria-live="polite"></p><p id="tieba-error" class="form-error" role="alert"></p><p id="tieba-status" role="status">正在读取状态…</p>
-  <div id="tieba-login-actions" class="tieba-actions"><button id="tieba-start" type="button" class="primary-button">开始登录 / 重新打开登录</button><button id="tieba-check" type="button" class="quiet-button">检查并确认账号</button><button id="tieba-status-refresh" type="button" class="quiet-button">刷新状态</button><button id="tieba-logout" type="button" class="quiet-button">退出此 VPS 的账号</button></div>
-  <section id="tieba-publication" hidden><h3>处理发言验证</h3><p id="tieba-publication-state" role="status"></p><pre id="tieba-publication-preview"></pre><p class="hint">打开后先核对原失败回复。点击「提交原回复」才会提交；若官网弹出验证码，在下方画面手动完成，再检查发布结果。公开确认后，后续普通回帖沿用这个浏览器通道。</p><div class="tieba-actions"><button id="tieba-publication-start" type="button" class="primary-button">打开官方发言验证</button><button id="tieba-publication-submit" type="button" class="primary-button" hidden>提交原回复</button><button id="tieba-publication-check" type="button" class="quiet-button" hidden>检查发布结果（只读）</button></div></section>
+  <section id="tieba-attempt" class="tieba-card tieba-problem-card" hidden><div class="tieba-card-heading"><h3>最新发言情况</h3><span id="tieba-attempt-badge" class="tieba-status-pill"></span></div><p id="tieba-attempt-detail"></p><div class="tieba-actions" id="tieba-attempt-ignore"><button type="button" class="quiet-button" data-tieba-dismiss="current">忽略当前条目</button><button type="button" class="quiet-button" data-tieba-dismiss="all">忽略所有条目</button></div></section>
+  <p id="tieba-operation" role="status" aria-live="polite"></p><p id="tieba-error" class="form-error" role="alert"></p><section class="tieba-card tieba-account-card"><div class="tieba-card-heading"><h3>账号概览</h3><span class="hint">官方独立会话</span></div><dl id="tieba-account-facts" class="tieba-meta-grid"></dl><details class="tieba-diagnostics"><summary>账号状态详情</summary><p id="tieba-status" role="status">正在读取状态…</p></details>
+  <div id="tieba-login-actions" class="tieba-actions"><button id="tieba-start" type="button" class="primary-button">开始登录 / 重新打开登录</button><button id="tieba-check" type="button" class="quiet-button">检查并确认账号</button><button id="tieba-status-refresh" type="button" class="quiet-button">刷新状态</button><button id="tieba-logout" type="button" class="quiet-button">退出此 VPS 的账号</button></div></section>
+  <section id="tieba-publication" class="tieba-card tieba-problem-card" hidden><div class="tieba-card-heading"><h3>处理发言验证</h3><span id="tieba-publication-badge" class="tieba-status-pill"></span></div><p id="tieba-publication-state" role="status"></p><pre id="tieba-publication-preview"></pre><p class="hint">打开后先核对原失败回复。点击「提交原回复」才会提交；若官网弹出验证码，在下方画面手动完成，再检查发布结果。公开确认后，后续普通回帖沿用这个浏览器通道。</p><div class="tieba-actions"><button id="tieba-publication-start" type="button" class="primary-button">打开官方发言验证</button><button id="tieba-publication-submit" type="button" class="primary-button" hidden>提交原回复</button><button id="tieba-publication-check" type="button" class="quiet-button" hidden>检查发布结果（只读）</button></div><div class="tieba-actions" id="tieba-publication-ignore"><button type="button" class="quiet-button" data-tieba-dismiss="publication">忽略当前条目</button><button type="button" class="quiet-button" data-tieba-dismiss="all">忽略所有条目</button></div><p class="hint tieba-dismiss-help">忽略只收起 WebUI 提醒，原回执仍保留；之后的新问题照常提示。</p></section>
   <p id="tieba-login-description" class="hint">在下方百度官方页面扫码或手动完成验证。登录资料独立保存在 VPS；保存资料不等于验证成功。账号状态只在你检查或实际读取时验证，不自动轮询。</p>
-  <section id="tieba-login" hidden>
+  <section id="tieba-login" class="tieba-card tieba-browser-card" hidden><div class="tieba-card-heading"><h3>官网实时画面</h3><span class="tieba-status-pill">手动操作</span></div>
     <p class="hint">点击画面操作，可拖动官方验证滑块。登录完成后点「检查并确认账号」；发言验证完成后点「检查发布结果」。提交后画面继续保留，可查看官网实际反应；关闭面板后，待提交或等待验证码的画面仍会保留。</p>
     <p id="tieba-frame-state" role="status">点击「开始登录」后加载官方登录画面。</p><img id="tieba-frame" alt="百度官方登录页面" draggable="false" hidden>
     <div class="tieba-actions"><button id="tieba-frame-refresh" type="button" class="quiet-button">刷新画面</button><button id="tieba-tab" type="button" class="quiet-button">Tab</button><button id="tieba-enter" type="button" class="quiet-button">Enter</button><button id="tieba-backspace" type="button" class="quiet-button">退格</button><button id="tieba-selectall" type="button" class="quiet-button">全选输入框</button><button id="tieba-scroll-up" type="button" class="quiet-button">向上滚动</button><button id="tieba-scroll-down" type="button" class="quiet-button">向下滚动</button></div>
     <form id="tieba-input-form" autocomplete="off"><label>输入到画面中已点击的官方输入框<input id="tieba-text" type="password" autocomplete="off" maxlength="1000" placeholder="账号 / 验证码 / 密码，仅用于此次手动输入"></label><button type="submit" class="quiet-button">输入</button></form>
     <p class="hint">输入后本地输入框立即清空；不会写入聊天、活动日志或模型上下文。登录画面及已返回结果的发言画面在关闭面板后释放浏览器，账号资料保留；待提交和验证码画面继续等待处理。</p>
   </section>
-  <details><summary>账号、关注列表与发言记录</summary><section><h3>贴吧发言</h3><p id="tieba-posting-policy">读取账号后显示发言方式。</p><button id="tieba-account-refresh" type="button" class="quiet-button">读取账号与关注列表</button><pre id="tieba-following"></pre><button id="tieba-actions-refresh" type="button" class="quiet-button">查看发言记录</button>
+  <details class="tieba-card tieba-collapse"><summary>账号、关注列表与发言记录</summary><section><h3>贴吧发言</h3><p id="tieba-posting-policy">读取账号后显示发言方式。</p><button id="tieba-account-refresh" type="button" class="quiet-button">读取账号与关注列表</button><pre id="tieba-following"></pre><button id="tieba-actions-refresh" type="button" class="quiet-button">查看发言记录</button>
     <div class="tieba-actions tieba-pagination" id="tieba-actions-pagination" aria-label="发言记录分页" hidden><button id="tieba-actions-prev" type="button" class="quiet-button" disabled>上一页</button><span id="tieba-actions-page" class="hint" role="status"></span><button id="tieba-actions-next" type="button" class="quiet-button" disabled>下一页</button></div>
     <p id="tieba-actions-message" class="hint" role="status"></p><div id="tieba-actions"></div></section></details>
-  <details><summary>验证贴吧读取</summary><form id="tieba-read-form"><label>贴吧名或帖子链接<input id="tieba-read-url" maxlength="1000" placeholder="DeepSeek 或 https://tieba.baidu.com/p/帖子ID"></label><label>读取方式<select id="tieba-read-mode"><option value="public">原有读取路径（公开优先）</option><option value="account">验证使用当前账号读取</option></select></label><button type="submit" class="quiet-button">读取</button></form><pre id="tieba-read-result"></pre></details>
+  <details class="tieba-card tieba-collapse"><summary>验证贴吧读取</summary><form id="tieba-read-form"><label>贴吧名或帖子链接<input id="tieba-read-url" maxlength="1000" placeholder="DeepSeek 或 https://tieba.baidu.com/p/帖子ID"></label><label>读取方式<select id="tieba-read-mode"><option value="public">原有读取路径（公开优先）</option><option value="account">验证使用当前账号读取</option></select></label><button type="submit" class="quiet-button">读取</button></form><pre id="tieba-read-result"></pre></details>
   </div></div></div>
-  <section id="tieba-sections-panel" aria-labelledby="tieba-sections-heading" hidden>
+  <section id="tieba-pending-panel" class="tieba-card" aria-labelledby="tieba-pending-heading" hidden>
+    <div class="tieba-card-heading"><h3 id="tieba-pending-heading">发帖与回帖排队</h3><button id="tieba-pending-refresh" type="button" class="quiet-button">刷新</button></div>
+    <p id="tieba-pending-status" role="status">正在读取队列…</p>
+    <p class="hint">每次发言结束后随机等待 60～80 秒。下次放行和预计发送时间以香港时间显示。</p>
+    <p id="tieba-pending-release"></p>
+    <div id="tieba-pending-list"></div>
+  </section>
+  <section id="tieba-sections-panel" class="tieba-card" aria-labelledby="tieba-sections-heading" hidden>
     <h3 id="tieba-sections-heading">大肥鱼吧发帖准则</h3>
     <p class="hint">只在大肥鱼吧发新帖时使用。肥鱼会按标题和正文从下方列表选一个分区。</p>
     <p id="tieba-sections-message" role="status"></p>

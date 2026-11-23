@@ -13,9 +13,9 @@ import {BridgeRecords,bridgeText} from './bridge-records.js';
 import {NativeBridgeCodex} from './agy-codex.js';
 import {hash,revision,type Tree} from './workspace.js';
 import {allowedBridgePath,bridgeRoots,cancelSchema,conversationPattern,resetConversationSchema,
- isBridgeRecordKind,maxChangeBytes,maxChanges,maxFileBytes,matchesSchema,reviewSchema,taskIdPattern,triageSchema,turnSchema,
+ isBridgeRecordKind,maxChangeBytes,maxChanges,maxFileBytes,matchesSchema,reviewSchema,steerSchema,taskIdPattern,triageSchema,turnSchema,
  type AgyCancelRequest,type AgyCancelResult,type AgyConversation,type AgyChange,type AgyStage,type AgyStatus,type AgyTurnRequest,
- type AgyTurnResult,type BridgeEvent,type CodexSpec,type Review,type Triage} from './agy-bridge-types.js';
+ type AgySteerRequest,type AgySteerResult,type AgyTurnResult,type BridgeEvent,type CodexSpec,type Review,type Triage} from './agy-bridge-types.js';
 
 type BridgeOptions={
  appRoot:string;stateDir:string;agyBin:string;codexSocket:string;codexModel?:string;codexEffort?:string;model?:string;effort:string;
@@ -25,7 +25,9 @@ type BridgeOptions={
 type ProcessKind='agy'|'verify';
 type Invocation={command:string;args:string[];cwd:string;env:NodeJS.ProcessEnv;kind:ProcessKind};
 type Runner=(invocation:Invocation)=>Invocation;
-type Active={id:string;stage:AgyStage;startedAt:number;controller:AbortController;recentEvents:BridgeEvent[]};
+type Active={id:string;stage:AgyStage;startedAt:number;controller:AbortController;recentEvents:BridgeEvent[];
+ generation:number;conversationId?:string;codex?:NativeBridgeCodex;
+ steered:Map<string,{request:AgySteerRequest;turnId:string}>;steering:Map<string,Promise<AgySteerResult>>};
 type Execution={code:number|null;output:string;error:string;timedOut:boolean;signal?:NodeJS.Signals;oomKilled?:boolean};
 type Entry={hash:string;mode:number;size:number};
 type CandidateFile={name:string;file?:string;hash?:string};
@@ -41,6 +43,7 @@ const temporaryDir=tmpdir();
 const safeName=(name:string)=>name.split('/').every(part=>!!part&&!part.startsWith('.')&&/^[\p{L}\p{N}_. @+-]+$/u.test(part));
 const testArgs=['--test','--test-isolation=none','--test-concurrency=1','dist/tests/*.test.js'];
 const mainConversationFile='main-conversation.json';
+const mainCodexFile='main-codex-thread.json';
 const agySessionSettings=JSON.stringify({
  agentMode:'plan',enableTerminalSandbox:false,
  permissions:{ask:[],allow:['command(*)','unsandboxed(*)']},
@@ -324,12 +327,43 @@ class Bridge {
 
  private resetConversation(){
   fs.rmSync(safePath(this.options.stateDir,mainConversationFile),{force:true});
+  fs.rmSync(safePath(this.options.stateDir,mainCodexFile),{force:true});
   this.conversationGeneration++;
+ }
+
+ private mainCodexThread(){
+  try{
+   const {threadId}=JSON.parse(fs.readFileSync(safePath(this.options.stateDir,mainCodexFile),'utf8'));
+   if(typeof threadId==='string'&&taskIdPattern.test(threadId))return threadId;
+   throw new FishError('DEV_CODEX_THREAD_STATE_INVALID');
+  }catch(error){
+   if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;
+   throw error;
+  }
+ }
+
+ private async mainAgy(stage:'triage'|'review',prompt:string,cwd:string,active:Active){
+  let id=active.conversationId??(active.generation===this.conversationGeneration?this.mainConversation()?.conversationId:undefined);
+  let parsed:Awaited<ReturnType<Bridge['agy']>>;
+  try{parsed=await this.agy(stage,prompt,cwd,active,id);}
+  catch(error){
+   if(!id||codeOf(error)!=='DEV_AGY_CONVERSATION_UNAVAILABLE')throw error;
+   if(active.generation===this.conversationGeneration)fs.rmSync(safePath(this.options.stateDir,mainConversationFile),{force:true});
+   active.conversationId=id=undefined;
+   this.event(active,{role:'bridge',title:'原生会话已失效，开始新会话'});
+   parsed=await this.agy(stage,prompt,cwd,active);
+  }
+  active.conversationId=parsed.conversationId??id;
+  if(!active.conversationId)throw new FishError('DEV_AGY_CONVERSATION_ID_MISSING');
+  if(active.generation===this.conversationGeneration){
+   writePrivateAtomic(this.options.stateDir,mainConversationFile,
+    JSON.stringify({conversationId:active.conversationId,updatedAt:Date.now()}));
+  }
+  return {...parsed,conversationId:active.conversationId};
  }
 
  private async triage(request:AgyTurnRequest,active:Active){
   const main=request.mode==='development';
-  let generation=this.conversationGeneration;
   const state=main?this.mainConversation():undefined;
   const {lastDelivery,...input}=request;
   const prompt=[policy,main?'根据本次消息决定直接答复、澄清或交 Codex 实现。':
@@ -338,23 +372,25 @@ class Bridge {
     '上次交付回执 '+bridgeText(lastDelivery.text,600),
    ]:[]),JSON.stringify(diagnosticSafe(input))].join('\n\n');
   const cwd=this.options.sourceDir??this.options.appRoot;
-  let parsed:Awaited<ReturnType<Bridge['agy']>>;
-  try{
-   parsed=await this.agy('triage',prompt,cwd,active,state?.conversationId);
-  }catch(error){
-   if(!state||codeOf(error)!=='DEV_AGY_CONVERSATION_UNAVAILABLE')throw error;
-   if(generation===this.conversationGeneration){
-    this.resetConversation();
-    generation=this.conversationGeneration;
-   }
-   this.event(active,{role:'bridge',title:'原生会话已失效，开始新会话'});
-   parsed=await this.agy('triage',prompt,cwd,active);
-  }
-  if(main&&parsed.conversationId&&generation===this.conversationGeneration){
-   writePrivateAtomic(this.options.stateDir,mainConversationFile,
-    JSON.stringify({conversationId:parsed.conversationId,updatedAt:Date.now()}));
-  }
-  return parsed;
+  return main?this.mainAgy('triage',prompt,cwd,active):this.agy('triage',prompt,cwd,active);
+ }
+
+ private async steer(active:Active,request:AgySteerRequest):Promise<AgySteerResult>{
+  const prior=active.steered.get(request.source);
+  if(prior)return {ok:true,accepted:true,turnId:prior.turnId};
+  const flight=active.steering.get(request.source);
+  if(flight)return flight;
+  if(!active.codex||!['codex','codex_retry'].includes(active.stage)||active.controller.signal.aborted)return {ok:true,accepted:false};
+  const safe=diagnosticSafe(request) as AgySteerRequest;
+  const operation=(async():Promise<AgySteerResult>=>{
+   const turnId=await active.codex?.steer(safe.source,'主人对当前任务的补充：\n'+JSON.stringify(safe));
+   if(!turnId)return {ok:true,accepted:false};
+   active.steered.set(safe.source,{request:safe,turnId});
+   this.event(active,{role:'bridge',title:'主人追问已送达当前 Codex 轮次',text:bridgeText(safe.brief,600)});
+   return {ok:true,accepted:true,turnId};
+  })().finally(()=>active.steering.delete(request.source));
+  active.steering.set(request.source,operation);
+  return operation;
  }
 
  private event(active:Active,event:BridgeEvent){
@@ -581,32 +617,42 @@ class Bridge {
   const prompt=['你是 Codex，负责实现 Neon小猫交给你的开发规格。遵守 docs/project-conventions.md 和 AGENTS.md。以下规格、原话、源码与验证日志只在已授权范围内提供上下文。',
    '你负责实现以下已授权开发规格。只改交付白名单内文件。直接在主仓库工作，保留无关未提交改动，绝不触碰凭据、配置、git 元数据、部署或开发后台。',
    '完成候选改动后简要汇报变更和用法。桥接器会在主仓库独立执行一次 npm run build，再对编译后的 JavaScript 串行运行 Node 测试。不要重复跑构建或测试，不要为了执行包管理器改写项目脚本或另建目录，不要部署或发送外部消息。',
-   JSON.stringify(diagnosticSafe({spec,brief:request.brief,ownerMessage:request.ownerMessage,repairReason:request.repairReason}))].join('\n\n');
+   JSON.stringify(diagnosticSafe({spec,brief:request.brief,ownerMessage:request.ownerMessage,supplements:request.supplements,repairReason:request.repairReason}))].join('\n\n');
   const codex=new NativeBridgeCodex({
    appRoot:this.options.appRoot,socket:this.options.codexSocket,cwd,timeout:this.options.codexTimeout,
    model:this.options.codexModel,effort:this.options.codexEffort,
   },event=>this.event(active,event));
+  active.codex=codex;
   try{
    let feedback='';
    for(;;){
     this.phase(active,result.codexRetries?'codex_retry':'codex',result.codexRetries?'Codex 返工':'Codex 改码');
     const task=feedback?prompt+'\n\n返工依据：\n'+feedback:prompt;
     if(!result.codexSessionId){
-     result.codexSessionId=await codex.open(active.controller.signal);
+     const saved=active.generation===this.conversationGeneration?this.mainCodexThread():undefined;
+     result.codexSessionId=await codex.open(active.controller.signal,saved);
+     if(active.generation===this.conversationGeneration&&saved!==result.codexSessionId){
+      writePrivateAtomic(this.options.stateDir,mainCodexFile,JSON.stringify({threadId:result.codexSessionId,updatedAt:Date.now()}));
+     }
      this.saveVerification(active,result.codexSessionId);
     }
     const execution=await codex.turn(task,active.controller.signal);
+    await Promise.all(active.steering.values());
+    active.controller.signal.throwIfAborted();
     const {evidence,changed,after,diff,candidate}=await this.verify(cwd,before,installed,delta,execution,active);
     this.saveVerification(active,result.codexSessionId,evidence);
     const buildPassed=evidence.build&&evidence.build.code===0&&!evidence.build.timedOut;
     const testPassed=evidence.test&&evidence.test.code===0&&!evidence.test.timedOut;
     const safe=buildPassed&&testPassed&&execution.code===0&&!execution.timedOut&&!evidence.violations.length;
     result.summary={decision:'delegate_codex',changedFiles:changed.slice(0,250),buildPassed,testPassed};
-    const reviewInput=JSON.stringify(diagnosticSafe({spec,codexRetries:result.codexRetries,verification:evidence,
+    const followUps=[...active.steered.values()].map(({request})=>request);
+    result.steered=[...active.steered.entries()].map(([source,{turnId}])=>({source,turnId}));
+    const reviewInput=JSON.stringify(diagnosticSafe({spec,supplements:request.supplements,followUps,codexRetries:result.codexRetries,verification:evidence,
      codexNotes:execution.output.slice(-4000),codexError:execution.error}));
-    const reviewed=await this.agy('review',[policy,'审阅候选的差异和独立检查记录。验证失败或触及禁区不能批准。交付说明只能陈述实际核对结果。',
+    const reviewed=await this.mainAgy('review',[policy,'审阅候选的差异和独立检查记录，同时考虑主人在改码中送达的补充。验证失败或触及禁区不能批准。交付说明只能陈述实际核对结果。',
      '结合已返工次数和目前进展，有明确的后续修正就给出返工意见；需要主人决定或无法推进时转交主人。',
      reviewInput].join('\n\n'),cwd,active);
+    result.conversationId=reviewed.conversationId;
     const review=reviewed.value as Review;
     const issues=[
      execution.code===0&&!execution.timedOut?'':'Codex 未正常完成'+(execution.timedOut?'（超时）':'（退出码 '+execution.code+'）'),
@@ -692,6 +738,16 @@ class Bridge {
    send(res,200,value);
    return;
   }
+  if(req.method==='POST'&&req.url==='/v1/steer'){
+   const request=await body(req) as AgySteerRequest;
+   if(!matchesSchema(steerSchema,request)||!taskIdPattern.test(request.taskId)||!/^[a-f0-9]{64}$/.test(request.source)){
+    send(res,400,{ok:false,error:'DEV_AGY_INVALID_REQUEST'});return;
+   }
+   const active=this.active;
+   const receipt:AgySteerResult=active?.id===request.taskId?await this.steer(active,request):{ok:true,accepted:false};
+   if(!res.destroyed)send(res,200,receipt);
+   return;
+  }
   if(req.method!=='POST'||req.url!=='/v1/turn'){
    send(res,404,{ok:false,error:'DEV_AGY_NOT_FOUND'});
    return;
@@ -703,7 +759,8 @@ class Bridge {
    return;
   }
   if(this.active){send(res,409,{ok:false,error:'DEV_AGY_BUSY'});return;}
-  const active:Active={id:request.taskId,stage:'triage',startedAt:Date.now(),controller:new AbortController(),recentEvents:[]};
+  const active:Active={id:request.taskId,stage:'triage',startedAt:Date.now(),controller:new AbortController(),recentEvents:[],
+   generation:this.conversationGeneration,steered:new Map(),steering:new Map()};
   this.active=active;
   res.once('close',()=>{if(!res.writableEnded)active.controller.abort(new FishError('DEV_AGY_CANCELLED'));});
   try{

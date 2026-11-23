@@ -44,6 +44,9 @@ export async function verifyIdentity(poster:PublicPoster){
   return identityData({data:{is_login:1,user:data.user}});
 }
 const sleep=(ms:number)=>new Promise<void>(r=>setTimeout(r,ms));
+export function preSubmitStalled(writes:number,startedAt:number,lastNetworkAt:number,now=Date.now()){
+ return writes===0&&now-startedAt>=35000&&(now-lastNetworkAt>=25000||now-startedAt>=45000);
+}
 /** A real persistent Chromium profile. Only this isolated process can inspect
  * its cookies, and only the fixed read API can use them. */
 export class TiebaBrowser implements AccountBrowser {
@@ -53,7 +56,7 @@ export class TiebaBrowser implements AccountBrowser {
  private imageChooser?:{session:string;files:string[];selected?:Promise<boolean>};
  private imagePreparation?:{expected:number;references:{fileMatches:boolean;usableId:boolean;dimensions:boolean;preview:boolean}[]};
  private moderator?:ModeratorPage;private moderatorRequests=new Map<string,{session:string;status:number;phase:'eligibility'|'submit';work:ModeratorPage}>();private pageFailures:Record<string,unknown>[]=[];
- private nativeSubmit?:{startedAt:number;phase:string;page?:{button:string;loading:boolean;notices:string[];challenge:boolean};network:Record<string,unknown>[]};
+ private nativeSubmit?:{startedAt:number;lastNetworkAt:number;phase:string;page?:{button:string;loading:boolean;notices:string[];challenge:boolean};network:Record<string,unknown>[]};
  private pointerPressed?:{x:number;y:number};
  private constructor(private child:ChildProcess,private profile:string){
   this.pipe=new Pipe(child,(url,params)=>{
@@ -85,6 +88,7 @@ export class TiebaBrowser implements AccountBrowser {
    // Record phases, never headers, query strings, request/response bodies or
    // authentication material. Keep only a bounded tail for this one submit.
    if(this.nativeSubmit&&['Network.requestWillBeSent','Network.responseReceived','Network.loadingFailed'].includes(e.method)){
+    if(e.method!=='Network.loadingFailed')this.nativeSubmit.lastNetworkAt=Date.now();
     const p=e.params,request=e.method==='Network.requestWillBeSent';
     if(['XHR','Fetch'].includes(p.type)||e.method==='Network.loadingFailed'){
      const entry:Record<string,unknown>={at:Date.now(),event:e.method.slice(8)};
@@ -240,7 +244,17 @@ export class TiebaBrowser implements AccountBrowser {
  private async nativeSubmitView(){
   // Only native notification/dialog controls are examined. Thread text and
   // editor contents are untrusted content, not platform failure messages.
-  return this.evaluate(`(()=>{const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0&&getComputedStyle(e).visibility!=='hidden';const b=${this.publishButton().replace(':not([disabled])','')};const notices=Array.from(document.querySelectorAll('.el-message,.el-notification,.ant-message-notice,.van-toast,.toast,[role=alert],[role=dialog]')).filter(e=>visible(e)&&!e.closest('.pb-comment-item,.ql-editor')).map(e=>(e.innerText||'').trim().slice(0,350)).filter(Boolean).slice(0,6);return {button:(b?.innerText||'').trim().slice(0,80),loading:!!b&&(!!b.querySelector('.el-icon-loading,.anticon-loading,.loading,[aria-busy=true]')||/loading|is-loading/.test(b.className)),notices,challenge:Array.from(document.querySelectorAll('iframe')).some(e=>visible(e)&&/captcha|vcode|wappass|verify/i.test(e.src))};})()`);
+  return this.evaluate(`(()=>{
+   const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0&&getComputedStyle(e).visibility!=='hidden';
+   const native=e=>visible(e)&&!e.closest('.pb-comment-item,.ql-editor');
+   const captcha='.tang-pass-pop-captcha,.pass-captcha,.vcode-dialog,.tbui-captcha-dialog,[class*="captcha"],[class*="vcode"]';
+   const b=${this.publishButton().replace(':not([disabled])','')};
+   const notices=Array.from(document.querySelectorAll('.el-message,.el-notification,.el-dialog,.el-message-box,.ant-message-notice,.van-toast,.toast,[role=alert],[role=dialog],'+captcha)).filter(native).map(e=>{
+    const copy=e.cloneNode(true);copy.querySelectorAll('.pb-comment-item,.ql-editor').forEach(n=>n.remove());return (copy.textContent||'').trim().slice(0,350);
+   }).filter(Boolean).slice(0,12);
+   return {button:(b?.innerText||'').trim().slice(0,80),loading:!!b&&(!!b.querySelector('.el-icon-loading,.anticon-loading,.loading,[aria-busy=true]')||/loading|is-loading/.test(b.className)),notices,
+    challenge:Array.from(document.querySelectorAll(captcha)).some(native)||Array.from(document.querySelectorAll('iframe')).some(e=>native(e)&&/captcha|vcode|wappass|verify|banti|seccode|pass/i.test(e.src))};
+  })()`);
  }
  /** Prepare only. Submission remains disarmed until the caller has persisted
   * the outbox intent and explicitly requests the one normal button click. */
@@ -413,36 +427,52 @@ export class TiebaBrowser implements AccountBrowser {
  async submitWebPost(beforeWrite:()=>void,onOutcome:(outcome:WebOutcome)=>void,onProgress?:(receipt:Record<string,unknown>)=>void){
   if(!this.webGate||this.webGate.writes)throw new FishError('TIEBA_WEB_SUBMISSION_ALREADY_STARTED');
   const gate=this.webGate=new WebPostGate(this.webGate.plan,beforeWrite,this.webGate.pictures);this.onWebOutcome=onOutcome;
-  this.nativeSubmit={startedAt:Date.now(),phase:'click_publish',network:[]};
+  const startedAt=Date.now();this.nativeSubmit={startedAt,lastNetworkAt:startedAt,phase:'click_publish',network:[]};
   try{
    const initial=await this.nativeSubmitView();gate.armed=true;
    await this.captureEvidence('before_submit');onProgress?.(this.submissionReceipt());
    await this.clickElement(this.publishButton());this.nativeSubmit.phase='wait_native_publish_request';await this.captureEvidence('after_click');
    let nextView=0,nextEvidence=Date.now()+15000;
-   // The queue owns the execution deadline and abort/cleanup lifecycle. One
-   // click can involve native security preflight; do not abandon it after 20s.
+   // Only a confirmed pre-submit stall may end early. Once dispatched, the
+   // real platform response or the queue's full deadline owns the outcome.
    while(!gate.outcome){
     this.lifetime.signal.throwIfAborted();
-    if(Date.now()>=nextView){
+    if(!gate.writes&&Date.now()>=nextView){
      const page=await this.nativeSubmitView();this.nativeSubmit.page=page;nextView=Date.now()+2000;if(gate.outcome)break;
      const fresh=page.notices.filter((s:string)=>!initial.notices.includes(s));
-     const notice=fresh.find((s:string)=>/程序开小差|服务器开小差|网络开小差|出了点问题|请求失败|发表失败|发布失败|回复失败|稍后再试|验证码|安全验证|安全检测/.test(s));
-     if(notice||page.challenge&&!initial.challenge){
-      const challenge=!!notice&&/验证码|安全验证|安全检测/.test(notice)||page.challenge&&!initial.challenge;
+     const verification=/验证码|安全验证|安全检测|人机验证|滑块验证|完成验证|验证身份|captcha|vcode/i;
+     const login=/请.*登录|未登录|重新登录|登录.*(?:失效|过期)|登录后.*(?:发表|回复|发帖)/;
+     const restriction=/操作.*频繁|频繁.*操作|发[言帖].*频繁|回复.*频繁|稍后再试|限制发[言帖]|禁止发[言帖]|禁言|封禁|无.*权限|账号.*(?:异常|受限)/;
+     const notice=page.notices.find((s:string)=>verification.test(s)||login.test(s)||restriction.test(s))??fresh.find((s:string)=>/程序开小差|服务器开小差|网络开小差|出了点问题|请求失败|发表失败|发布失败|回复失败/.test(s));
+     if(!gate.writes&&(notice||page.challenge)){
+      const challenge=page.challenge||!!notice&&verification.test(notice),loginRequired=!!notice&&login.test(notice);
       gate.armed=false;
-      this.webReceived({error:challenge?'TIEBA_PUBLICATION_CHALLENGE':gate.writes?'TIEBA_PUBLICATION_UNCONFIRMED':'TIEBA_WEB_PRE_SUBMIT_FAILED',receipt:{...this.submissionReceipt(),responseKind:'page_notice',...(notice?{pageNotice:notice}:{}),...(challenge?{challenge:true}:{}),...(!gate.writes?{notSubmitted:true,accepted:false}:{})}});
+      this.webReceived({error:challenge?'TIEBA_PUBLICATION_CHALLENGE':loginRequired?'TIEBA_LOGIN_REQUIRED':'TIEBA_WEB_PRE_SUBMIT_FAILED',receipt:{...this.submissionReceipt(),responseKind:'page_notice',...(notice?{pageNotice:notice}:{}),...(challenge?{challenge:true}:{}),notSubmitted:true,accepted:false}});
      }
     }
-    if(Date.now()>=nextEvidence){await this.captureEvidence('waiting');onProgress?.(this.submissionReceipt());nextEvidence=Date.now()+15000;}
+    if(!gate.outcome&&preSubmitStalled(gate.writes,startedAt,this.nativeSubmit.lastNetworkAt)){
+     // Disarm synchronously before taking evidence so a delayed preflight
+     // cannot dispatch add_pc while the screenshot is being captured.
+     gate.armed=false;this.nativeSubmit.phase='pre_submit_stalled';
+     await this.captureEvidence('pre_submit_stalled');
+     this.webReceived({error:'TIEBA_WEB_PRE_SUBMIT_FAILED',receipt:{...this.submissionReceipt(),reason:'pre_submit_stalled',notSubmitted:true,accepted:false,blockedOrigins:[...this.blockedOrigins],pageFailures:[...this.pageFailures]}});
+    }
+    if(!gate.outcome&&Date.now()>=nextEvidence){await this.captureEvidence('waiting');onProgress?.(this.submissionReceipt());nextEvidence=Date.now()+15000;}
     if(!gate.outcome)await sleep(250);
    }
    await this.captureEvidence('response');
    return webPostResult({...gate.outcome,receipt:{...this.submissionReceipt(),...gate.outcome.receipt,evidence:this.shots}},gate.plan.fields.tid??'',gate.plan.action);
   }catch(e){
    gate.armed=false;
+   // Even a late CDP click/progress error cannot turn a dispatched request
+   // into a pre-submit failure or release the FIFO before its real outcome.
+   if(gate.writes&&!gate.outcome&&!this.lifetime.signal.aborted){
+    try{while(!gate.outcome){this.lifetime.signal.throwIfAborted();await sleep(250);}}
+    catch(waitError){e=waitError;}
+   }
    await this.captureEvidence('submission_ended');
-   // A late UI/screenshot/cancellation error must not erase an accepted PID.
-   if(gate.outcome?.id)return webPostResult({...gate.outcome,receipt:{...this.submissionReceipt(),...gate.outcome.receipt,evidence:this.shots}},gate.plan.fields.tid??'',gate.plan.action);
+   // Preserve both successful and rejected real platform receipts.
+   if(gate.outcome)return webPostResult({...gate.outcome,receipt:{...this.submissionReceipt(),...gate.outcome.receipt,evidence:this.shots}},gate.plan.fields.tid??'',gate.plan.action);
    const receipt={...this.submissionReceipt(),...(e instanceof AppPostFailure?e.receipt:{}),...(!gate.writes?{notSubmitted:true,accepted:false}:{}),evidence:this.shots};
    const code=e instanceof Error&&e.message==='CAPTURE_PROTOCOL_TIMEOUT'?'TIEBA_BROWSER_COMMAND_TIMEOUT':codeOf(e);
    throw new AppPostFailure(code,receipt);

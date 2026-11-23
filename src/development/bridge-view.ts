@@ -116,6 +116,7 @@ export function cancelWebDevelopment(jobs:Jobs,owner:string,id:string,controller
   const job=jobs.get(id);
   if(!job||job.owner!==owner||job.phase!=='code'&&job.phase!=='candidate')return false;
   jobs.save({...job,phase:'cancelled',grant:'',reason:webCancelReason});
+  jobs.cancelMessages(Date.now());
   return true;
  });
  if(cancelled)controllers.get(id)?.abort(new FishError('DEV_GRANT_REVOKED'));

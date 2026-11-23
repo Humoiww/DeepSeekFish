@@ -2,7 +2,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {RpcProcess} from '../codex/process.js';
 import {nativeDaemonSpec} from '../codex/platform.js';
 import {initialize} from '../codex/probe.js';
-import {FishError} from '../types.js';
+import {FishError,codeOf} from '../types.js';
 import {bridgeText,liveCodexEvents} from './bridge-records.js';
 import {taskIdPattern,type BridgeEvent} from './agy-bridge-types.js';
 
@@ -26,13 +26,18 @@ async function untilAbort<T>(promise:Promise<T>,signal:AbortSignal):Promise<T>{
 export class NativeBridgeCodex{
  private readonly rpc:RpcProcess;
  private thread?:string;
+ private running?:{id:string;signal:AbortSignal};
  private diagnostic='';
+ private rpcError='';
 
  constructor(private options:NativeOptions,private event:(event:BridgeEvent)=>void){
   // Keep the transport alive until an interrupt has been attempted.
   this.rpc=new RpcProcess(nativeDaemonSpec(options.appRoot,options.socket),new AbortController().signal);
   this.rpc.on('stderr',text=>this.note(text));
-  this.rpc.on('rpcError',({error})=>this.note(error?.message));
+  this.rpc.on('rpcError',({error})=>{
+   this.rpcError=typeof error?.message==='string'?error.message:'';
+   this.note(error?.message);
+  });
  }
 
  private note(value:unknown){
@@ -42,23 +47,43 @@ export class NativeBridgeCodex{
   this.event({role:'bridge',title:'Codex RPC 诊断',text});
  }
 
- async open(signal:AbortSignal){
+ async open(signal:AbortSignal,existing?:string){
   const {cwd,model,effort}=this.options;
   const setup=AbortSignal.any([signal,AbortSignal.timeout(15_000)]);
   await untilAbort(initialize(this.rpc,cwd,false),setup);
   const account=await untilAbort(this.rpc.call('account/read',{refreshToken:false}),setup);
   if(account?.account?.type!=='chatgpt')throw new FishError('CODEX_CHATGPT_PROJECT_LOGIN_REQUIRED');
-  const reply=await untilAbort(this.rpc.call('thread/start',{
-   cwd,ephemeral:false,sandbox:'workspace-write',...policy,
+  const opts={
+   cwd,sandbox:'workspace-write',...policy,
    ...(model?{model}:{}),...(effort?{config:{model_reasoning_effort:effort}}:{}),
    developerInstructions:'按本轮授权规格在主仓库工作。保留已有未提交改动，只修改发布白名单内的文件。不要部署、提交 Git、修改开发后台或重复执行整套构建测试。主人可以在原生 Codex 界面补充要求或打断本轮。',
-  }),setup);
-  if(!taskIdPattern.test(reply?.thread?.id??'')||reply.thread.cwd!==cwd||
+  };
+  let reply:any;
+  if(existing){
+   try{reply=await untilAbort(this.rpc.call('thread/resume',{...opts,threadId:existing,excludeTurns:true}),setup);}
+   catch(error){
+    if(codeOf(error)!=='CODEX_RPC_REJECTED'||![`no rollout found for thread id ${existing}`,`thread not found: ${existing}`].includes(this.rpcError))throw error;
+    this.event({role:'bridge',title:'Codex 主线程已失效，重新建立'});
+   }
+  }
+  const resumed=!!reply;
+  if(!resumed)reply=await untilAbort(this.rpc.call('thread/start',{...opts,ephemeral:false}),setup);
+  if(!taskIdPattern.test(reply?.thread?.id??'')||resumed&&reply.thread.id!==existing||reply.thread.cwd!==cwd||
     reply.sandbox?.type!=='workspaceWrite'||reply.approvalPolicy!==policy.approvalPolicy||
     reply.approvalsReviewer!==policy.approvalsReviewer)throw new FishError('DEV_CODEX_SESSION_MISMATCH');
   this.thread=reply.thread.id;
-  this.event({role:'bridge',title:'Codex 原生会话已打开',text:this.thread});
+  this.event({role:'bridge',title:resumed?'Codex 主线程已续接':'Codex 原生会话已打开',text:this.thread});
   return this.thread!;
+ }
+
+ async steer(source:string,text:string){
+  const active=this.running,threadId=this.thread;
+  if(!active||!threadId||active.signal.aborted)return;
+  try{
+   const limit=AbortSignal.any([active.signal,AbortSignal.timeout(5000)]);
+   const reply=await untilAbort(this.rpc.call('turn/steer',{threadId,expectedTurnId:active.id,clientUserMessageId:source,input:[{type:'text',text}]}),limit);
+   return reply?.turnId===active.id?active.id:undefined;
+  }catch{return undefined;}
  }
 
  async turn(text:string,signal:AbortSignal){
@@ -78,6 +103,7 @@ export class NativeBridgeCodex{
   const consume=(method:string,params:any)=>{
    if(method==='turn/completed'){
     const turn=params.turn as CodexTurn;
+    this.running=undefined;
     this.event({role:'bridge',title:'Codex 轮次结束',text:bridgeText(turn.status,100)});
     finish(turn);
    }else if(method==='item/started'||method==='item/completed'){
@@ -108,6 +134,7 @@ export class NativeBridgeCodex{
    const reply=await untilAbort(started,deadline);
    if(!taskIdPattern.test(reply?.turn?.id??''))throw new FishError('DEV_CODEX_TURN_ID_INVALID');
    turnId=reply.turn.id;
+   this.running={id:turnId!,signal:deadline};
    for(const entry of early)notice(entry.method,entry.params);
    const result=await untilAbort(done,deadline);
    if(result.status==='interrupted')throw new FishError('DEV_AGY_CANCELLED');
@@ -127,6 +154,7 @@ export class NativeBridgeCodex{
    if(signal.aborted)throw signal.reason;
    throw new FishError('DEV_CODEX_TURN_TIMEOUT');
   }finally{
+   this.running=undefined;
    this.rpc.off('notice',notice);
    this.rpc.off('failure',fail);
   }

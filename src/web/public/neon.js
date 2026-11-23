@@ -32,7 +32,7 @@
     const receipt=snapshot.conversationReset;
     if(resetRequest&&receipt?.id===resetRequest&&(receipt.error||bridge?.updatedAt>=receipt.at)){
       resetRequest=undefined;
-      notice(receipt.error?'重置请求未确认 · '+receipt.error:'主会话已重置，下次分诊开启新对话。');
+      notice(receipt.error?'重置请求未确认 · '+receipt.error:'Neon 和 Codex 主会话已重置，下次使用时开启新对话。');
     }
     reset.disabled=!bridge||resetPosting||!!resetRequest;
     const phase=['candidate','deploy','live'].includes(current?.phase)?current.phase:bridge?.stage??current?.agyStage??current?.phase;
