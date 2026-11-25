@@ -1,12 +1,14 @@
 import fs from 'node:fs';
 import {safePath,writePrivateAtomic} from '../paths.js';
 import type {AgyClient} from './agy-client.js';
-import {bridgeViewDir,readDevelopmentJson,type BridgeView} from './bridge-view.js';
+import {bridgeViewDir,processAgyQuotaRefresh,readDevelopmentJson,syncAgyQuota,type BridgeView} from './bridge-view.js';
 import {isBridgeRecordKind,maxRecordBytes,taskIdPattern,type BridgeRecordSummary} from './agy-bridge-types.js';
 
 export class BridgeSync{
  status:BridgeView|undefined;
  private syncing=false;
+ private syncingQuota=false;
+ private nextQuotaPoll=0;
 
  constructor(private root:string,private client:AgyClient){
   fs.mkdirSync(safePath(root,bridgeViewDir),{recursive:true,mode:0o700});
@@ -17,6 +19,18 @@ export class BridgeSync{
   const view:BridgeView={ok:true,busy,activeTaskId,stage,startedAt,recentEvents,mainConversation,updatedAt:Date.now()};
   writePrivateAtomic(this.root,bridgeViewDir+'/status.json',JSON.stringify(view));
   this.status=view;
+ }
+
+ async refreshQuota(signal:AbortSignal){
+  if(this.syncingQuota||signal.aborted)return;
+  this.syncingQuota=true;
+  try{
+   if(!await processAgyQuotaRefresh(this.root,()=>this.client.refreshQuota(signal))){
+    if(Date.now()<this.nextQuotaPoll)return;
+    await syncAgyQuota(this.root,()=>this.client.quota(signal));
+   }
+   this.nextQuotaPoll=Date.now()+15_000;
+  }finally{this.syncingQuota=false;}
  }
 
  async refreshRecords(signal:AbortSignal){

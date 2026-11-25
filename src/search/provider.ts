@@ -26,25 +26,26 @@ export function publicUrl(raw:string): boolean {
   } catch { return false; }
 }
 export class DeepSeekSearchProvider implements SearchProvider {
-  constructor(private key:string, private cfg:()=>Config, private http:typeof fetch=fetch) {}
-  private async check(response:Response,operation:'SEARCH'|'FETCH'){
+  constructor(private credential:string|(()=>string), private cfg:()=>Config, private http:typeof fetch=fetch) {}
+  private async check(response:Response,operation:'SEARCH'|'FETCH',key:string){
     if(response.ok)return;
     const body=await errorBody(response).catch(()=>null);
     const reason=body?.error?.message??body?.message??(typeof body?.error==='string'?body.error:undefined);
     const details:Record<string,unknown>={httpStatus:response.status,stage:operation==='SEARCH'?'search_response':'fetch_response'};
     if(typeof reason==='string'&&!/^\s*</.test(reason)){
-      details.providerMessage=diagnosticSafe(reason.replaceAll(this.key,'[凭据省略]').split('\n')[0].slice(0,360));
+      details.providerMessage=diagnosticSafe(reason.replaceAll(key,'[凭据省略]').split('\n')[0].slice(0,360));
     }
     throw new ProviderError(operation+'_HTTP_'+response.status,details);
   }
   async search(query:string):Promise<SearchResult[]> {
-    if (!this.key) throw new FishError('DEEPSEEK_KEY_MISSING');
+    const key=typeof this.credential==='string'?this.credential:this.credential();
+    if (!key) throw new FishError('DEEPSEEK_KEY_MISSING');
     const res=await this.http('https://api.deepseek.com/v1/tools/search',{
       method:'POST',redirect:'error',signal:AbortSignal.timeout(this.cfg().searchTimeoutMs),
-      headers:{authorization:'Bearer '+this.key,'content-type':'application/json'},
+      headers:{authorization:'Bearer '+key,'content-type':'application/json'},
       body:JSON.stringify({query,count:this.cfg().searchCount,need_content:false}),
     });
-    await this.check(res,'SEARCH');
+    await this.check(res,'SEARCH',key);
     const data=await boundedJson(res);
     if(!Array.isArray(data.results))throw new FishError('SEARCH_INVALID_RESPONSE');
     const results=data.results.filter((r:any)=>typeof r.url==='string'&&publicUrl(r.url)).slice(0,this.cfg().searchCount).map((r:any)=>({
@@ -54,13 +55,14 @@ export class DeepSeekSearchProvider implements SearchProvider {
     Object.defineProperty(results,'billable',{value:data.results.length>0});return results;
   }
   async fetch(url:string):Promise<FetchedPage>{
-    if(!this.key)throw new FishError('DEEPSEEK_KEY_MISSING');
+    const key=typeof this.credential==='string'?this.credential:this.credential();
+    if(!key)throw new FishError('DEEPSEEK_KEY_MISSING');
     if(typeof url!=='string'||url.length>8192||!publicUrl(url))throw new FishError('FETCH_PUBLIC_URL_REQUIRED');
     const res=await this.http('https://api.deepseek.com/v1/tools/fetch',{
       method:'POST',redirect:'error',signal:AbortSignal.timeout(this.cfg().searchTimeoutMs),
-      headers:{authorization:'Bearer '+this.key,'content-type':'application/json'},body:JSON.stringify({url}),
+      headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({url}),
     });
-    await this.check(res,'FETCH');
+    await this.check(res,'FETCH',key);
     const data=await boundedJson(res);
     if(typeof data.title!=='string'||typeof data.content!=='string')throw new FishError('FETCH_INVALID_RESPONSE');
     return {url,title:data.title.slice(0,200),content:data.content.slice(0,200000),truncated:data.content.length>200000,fetchedAt:new Date().toISOString()};

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { once } from 'node:events';
 import { request } from 'node:http';
-import { fixture } from './helpers.js';
+import { fixture,assertPersonaLayout,seedVoiceExamples } from './helpers.js';
 import { createWebApp,createTiebaDismissals } from '../src/web/app.js';
 import { webServer } from '../src/web/server.js';
 import { SessionWorkspace } from '../src/web/workspace.js';
@@ -14,10 +14,76 @@ import { MockTaskRunner } from '../src/codex/runner.js';
 import { Store } from '../src/storage/db.js';
 import { MemoryJournal } from '../src/memory/journal.js';
 import {createApp} from '../src/app.js';
+import {DeepSeekBalance,parseDeepSeekBalance} from '../src/web/deepseek-balance.js';
+import {bridgeViewDir,processAgyQuotaRefresh} from '../src/development/bridge-view.js';
 
 const reply=(message:any,usage={prompt_tokens:20,completion_tokens:10})=>new Response(JSON.stringify({choices:[{message}],usage}));
 const call=(id:string,name:string,args:unknown)=>({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
 function web(mock=true,http?:typeof fetch){const f=fixture();const app=createWebApp(f.root,mock,http);return {f,app,async close(){await app.close();f.cleanup();}};}
+
+test('DeepSeek account balance prefers CNY, coalesces refreshes and keeps the last successful amounts on failure',async()=>{
+ const usd={currency:'USD',total_balance:'5.00',granted_balance:'0.20',topped_up_balance:'4.80'};
+ const cny={currency:'CNY',total_balance:'12.34',granted_balance:'2.34',topped_up_balance:'10.00'};
+ const response={is_available:true,balance_infos:[usd,cny]};
+ assert.equal(parseDeepSeekBalance(response).balance?.currency,'CNY');
+ assert.equal(parseDeepSeekBalance(response).balances.length,2);
+ assert.equal(parseDeepSeekBalance({...response,balance_infos:[usd]}).balance?.currency,'USD');
+ assert.equal(parseDeepSeekBalance({is_available:false,balance_infos:[]}).isAvailable,false);
+ assert.throws(()=>parseDeepSeekBalance({is_available:true,balance_infos:[{...usd,total_balance:5}]}),/DEEPSEEK_BALANCE_INVALID_RESPONSE/);
+
+ let key='',calls=0,now=10000,failure=false;
+ const http=(async(url,options)=>{
+  calls++;
+  assert.equal(url,'https://api.deepseek.com/user/balance');
+  assert.equal(options?.method,'GET');
+  assert.equal(new Headers(options?.headers).get('authorization'),'Bearer '+key);
+  assert.equal(new Headers(options?.headers).get('accept'),'application/json');
+  return failure?new Response('{}',{status:401}):Response.json(response);
+ }) as typeof fetch;
+ const balance=new DeepSeekBalance(()=>key,false,http,()=>now);
+ assert.deepEqual(await balance.refresh(true),{configured:false,checkedAt:null});
+ assert.equal(calls,0);
+ key='fixture-balance-key';
+ const [first,also]=await Promise.all([balance.refresh(),balance.refresh(true)]);
+ assert.deepEqual(first,also);
+ assert.equal(first.balance?.totalBalance,'12.34');
+ now+=4999;
+ assert.deepEqual(await balance.refresh(true),first);
+ assert.equal(calls,1);
+ now+=1;
+ failure=true;
+ assert.deepEqual(await balance.refresh(true),{...first,error:'DEEPSEEK_BALANCE_HTTP_401',stale:true});
+ now+=5*60_000-1;
+ await balance.refresh();
+ assert.equal(calls,2);
+ now+=1;
+ failure=false;
+ assert.equal((await balance.refresh()).error,undefined);
+ assert.equal(calls,3);
+ key='rotated-key';
+ assert.deepEqual(balance.status(),{configured:true,checkedAt:null});
+ const mock=new DeepSeekBalance(()=>assert.fail('offline credential access'),true,http,()=>now);
+ assert.equal((await mock.refresh()).balance?.totalBalance,'12.34');
+ assert.equal(calls,3);
+});
+
+test('workspace sidebar contains the three account cards, files and no obsolete DOM bindings',()=>{
+ const html=fs.readFileSync(new URL('../../src/web/public/index.html',import.meta.url),'utf8');
+ const js=fs.readFileSync(new URL('../../src/web/public/web.js',import.meta.url),'utf8');
+ const panel=html.slice(html.indexOf('id="workspace-panel"'),html.indexOf('</aside>',html.indexOf('id="workspace-panel"')));
+ assert.match(panel,/额度与工作区/);
+ const ids=['close-panel','deepseek-balance-content','agy-quota-content','codex-quota-content','files'];
+ const positions=ids.map(id=>panel.indexOf('id="'+id+'"'));
+ assert.ok(positions.every((position,i)=>position>=0&&(i===0||position>positions[i-1])));
+ for(const id of ['mode-label','search-dot','search-state','codex-dot','codex-state','tasks','task-count']){
+  assert.doesNotMatch(panel,new RegExp('id="'+id+'"'));
+  assert.ok(!js.includes("$('"+id+"')"));
+ }
+ assert.doesNotMatch(panel,/boundary-card|可用操作|task-section|panel-footer/);
+ assert.match(js,/renderDeepSeekBalance\(s\.deepseekBalance\);renderAgyQuota\(s\.agyQuota\)/);
+ assert.match(js,/\['refresh-deepseek-balance','deepseek-balance\/refresh',renderDeepSeekBalance\]/);
+ assert.match(js,/\['refresh-agy-quota','agy-quota\/refresh',renderAgyQuota\]/);
+});
 
 test('Tieba UI acknowledgments persist in the WebUI store with restore overrides',()=>{
  const f=fixture();let store=new Store(f.root,'webui.sqlite');
@@ -121,12 +187,19 @@ test('DeepSeek sends real tool wire format, settles each request, and never expo
   const http=(async(url:any,opts:any)=>{calls++;assert.equal(url,'https://api.deepseek.com/chat/completions');assert.equal(opts.redirect,'error');assert.equal(opts.headers.authorization,'Bearer fixture-key');
     const p=JSON.parse(opts.body);payloads.push(p);assert.equal(p.thinking.type,'disabled');
     assert.match(p.messages[0].content,/鲸酱/);assert.match(p.messages[0].content,/可爱大肥鱼/);assert.match(p.messages[0].content,/鲸鳍耳/);
-    return calls===1?reply({content:'',tool_calls:[call('c1','write_file',{path:'plan.md',content:'a useful plan'})]}):reply({content:'文件已保存。'});
+    return calls===1?reply({content:'',tool_calls:[call('c1','write_file',{path:'plan.md',content:'a useful plan'}),
+      call('c2','update_knowledge',{version:0,changes:[{action:'add',text:'鲸鱼会换气。'}]})]}):reply({content:'文件已保存。'});
   }) as typeof fetch;
   const w=web(false,http);try{
+    seedVoiceExamples(w.f.root);
     w.app.configure({apiKey:'fixture-key'});const s=w.app.createSession();await w.app.chat(s.id,'create plan','agent',new AbortController().signal,()=>{});
     assert.equal(calls,2);assert.equal(w.app.workspace(s.id).read('plan.md'),'a useful plan');
-    assert.equal(payloads[1].messages.at(-1).role,'tool');assert.equal(payloads[1].messages.at(-1).tool_call_id,'c1');
+    assert.deepEqual(payloads[0].messages[0],payloads[1].messages[0]);
+    for(const payload of payloads)assertPersonaLayout(w.f.root,payload.messages);
+    assert.equal(payloads[1].messages.at(-4).tool_call_id,'c1');
+    const knowledgeReceipt=payloads[1].messages.at(-3);
+    assert.equal(knowledgeReceipt.role,'tool');assert.equal(knowledgeReceipt.tool_call_id,'c2');
+    assert.match(knowledgeReceipt.content,/鲸鱼会换气/);
     assert.equal((w.app.status().budgets.usage as any[]).find(x=>x.metric==='tokens'&&x.scope==='*')?.value,60);
     assert.ok(!JSON.stringify(w.app.status()).includes('fixture-key'));
     assert.ok(fs.statSync(path.join(w.f.root,'runtime/data/webui-secrets.json')).mode&0o600);
@@ -135,7 +208,7 @@ test('DeepSeek sends real tool wire format, settles each request, and never expo
 test('plain chat never executes tool calls; agent tool allowlist denies shell, private paths and disabled search',async()=>{
   const requests:any[]=[];let count=0;
   const http=(async(_u:any,opts:any)=>{const p=JSON.parse(opts.body);requests.push(p);count++;
-    if(p.messages.at(-1).role==='tool')return reply({content:'操作被限制。'});
+    if(p.messages.at(-3).role==='tool')return reply({content:'操作被限制。'});
     return reply({content:'',tool_calls:[call('a'+count,'write_file',{path:'../secret.txt',content:'bad'}),call('b'+count,'shell',{command:'whoami'}),call('c'+count,'search_web',{query:'test'})]});
   }) as typeof fetch;
   const w=web(false,http);try{
@@ -175,7 +248,7 @@ test('failed web turns retain actual native dialogue, provider exception and inc
   }finally{db.close();}
   const detail=await w.app.activityDetail('web:'+turn.id),models=detail.events.filter(e=>e.type==='model');
   assert.equal(detail.usage.calls,2);assert.equal(detail.usage.total,30);assert.equal(detail.usage.unreportedCalls,1);assert.ok(detail.usage.unconfirmedTokens>0);
-  assert.equal(models[1].state,'failed');assert.equal(models[1].diagnostic.cause.name,'TimeoutError');assert.equal(models[1].request.messages.at(-1).role,'tool');assert.equal(detail.counts.tools,1);
+  assert.equal(models[1].state,'failed');assert.equal(models[1].diagnostic.cause.name,'TimeoutError');assert.equal(models[1].request.messages.at(-3).role,'tool');assert.equal(detail.counts.tools,1);
  }finally{await w.close();}
 });
 test('WebUI budget is checked before HTTP, no-key requests cost nothing, and QQ recovery preserves active web leases',async()=>{
@@ -212,6 +285,53 @@ test('HTTP WebUI guards bootstrap replay, token, Origin/Host, downloads and loca
     const newCode=new URLSearchParams(new URL(fresh.launchUrl).hash.slice(1)).get('bootstrap');
     assert.notEqual(newCode,code);assert.equal((await post('bootstrap',{code:newCode})).status,200);
     assert.equal((await fetch(base+'/api/status')).status,401);
+    const quotaDir=path.join(w.f.root,bridgeViewDir);
+    fs.mkdirSync(quotaDir,{recursive:true});
+    const quota={source:'agy' as const,checkedAt:Date.now(),weekly:{remainingPercent:68},fiveHour:{remainingPercent:66}};
+    const queued:any=await (await post('agy-quota/refresh',{})).json();
+    assert.equal(queued.pending,true);
+    assert.equal(await processAgyQuotaRefresh(w.f.root,async()=>quota),true);
+    assert.equal(await processAgyQuotaRefresh(w.f.root,async()=>assert.fail('refresh replayed')),false);
+    const stats:any=await (await fetch(base+'/api/status',{headers})).json();
+    assert.equal(stats.settings.provider,'deepseek');
+    assert.deepEqual(stats.agyQuota,{...quota,pending:false,stale:false});
+    assert.equal(stats.deepseekBalance.balance.totalBalance,'12.34');
+    assert.equal((await (await post('deepseek-balance/refresh',{})).json()).mock,true);
+    for(const route of ['agy-quota/refresh','deepseek-balance/refresh']){
+      assert.equal((await post(route,{unexpected:true})).status,400);
+      assert.equal((await fetch(base+'/api/'+route,{method:'POST'})).status,401);
+    }
+    assert.equal((await fetch(base+'/api/opencode/models')).status,401);
+    const models=await (await fetch(base+'/api/opencode/models',{headers})).json();
+    assert.equal(models.source,'mock');
+    assert.ok(models.models.some((model:any)=>model.supportsTools));
+    assert.equal(models.models.find((model:any)=>model.id==='glm-5.3-flash').disableThinkingSupport,'supported');
+    const unverified=models.models.find((model:any)=>model.id==='kimi-k2.6');
+    assert.equal(unverified.disableThinkingSupport,'unknown');
+    assert.match(unverified.disableThinkingReason,/未实测关闭思考/);
+    assert.equal((await post('opencode/models/refresh',{keySlot:'work'})).status,200);
+    const legacyKey='web-deepseek-fixture-secret',goKey='web-opencode-fixture-secret';
+    assert.equal((await post('settings',{apiKey:legacyKey})).status,200);
+    const added=await (await post('connection-presets',{name:'Go 工作',provider:'opencode_go',
+      model:models.models[0].id,maxOutputTokens:512,keySlot:'work',apiKey:goKey,disableThinking:false})).json();
+    assert.equal(added.settings.provider,'opencode_go');
+    assert.equal(added.settings.connectionPresets.length,1);
+    assert.equal(added.providers.deepseek.keys.deepseek.configured,true);
+    assert.equal(added.providers.opencode_go.keys.work.configured,true);
+    assert.equal(added.opencodeQuota.active,true);
+    assert.equal(added.settings.disableThinking,false);
+    const id=added.settings.activePresetId;
+    const switched=await (await post('settings',{provider:'deepseek'})).json();
+    assert.equal(switched.settings.provider,'deepseek');
+    assert.equal(switched.opencodeQuota.configured,true);
+    const restored=await (await post('settings',{activePresetId:id,apiKey:''})).json();
+    assert.equal(restored.settings.model,models.models[0].id);
+    assert.equal(restored.settings.disableThinking,false);
+    assert.equal((await (await post('settings',{disableThinking:true})).json()).settings.disableThinking,true);
+    assert.equal((await (await post('connection-presets/delete',{id})).json()).settings.connectionPresets.length,0);
+    const statusText=await (await fetch(base+'/api/status',{headers})).text();
+    assert.ok(!statusText.includes(legacyKey)&&!statusText.includes(goKey));
+    assert.equal((await post('settings',{provider:'deepseek'})).status,200);
     const spoofed=await new Promise<number>((resolve,reject)=>{const req=request(base+'/api/status',{headers:{...headers,Host:'evil.example'}},res=>{res.resume();resolve(res.statusCode!);});req.on('error',reject);req.end();});assert.equal(spoofed,403);
     const s:any=await (await post('sessions',{})).json();w.app.workspace(s.id).write('note.html','<script>alert(1)</script>');
     const file=await fetch(base+'/api/file?id='+s.id+'&path=note.html',{headers});assert.equal(file.status,200);assert.match(file.headers.get('content-disposition')??'',/attachment/);assert.match(file.headers.get('content-security-policy')??'',/sandbox/);

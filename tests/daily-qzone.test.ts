@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {fixture} from './helpers.js';
+import {fixture,assertPersonaLayout,assertVoiceHint,seedVoiceExamples} from './helpers.js';
 import {writePrivate,makeDir} from '../src/paths.js';
 import {MemoryJournal} from '../src/memory/journal.js';
 import {DailyQzone,dailySlot,dailyMemory,dailyStatus,dailyActions} from '../src/qq/daily-qzone.js';
@@ -9,7 +9,7 @@ import {QzonePublisher,QzoneRejected,qzoneResponse} from '../src/qq/qzone-publis
 import {MockImageProvider} from '../src/image/provider.js';
 import {FishError,type ChatMessage} from '../src/types.js';
 import type {BudgetedModel} from '../src/agent/model.js';
-import {personaSettings} from '../src/character.js';
+import {OUTBOUND_VOICE_HINT} from '../src/character.js';
 import {PROJECT_TIMEZONE,projectDay,projectDayStart} from '../src/time.js';
 import sharp from 'sharp';
 import {QQImageLibrary} from '../src/qq/image-library.js';
@@ -20,6 +20,7 @@ const plan={subject:'鲸酱',scene:'机房聊天',style:'插画',composition:'�
 const imageId='00000000-0000-4000-8000-000000000001';
 async function setup(){
   const f=fixture({qqTransport:'onebot',privateUsers:['20002'],images:true,maxOutputTokens:768}),memory=new MemoryJournal(f.root,f.store);
+  seedVoiceExamples(f.root);
   writePrivate(f.root,'runtime/data/daily-qzone.json',JSON.stringify({enabled:true,owner:'20002',startsOn:'2026-10-31',timezone:PROJECT_TIMEZONE}));
   const dir=makeDir(f.root,'runtime/outputs/'+imageId);await new MockImageProvider().generate('fixture',dir);fs.renameSync(dir+'/mock.png',dir+'/image.png');
   f.store.db.exec('CREATE TABLE qq_image_requests(conversation TEXT,message_id TEXT,state TEXT,image_id TEXT,error TEXT,PRIMARY KEY(conversation,message_id))');
@@ -29,6 +30,7 @@ async function setup(){
     calls++;contexts.push(structuredClone(m));assert.equal(options?.toolChoice,undefined);assert.equal(options?.requireTool,undefined);
     const phase=JSON.parse(String(m[1].content)).phase,last=m.findLast(message=>message.role==='tool'),previous=last?.role==='tool'?JSON.parse(typeof last.content==='string'?last.content:(last.content[0] as any).text):undefined;
     const name=phase==='prepare'?(previous?.created?'draft_daily_post':'generate_image'):(previous?.images?'publish_qzone':'view_images');
+    if(name==='publish_qzone'||name==='draft_daily_post')assertVoiceHint(options?.tools,name,'text',OUTBOUND_VOICE_HINT,{type:'string',maxLength:1200});
     const args=name==='generate_image'?plan:name==='view_images'?{imageIds:['generated-'+imageId]}:{text:phase==='prepare'?'又是热闹的一天。':'深夜还笑出了声。',imageId:'generated-'+imageId};
     return {text:'',tool_calls:[{id:'choice-'+calls,type:'function',function:{name,arguments:JSON.stringify(args)}}],usage:{input:100,output:100}};
   }};
@@ -57,10 +59,8 @@ test('prepares one image, refreshes the last minutes at midnight, publishes once
     f.clock(midnight);assert.equal((await f.daily().run()).state,'published');await f.daily().run();
     assert.deepEqual(f.counts(),{calls:4,generations:1,uploads:1,publishes:1});assert.match(String(f.contexts[2][1].content),/最后五分钟/);assert.equal(Array.isArray(f.contexts[3].findLast(message=>message.role==='tool')?.content),true);
     for(const messages of f.contexts){
-      assert.equal(messages.at(-1)?.role,'system');
-      const identity=personaSettings(f.root).blocks.find(block=>block.kind!=='kaomoji')!.text.trim();
-      assert.ok(String(messages.at(-1)?.content).includes(identity.replace('，正用 QQ 跟熟人闲聊','')));
-      assert.doesNotMatch(String(messages.at(-1)?.content),/正用 QQ 跟熟人闲聊/);
+      assertPersonaLayout(f.root,messages);
+      assert.match(String(messages.at(-2)?.content),/当前没有聊天对象/);
       assert.match(String(messages.at(-2)?.content),/当前香港时间/);
     }
     assert.deepEqual(f.contexts[1].slice(0,2),f.contexts[0].slice(0,2));

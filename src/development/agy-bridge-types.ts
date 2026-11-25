@@ -14,8 +14,18 @@ export function allowedBridgePath(name:unknown): name is string {
   !(parts[0]==='src'&&parts[1]==='development');
 }
 
+export function allowedSitePath(name:unknown): name is string {
+ if(typeof name!=='string'||!name.startsWith('public/')||[...name].length>250)return false;
+ const protectedNames=['cloudflare.config.ts','package.json','package-lock.json','AGENTS.md','InkFishChan.md'];
+ return name.split('/').every(part=>!part.startsWith('.')&&!/[. ]$/.test(part)&&
+  !protectedNames.includes(part)&&/^[\p{L}\p{N}_. @+-]+$/u.test(part)&&
+  !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part));
+}
+
 export type AgyStage='triage'|'codex'|'review'|'codex_retry'|'verify';
 export type AgyMode='development'|'chain_discussion';
+export type AgyTarget='main_repo'|'inkfishchan_site';
+export const inkfishchanSiteUrl='https://fish.humoiforge.com/';
 export const maxRecordBytes=256*1024;
 export const bridgeRecordKinds=['agy','codex','patch'] as const;
 export type BridgeRecordKind=typeof bridgeRecordKinds[number];
@@ -29,6 +39,11 @@ export type AgyDelivery={text:string;at:number};
 export type AgyStatus={
  ok:true;busy:boolean;activeTaskId?:string;stage?:AgyStage;startedAt?:number;recentEvents?:BridgeEvent[];mainConversation?:AgyConversation;agyBin:string;codexSocket:string;
 };
+export const agyQuotaTtlMs=10*60_000;
+export type AgyQuotaWindow={remainingPercent:number;resetAt?:number;resetText?:string};
+export type AgyQuota={
+ source:'agy';checkedAt:number;weekly?:AgyQuotaWindow;fiveHour?:AgyQuotaWindow;error?:string;stale?:boolean;
+};
 export type AgyCancelRequest={taskId?:string};
 export type AgyCancelResult={ok:true;cancelled:boolean;taskId?:string};
 export type AgySupplement={brief:string;ownerMessage:string;at:number};
@@ -41,6 +56,7 @@ export type AgyTurnRequest={
 export type AgyChange={name:string;sha256:string|null;contentBase64:string|null};
 export type CodexSpec={
  goal:string;scopeFiles:string[];requirements:string[];invariants:string[];verificationCommands:string[];
+ target?:AgyTarget;
 };
 export type Triage={
  decision:'reply_only'|'need_clarification'|'delegate_codex';replyToFeiyu:string;
@@ -53,7 +69,8 @@ export type AgyTurnResult={
  ok:true;taskId:string;outcome:'reply_only'|'need_clarification'|'approved'|'escalated';
  replyToFeiyu:string;conversationId?:string;codexSessionId?:string;codexRetries:number;steered?:{source:string;turnId:string}[];
  summary:{decision:Triage['decision'];verdict?:Review['verdict'];changedFiles?:string[];
-  buildPassed?:boolean;testPassed?:boolean;patchArchive?:string};
+  buildPassed?:boolean;testPassed?:boolean;patchArchive?:string;
+  target?:AgyTarget;siteCommit?:string;siteUrl?:string;sitePushed?:boolean};
  changes:AgyChange[];
 };
 
@@ -71,7 +88,7 @@ export const triageSchema=object({
  decision:enumOf('reply_only','need_clarification','delegate_codex'),
  replyToFeiyu:string(4000),
  alreadyImplemented:{type:'boolean'},
- codexSpec:object({goal:string(2000),scopeFiles:array(40),requirements:array(20,1),
+ codexSpec:object({target:enumOf('main_repo','inkfishchan_site'),goal:string(2000),scopeFiles:array(40),requirements:array(20,1),
   invariants:array(15),verificationCommands:array(6,1)},
  ['goal','scopeFiles','requirements','invariants','verificationCommands']),
 },['decision','replyToFeiyu']);

@@ -7,7 +7,9 @@ import https from 'node:https';
 import {runInNewContext} from 'node:vm';
 import {browsePage,postPublic,type PublicPoster} from '../src/search/public-web.js';
 import {tiebaPage,tiebaTarget} from '../src/search/tieba.js';
-import {publishInput,publishSectionFeedback,postingRequest} from '../src/tieba/posting.js';
+import {publishInput,publishInputFeedback,publishSectionFeedback,postingRequest,tiebaTools} from '../src/tieba/posting.js';
+import {OUTBOUND_VOICE_HINT} from '../src/character.js';
+import {assertVoiceHint} from './helpers.js';
 import {TiebaBrowser,preSubmitStalled} from '../src/capture/tieba-browser.js';
 import {WebPostGate} from '../src/tieba/web-post.js';
 
@@ -140,6 +142,7 @@ test('Tieba jump domains route supported paths through the free public API inste
 });
 
 test('replies distinguish a new floor, an exact floor and an exact child comment',()=>{
+ assertVoiceHint(tiebaTools,'publish_tieba','content',OUTBOUND_VOICE_HINT,{type:'string',minLength:1,maxLength:20000});
  const args={action:'reply',forumId:'7',content:'回复测试。'};
  const topic='https://tieba.baidu.com/p/12345',floor=topic+'?pid=56789#56789';
  const child='https://tieba.baidu.com/p/comment?tid=12345&pid=56789#67890';
@@ -148,11 +151,20 @@ test('replies distinguish a new floor, an exact floor and an exact child comment
  assert.equal(publishSectionFeedback({...args,target:floor}),undefined);
  assert.equal(publishInput({...args,target:floor}).postId,'56789');
  assert.equal(publishInput({...args,target:child}).subPostId,'67890');
- assert.equal(publishSectionFeedback({...args,target:child,replyScope:'floor'})?.error,'TIEBA_REPLY_SCOPE_MISMATCH');
+ assert.deepEqual(publishInput({...args,target:child,replyScope:'floor'}),publishInput({...args,target:child,replyScope:'subreply'}));
+ assert.equal(publishInput({...args,target:child,replyScope:'floor'}).subPostId,'67890');
  assert.equal(publishSectionFeedback({...args,target:floor,replyScope:'floor'}),undefined);
  assert.equal(publishInput({...args,target:floor,replyScope:'floor'}).postId,'56789');
  assert.equal(publishSectionFeedback({...args,target:child,replyScope:'subreply'}),undefined);
  assert.equal(publishInput({...args,target:child,replyScope:'subreply'}).subPostId,'67890');
+ assert.deepEqual(publishInput({...args,target:floor,replyScope:'subreply'}),publishInput({...args,target:floor,replyScope:'floor'}));
+ for(const [target,replyScope,correct] of [[topic,'floor','thread'],[child,'thread','subreply'],[floor,'thread','floor']]){
+  const input={...args,target,replyScope};
+  assert.throws(()=>publishInput(input),{code:'TIEBA_REPLY_SCOPE_MISMATCH',field:'replyScope'});
+  const feedback=publishInputFeedback(input);
+  assert.equal(feedback?.issue.field,'replyScope');
+  assert.ok(feedback?.issue.reason.includes(`保持原目标链接不变，将 replyScope 改为 ${correct}`));
+ }
 });
 
 test('any chosen bar uses signed public read POST, preserves pinned threads and follows native pagination',async()=>{
@@ -244,4 +256,88 @@ test('moderator capability probes are shared and a slow RPC promptly defaults to
   assert.deepEqual(await allowedTiebaTools(slow),tools);
   assert.equal(calls,2);
  }finally{resolve({moderatorAuthorized:true});}
+});
+
+import {recordTiebaKaomoji,repeatedTiebaKaomoji,tiebaKaomojiHint} from '../src/tieba/posting.js';
+import {extractKaomoji} from '../src/character.js';
+import {fixture as appFixture,assertPersonaLayout} from './helpers.js';
+import {ExplorationState} from '../src/exploration/state.js';
+import {ExplorationWorker} from '../src/exploration/worker.js';
+import {TiebaAccountClient} from '../src/tieba/client.js';
+import {MockTransport} from '../src/qq/adapter.js';
+import {Tasks} from '../src/codex/tasks.js';
+import {MockTaskRunner} from '../src/codex/runner.js';
+import {QQMedia} from '../src/qq/media.js';
+import {QQImageLibrary} from '../src/qq/image-library.js';
+import {MockSearchProvider,SearchService} from '../src/search/provider.js';
+import type {ChatMessage,ModelResult} from '../src/types.js';
+
+test('Tieba kaomoji reminders track only accepted publications, deduplicate and retain twelve bounded records',()=>{
+ const f=appFixture(),a='(^_^)',b='(>_<)';
+ try{
+  assert.deepEqual(tiebaKaomojiHint(f.store).excludeKaomoji,[]);
+  assert.doesNotMatch(tiebaKaomojiHint(f.store).message,/刚用过或近期高频/);
+  for(const result of [{deliveryStatus:'failed'},{deliveryStatus:'unconfirmed'},{submissionStatus:'not_submitted'},
+   {deliveryStatus:'queued',skipped:true},{deliveryStatus:'confirmed',reused:true},{mode:'preview'}]){
+   assert.equal(recordTiebaKaomoji(f.store,'failed','这条不应记录 '+a,result),false);
+  }
+  assert.equal(f.store.getMeta('tieba:recent-kaomoji'),undefined);
+  assert.equal(recordTiebaKaomoji(f.store,'one','只保存表情，不保存这段正文 '+a+' '+a,{deliveryStatus:'queued'}),true);
+  assert.equal(recordTiebaKaomoji(f.store,'one',a,{deliveryStatus:'confirmed'}),false);
+  assert.deepEqual(tiebaKaomojiHint(f.store).excludeKaomoji,[a]);assert.match(tiebaKaomojiHint(f.store).message,/本条换别的用/);
+  assert.ok(!f.store.getMeta('tieba:recent-kaomoji')!.includes('不保存这段正文'));
+  assert.equal(recordTiebaKaomoji(f.store,'two','没有颜文字',{deliveryStatus:'accepted'}),true);
+  assert.equal(recordTiebaKaomoji(f.store,'three','继续普通文字',{published:true}),true);
+  assert.deepEqual(tiebaKaomojiHint(f.store).excludeKaomoji,[],'one older use is neither recent nor frequent');
+  assert.deepEqual(repeatedTiebaKaomoji([[a,a],[],[]]),[],'duplicates inside a single reply do not invent repeated publications');
+  assert.deepEqual(repeatedTiebaKaomoji([[a],[a],[],[],[b]]),[a,b]);
+  assert.equal(repeatedTiebaKaomoji([['(^_^)','(>_<)','(T_T)','(o_o)','(+_+)','(ಠ_ಠ)','(ಥ_ಥ)']]).length,6);
+  for(let i=0;i<14;i++)recordTiebaKaomoji(f.store,'bounded-'+i,i===13?b:'普通文字',{receipt:{accepted:true}});
+  const rows=JSON.parse(f.store.getMeta('tieba:recent-kaomoji')!);assert.equal(rows.length,12);assert.ok(rows.every((r:any)=>r.kaomoji.length<=12));
+  assert.deepEqual(tiebaKaomojiHint(f.store).excludeKaomoji,[b]);
+  const content=(tiebaTools.find(t=>t.function.name==='publish_tieba')!.function.parameters.properties as any).content;
+  assert.ok(content.description.includes(OUTBOUND_VOICE_HINT));assert.match(content.description,/按当下情绪.*换样/);
+ }finally{f.cleanup();}
+});
+
+test('exploration redraws kaomoji only after accepted Tieba publications and keeps the state/persona suffix intact',async()=>{
+ const f=appFixture({qqTransport:'onebot',privateUsers:['12345'],admins:['12345'],search:true}),state=new ExplorationState(f.store,f.cfg);
+ const calls:ChatMessage[][]=[],used:string[]=[];let publications=0,queuedId='';
+ const account=new TiebaAccountClient(async(action,input)=>{
+  if(action==='status')return {state:'unconfigured',profileSaved:false,identity:null};
+  assert.equal(action,'publish');publications++;const id=(input as any).requestId;
+  if(publications===1)return {deliveryStatus:'failed',submissionStatus:'not_submitted',requestSent:false};
+  if(publications===2)return {deliveryStatus:'queued',queued:true,skipped:true};
+  if(publications===3){queuedId=id;return {deliveryStatus:'queued',queued:true,requestId:id};}
+  if(publications===4)return {deliveryStatus:'queued',queued:true,reused:true,requestId:queuedId};
+  return {deliveryStatus:'confirmed',publicVerified:true,requestId:id};
+ });
+ const sampled=(messages:ChatMessage[])=>String(messages.at(-1)!.content).split('颜文字范例（需要时参考）：\n')[1].split('\n').slice(0,14).flatMap(line=>line.slice(line.indexOf('：')+1).split('　｜　'));
+ const worker=new ExplorationWorker(state,{async complete(_group,_user,messages):Promise<ModelResult>{
+  assertPersonaLayout(f.root,messages);calls.push(structuredClone(messages));const round=calls.length-1;
+  if(round===0||round===5)return {text:'先想想下一条。',usage:{input:12,output:3},finishReason:'stop'};
+  let name='get_quota',args:Record<string,unknown>={};
+  if([2,3,4,6,7].includes(round)){
+   name='publish_tieba';let face='(T_T)';
+   if(round===4||round===7){face=sampled(messages).find(value=>extractKaomoji(value).includes(value))!;assert.ok(face);used.push(face);}
+   else if(round===6)face=used[0];
+   args={action:'reply',forumId:'7',target:'https://tieba.baidu.com/p/42',content:'来聊聊 '+face};
+  }
+  if(round===8)name='finish_exploration';
+  assert.ok(round<=8,'unexpected model round');
+  return {text:'',usage:{input:12,output:3},finishReason:'tool_calls',tool_calls:[{id:'kaomoji-'+round,type:'function',function:{name,arguments:JSON.stringify(args)}}]} satisfies ModelResult;
+ }},{root:f.root,cfg:f.cfg,ledger:f.ledger,transport:new MockTransport(),tieba:account,
+  tasks:new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),media:new QQMedia(f.root,f.store),library:new QQImageLibrary(f.root,f.store),
+  search:new SearchService(new MockSearchProvider(),f.ledger,f.cfg)},Date.now,undefined,{poster:async()=>{throw new Error('offline patrol');}});
+ try{
+  const {run}=state.manual();await worker.tick();await worker.idle();assert.equal(state.get(run.id).state,'completed');assert.equal(calls.length,9);
+  for(const call of calls){assert.deepEqual(call.slice(0,4),calls[0].slice(0,4));assert.match(String(call.at(-2)?.content),/贴吧小红点/);}
+  for(const call of calls.slice(0,5))assert.deepEqual(call.at(-1),calls[0].at(-1),'read-only, failed and skipped rounds keep the same persona');
+  assert.notDeepEqual(calls[5].at(-1),calls[4].at(-1));assert.deepEqual(calls[6].at(-1),calls[5].at(-1));assert.deepEqual(calls[7].at(-1),calls[5].at(-1),'reusing an old receipt does not redraw');
+  assert.notDeepEqual(calls[8].at(-1),calls[7].at(-1));assert.notEqual(used[0],used[1]);
+  assert.ok(!sampled(calls[5]).includes(used[0]));assert.ok(used.every(face=>!sampled(calls[8]).includes(face)));
+  assert.ok(calls[5].slice(4,-2).some(m=>String(m.content).includes('刚用过或近期高频：'+used[0])));
+  assert.ok(calls[0].slice(4,-2).some(m=>String(m.content).includes('不要顺手沿用前文')));
+  const rows=JSON.parse(f.store.getMeta('tieba:recent-kaomoji')!);assert.equal(rows.length,2);assert.ok(rows[0].kaomoji.includes(used[0]));assert.ok(rows[1].kaomoji.includes(used[1]));
+ }finally{await worker.stop();f.cleanup();}
 });

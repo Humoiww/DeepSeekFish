@@ -8,7 +8,7 @@ export function qqResources(cfg:Config,ledger:Ledger,conversation:string,user:st
   const dailyRemaining=Math.max(0,cfg.imageDaily-imagesUsed);
   return {day:dayKey(),timezone:PROJECT_TIMEZONE,
     energy:{unit:'CNY',...energy,conversationDaily:conversationBudget.daily,conversationRemaining:conversationBudget.remaining,
-      requestsRemaining:Math.max(0,cfg.userDailyRequests-ledger.value('requests','u:'+user))},
+      requestsToday:ledger.value('requests','u:'+user)},
     web:{enabled:cfg.search,requests:ledger.value('search'),budget:'energy',...networkPricing(cfg.model)},
     images:{collaborator:'GPT小姐',enabled:cfg.images,daily:cfg.imageDaily,used:imagesUsed,
       remaining:dailyRemaining,

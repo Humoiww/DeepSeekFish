@@ -6,10 +6,11 @@ import { safePath } from '../paths.js';
 import type { Config } from '../config.js';
 import { Store,redact } from '../storage/db.js';
 import { Ledger } from '../budget/ledger.js';
-import { FishError } from '../types.js';
+import { FishError,type CompletionOptions } from '../types.js';
 import {modelPayload} from '../agent/model.js';
 import {traceModel} from '../agent/model-trace.js';
 import { imagePrompt } from '../prompts.js';
+import {personalityPrompt} from '../character.js';
 import { isCharacterPortrait,resolveCharacterReference } from '../image/character-reference.js';
 import {verifyGeneratedImage} from '../image/generated.js';
 import { checkImageCapacity,runCodexImage,type ImageRunner } from '../image/codex-smoke.js';
@@ -68,8 +69,11 @@ export class WebImages{
     if(character)resolveCharacterReference(this.root);
     emit({type:'thinking',stage:'planning',round:1});
     const system=imagePrompt(this.root,character);
-    const messages:WireMessage[]=[{role:'system',content:system},...history,{role:'system',content:clockPrompt()},{role:'user',content:request}];
-    const completion=audit?await traceModel(audit.trace,audit.save,modelPayload(cfg,messages,cfg.maxOutputTokens,{tools:[imageTool]}),0,onReservation=>model.complete('web:'+sid,messages,[imageTool],signal,false,onReservation)):await model.complete('web:'+sid,messages,[imageTool],signal);
+    const messages:WireMessage[]=[{role:'system',content:system},...history,{role:'user',content:request},
+      {role:'system',content:clockPrompt()},{role:'system',content:personalityPrompt(this.root)}];
+    const planImage=(onReservation?:CompletionOptions['onReservation'])=>
+      model.complete('web:'+sid,messages,[imageTool],signal,false,onReservation,character?'portrait':'image');
+    const completion=audit?await traceModel(audit.trace,audit.save,modelPayload(cfg,messages,cfg.maxOutputTokens,{tools:[imageTool]}),0,planImage):await planImage();
     if(!audit)emit({type:'model_usage',usage:completion.usage});
     signal.throwIfAborted();
     if(completion.tool_calls?.length!==1||completion.tool_calls[0].function.name!=='generate_image')throw new FishError('IMAGE_PLAN_REQUIRED');

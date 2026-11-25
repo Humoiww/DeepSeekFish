@@ -1,3 +1,4 @@
+import {Corpus} from '../memory/corpus.js';
 import {externalPeopleTool,type ExternalPeople} from '../memory/external-people.js';
 import {allowedTiebaTools,SharedTools,imageToolPlan,memeToolIds,validateToolArguments,readCuriosityTool,listConversationsTool} from '../agent/shared-tools.js';
 import {sendFailure,toolFailure} from '../agent/tool-feedback.js';
@@ -34,17 +35,20 @@ import {forwardTools,type ForwardRecords} from '../qq/forward.js';
 import type {QzonePublisher} from '../qq/qzone-publish.js';
 import {ExplorationState,type ExplorationRun} from './state.js';
 import {errorDiagnostic} from '../diagnostics.js';
+import {INNER_VOICE_HINT,OUTBOUND_VOICE_HINT} from '../character.js';
 
 const tool=(name:string,description:string,properties:Record<string,unknown>={},required:string[]=[]):ModelTool=>({type:'function',function:{name,description,parameters:{type:'object',properties,required,additionalProperties:false}}});
 const string={type:'string'};
+const innerText={...string,description:INNER_VOICE_HINT};
+const outboundText={...string,description:OUTBOUND_VOICE_HINT};
 const extraTools=[
  readCuriosityTool,
- tool('write_curiosity','保存或修订自主探索的兴趣笔记。',{id:string,version:{type:'integer'},title:string,content:string,sources:{type:'array',items:string},remove:{type:'boolean'}}),
+ tool('write_curiosity','保存或修订自主探索的兴趣笔记。',{id:string,version:{type:'integer'},title:string,content:innerText,sources:{type:'array',items:string},remove:{type:'boolean'}}),
  tool('read_exploration','查过去的探索经历与真实来源：query检索，runId翻看那次的工具结果和投递回执，offset翻页。',{runId:string,query:string,offset:{type:'integer',minimum:0}}),
  listConversationsTool,
- tool('send_message','主动私聊主人；只发你此刻想说的话。发送不结束探索，也可以一直不发。',{text:string},['text']),
- tool('propose_project','把你想交给Codex的创意存成待审提案。仅排队，主人授权前不会执行。',{idea:string,why:string,brief:string},['idea','why','brief']),
- tool('finish_exploration','手上的事办完了，或这次只是闲逛，想休息就调用。可以传空对象，note是可选的小记，不会发QQ。',{note:string})
+ tool('send_message','主动私聊主人；只发你此刻想说的话。发送不结束探索，也可以一直不发。',{text:outboundText},['text']),
+ tool('propose_project','把你想交给Codex的创意存成待审提案。仅排队，主人授权前不会执行。',{idea:innerText,why:innerText,brief:string},['idea','why','brief']),
+ tool('finish_exploration','手上的事办完了，或这次只是闲逛，想休息就调用。可以传空对象，note是可选的小记，不会发QQ。',{note:innerText})
 ];
 export interface ExplorationServices{
  root:string;state:ExplorationState;cfg:()=>Config;ledger:Ledger;search:Pick<SearchService,'search'|'fetch'>;transport:Transport;tasks:Tasks;
@@ -72,6 +76,7 @@ export class ExplorationTools{
    root:s.root,store:s.state.store,memory:this.memory,context,signal,account:s.tieba,cfg:s.cfg,
    search:s.search,searchEnabled:()=>s.cfg().search,searchActor:'exploration',browse:s.browse,download:s.download,
    externalPeople:s.externalPeople,media:s.media,library:s.library,people:s.people,forwards:s.forwards,qzone:s.qzone,identity:this.identity,
+   corpusContext:{platform:'tieba',conversation:'tieba',contextId:run.id,accounts:[run.owner]},
    memoryOrigin:(run.trigger==='activity_chain'?'chain:':'run:')+run.id,
    allowedRecall:conversation=>s.cfg().groups.includes(conversation),
    charge:usage=>s.state.store.db.prepare('UPDATE exploration_runs SET web_nano=web_nano+? WHERE id=?').run(Math.round(usage.chargedCny*1e9),run.id),
@@ -103,9 +108,9 @@ export class ExplorationTools{
     const copy=structuredClone(t);delete (copy.function.parameters.properties as any)?.remark;
     if(copy.function.name==='generate_image')copy.function.description='请GPT小姐画图，参考图与画面由你选择；返回图库ID，是否发送由你决定。';return copy;
   });
-  return [...extraTools.filter(t=>t.function.name!=='read_curiosity'||s.cfg().curiosityPublicSearch).filter(t=>t.function.name!=='list_conversations'||s.cfg().groupChatSearch),recall,...(s.externalPeople?[externalPeopleTool]:[]),...contextTools,...knowledgeTools,...(s.cfg().search?[...this.tiebaCapabilities,...webTools,...browseTools,reportTiebaConflictTool]:[]),...chat,
+  return [...extraTools.filter(t=>t.function.name!=='read_curiosity'||s.cfg().curiosityPublicSearch).filter(t=>t.function.name!=='list_conversations'||s.cfg().groupChatSearch),recall,...(s.externalPeople?[externalPeopleTool]:[]),...contextTools,...knowledgeTools,...new Corpus(s.state.store).tools({platform:'tieba',conversation:'tieba',contextId:this.run.id}),...(s.cfg().search?[...this.tiebaCapabilities,...webTools,...browseTools,reportTiebaConflictTool]:[]),...chat,
     activityChainStatusTool,...memoryIndexTools,...imageLibraryTools(),...(s.transport.attachment?fileTools():[]),
-    ...mediaTools([]),...(s.forwards?forwardTools:[]),...(settings.allowPublicPosts&&s.publisher?[tool('publish_qzone','在你自己的QQ空间公开发布图文；与私聊不同，内容会公开。',{text:string,imageId:string},['text','imageId'])]:[])];
+    ...mediaTools([]),...(s.forwards?forwardTools:[]),...(settings.allowPublicPosts&&s.publisher?[tool('publish_qzone','在你自己的QQ空间公开发布图文；与私聊不同，内容会公开。',{text:outboundText,imageId:string},['text','imageId'])]:[])];
  }
  /** Persist the uncertain state at dispatch. Local preparation has no external effect. */
  private async effect(kind:string,payload:unknown,operation:(dispatch:()=>void,received:(result:any)=>void)=>Promise<any>){
@@ -126,7 +131,9 @@ export class ExplorationTools{
   }
  }
  private recordSent(id:string,text:string){
-  const m=this.message();this.memory.record({id,conversation:m.group,actor:'DeepSeekFish',replyTo:m.user,role:'assistant',text,at:Date.now(),source:'exploration'});
+  const m=this.message();
+  try{new Corpus(this.s.state.store).recordUse({platform:'qq',conversation:m.group,contextId:this.run.id,accounts:[this.run.owner]},text,id);}catch(error){this.diagnostics.push(errorDiagnostic(error));}
+  this.memory.record({id,conversation:m.group,actor:'DeepSeekFish',replyTo:m.user,role:'assistant',text,at:Date.now(),source:'exploration'});
   this.s.state.store.db.prepare('INSERT OR IGNORE INTO messages(id,grp,usr,text,at,mentioned,event,reply_to) VALUES (?,?,?,?,?,?,?,?)').run(id,m.group,'DeepSeekFish',text,Date.now(),0,'ordinary',m.user);
  }
  async execute(name:string,args:any,callId:string,privacy?:PromptNumberGuard):Promise<{result:any;parts?:ChatPart[];finish?:boolean}>{
@@ -134,7 +141,7 @@ export class ExplorationTools{
   const offered=this.available().find(t=>t.function.name===name);if(!offered)throw new FishError('TOOL_NOT_ALLOWED');
   const out=(result:any,parts?:ChatPart[])=>({result,parts});
   const shared=await this.shared.execute(offered,args,m,callId,()=>name==='publish_tieba'
-   ? this.publicationRequestId(args,callId):'explore:'+this.run.id+':'+callId);
+   ? this.publicationRequestId(args,callId):'explore:'+this.run.id+':'+callId,undefined,privacy);
   if(shared){
    for(const id of shared.viewedIds??[])this.seen.add(id);
    return shared;

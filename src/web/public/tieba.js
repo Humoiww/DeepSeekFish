@@ -9,6 +9,7 @@
   if(code==='TIEBA_NO_REJECTED_PUBLICATION')return '这条记录没有可恢复的拒绝回执。请查看本条记录的实际回执。';
   if(code==='TIEBA_MATCHING_PUBLICATION_EXISTS')return '同一份原稿已有发送记录，请先核对该记录的公开结果。';
   if(code==='TIEBA_CHECK_PENDING_PUBLICATION_FIRST')return '这次提交已有回执或结果待确认，可以只读核对。';
+  if(code==='TIEBA_PUBLICATION_RESPONSE_PENDING')return '官网已经提交，正在等这条发言的贴吧回执。收到回执后再点「恢复发送」。';
   const text={INTERNAL_ERROR:'程序内部异常；展开实际回执与诊断查看原因。旧记录未保存原始异常时无法恢复细节。',TIEBA_QUEUE_EXECUTION_TIMEOUT:'本次任务超过执行期限；这是本地执行超时，发言是否被受理需看原回执，不会自动重发。',TIEBA_BROWSER_COMMAND_TIMEOUT:'浏览器单条指令等待20秒仍未完成，当前操作已结束。',TIEBA_READ_TIMEOUT:'贴吧读取请求超过20秒，已中止该请求。',TIEBA_OPERATION_CANCELLED:'当前操作已停止。',TIEBA_CLEANUP_FAILED:'尚未确认浏览器完全停止，程序会重启账号工作进程清理。',TIEBA_QUEUE_INTERRUPTED:'服务在处理期间重启；该状态不是贴吧拒绝。请按原回执核对，程序未自动重发。',TIEBA_WEB_EDITOR_NOT_VISIBLE:'已定位并点击目标的回复按钮，但官网没有展开对应编辑器；尚未提交，现场见截图。',TIEBA_WEB_CONTROL_NOT_VISIBLE:'网页控件不存在或不可见，未能点击。',TIEBA_WEB_CONTROL_OBSCURED:'回复或发布按钮被其他页面元素遮挡，未能点击。',TIEBA_WEB_REPLY_ENTRY_NOT_READY:'帖子已打开，但回复入口未加载出来。',TIEBA_WEB_REPLY_EDITOR_NOT_READY:'已点击回复按钮，但编辑器没有出现。',TIEBA_WEB_REPLY_TARGET_NOT_VISIBLE:'帖子已打开，但未找到目标楼层或子回复的可见回复按钮。',TIEBA_WEB_CONTENT_NOT_VERIFIED:'编辑器里的正文与原稿不一致，尚未提交。',TIEBA_WEB_COMPOSER_CHANGED:receipt.step==='fill_reply_editor'?'回复框没有正常打开，未能填写正文。':receipt.step==='locate_reply_target'?'目标回复按钮没有正常定位或点击。':'官网发言控件未正常加载或定位，尚未提交。',TIEBA_REPLY_PARENT_UNRESOLVED:'尚未从实际记录和页面确认最外层父楼，没有提交。',TIEBA_REPLY_TARGET_UNAVAILABLE:'父楼已确认，但本次读取未找到目标回复，没有提交。',TIEBA_THREAD_NOT_VERIFIED:'读帖结果未能确认目标帖子与所属吧，未提交。',TIEBA_PUBLICATION_CHALLENGE:'贴吧实际返回安全验证，请在下方官网画面完成验证。',TIEBA_PUBLICATION_REJECTED:'贴吧明确拒绝了本次发布，具体原因见平台提示。',TIEBA_WEB_PRE_SUBMIT_FAILED:'官网发布前的处理失败，未发起发布请求；具体官网提示见下方记录。',TIEBA_PUBLICATION_UNCONFIRMED:'尚未取得能确认发布的回执；请求是否发起、官网提示和网络阶段见下方记录。',TIEBA_PUBLICATION_NOT_FOUND:'这次操作尚无可核对的发布回执。',TIEBA_PUBLICATION_NOT_PREPARED:'官网回复尚未准备好，请先打开并定位编辑器。',TIEBA_EVIDENCE_NOT_FOUND:'本次截图不存在或已超出现场保留范围。',TIEBA_BUSY:'官网正在处理上一项操作，请稍后刷新。',TIEBA_LOGIN_REQUIRED:'官网确认需要重新登录，请使用下方官方登录入口。',TIEBA_PUBLICATION_WINDOW_CHANGED:'当前官网窗口已切换到新的操作，请刷新查看最新现场。'};
   return text[code]||code;
  }
@@ -20,11 +21,17 @@
  }
  let queueLoading=false,queueData,queueKey='',selectedQueueId,selectedQueueItem,queueDetailKey='',queueFilter='all',dismissing=false;
  const queueChecks=new Map();
+ window.addEventListener('corpus-likes-changed',()=>{queueKey='';queueDetailKey='';if(dialog.open)void refreshQueue();});
  const queueActions={publish:'发言',verify:'核对发言结果',account:'读取账号与关注列表',replies:'读取回复通知',mentions:'读取 @ 通知',read:'读帖',start:'打开登录',check:'确认登录','publication-start':'准备原回复','publication-submit':'提交原回复','publication-check':'核对公开结果',input:'操作官网页面',frame:'更新官网画面','publication-frame':'更新发言画面',moderator:'吧务申请',logout:'退出账号',close:'释放官网窗口'};
  const submissionStages={pre_submit_stalled:'官网发布前处理停滞，已结束且未提交',native_page_notice:'官网页面出现提示（不是发布API回执）',publish_request_blocked:'发布请求在本地核对时未获放行',click_publish:'点击官网发布按钮',wait_native_publish_request:'等待官网完成发布前处理，尚未发起发布请求',await_publication_response:'发布请求已发起，等待贴吧返回回执',publication_response_received:'已收到发布请求的结果'};
- const queueOutcomes={timeout:'执行超时',preview:'预演（未发布）',public:'公开成功',accepted:'已受理，待公开确认',challenge:'需要人工验证',failed:'出现问题',unknown:'结果不确定',removed:'已被系统删除',interrupted:'服务重启中断',done:'已完成'};
+ const queueOutcomes={timeout:'执行超时',preview:'预演（未发布）',public:'公开成功',accepted:'已受理，待公开确认',challenge:'需要人工验证',failed:'出现问题',unknown:'结果不确定',removed:'已被系统删除',interrupted:'服务重启中断',cancelled:'已取消',done:'已完成'};
  const queueTime=at=>at?new Date(at).toLocaleString('zh-CN',{timeZone:'Asia/Hong_Kong',hour12:false}):'未记录';
  const paceTime=at=>new Date(at).toLocaleTimeString('zh-CN',{timeZone:'Asia/Hong_Kong',hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+ function intervalDescription({intervalMs,maxIntervalMs=intervalMs}){
+  if(maxIntervalMs===0)return '无额外间隔';
+  if(intervalMs===maxIntervalMs)return intervalMs/1000+' 秒（固定）';
+  return intervalMs/1000+'～'+maxIntervalMs/1000+' 秒（随机）';
+ }
  const pacingLabel=item=>item.state==='queued'&&item.scheduledAt?(item.queuePosition?'排队第 '+item.queuePosition+' 条':'排队中')+' · 预计 '+paceTime(item.scheduledAt)+' 发送':'';
  const recordRange=(offset,count,total)=>count?`${offset+1}–${offset+count} / ${total}`:`0 / ${total}`;
  const visibleLabels={public:'公开正文可见',author_only:'账号侧已找到，公开未确认',not_observed:'本次未找到匹配正文',no_longer_observed:'此前公开，本次未找到',removed_by_system:'回收站确认系统删除'};
@@ -130,11 +137,12 @@
   const toolbar=node('div','tieba-actions tieba-detail-toolbar');
   if(item.dismissed||isProblem(item))toolbar.append(dismissButton(item));
   if(isProblem(item)&&!item.dismissed){const all=node('button','quiet-button','忽略所有条目');all.type='button';all.onclick=()=>void dismissIssue({all:true});toolbar.append(all);}
+  if(item.corpusLike&&window.corpusReplyButton)toolbar.append(window.corpusReplyButton({queueId:item.id},item.corpusLike.liked));
   box.append(toolbar);
   const meta=node('dl','tieba-meta-grid');
   for(const [label,value] of [['进入队列',queueTime(item.createdAt)],['处理结束',item.finishedAt?queueTime(item.finishedAt):'—'],['贴吧 ID',m.forumId||'—'],['帖子 / 父楼',[m.threadId,m.postId].filter(Boolean).join(' / ')||'—']]){const pair=node('div');pair.append(node('dt','',label),node('dd','',value));meta.append(pair);}
   box.append(meta);
-  if(pacingLabel(item))box.append(node('p','hint',pacingLabel(item)+'（香港时间）。发言按1分钟到1分20秒随机间隔排队放行；预计时间随前序操作完成更新，排队时间不计入执行上限。'));
+  if(pacingLabel(item))box.append(node('p','hint',pacingLabel(item)+'（香港时间）。预计时间随队列变化更新，排队时间不计入执行上限。'));
   if(m.title)box.append(node('strong','',m.title));if(m.content)box.append(node('blockquote','tieba-quoted-content',m.content));
   const diagnostics=node('details','tieba-diagnostics');diagnostics.append(node('summary','','运行细节与平台提示'));
   const diagnosticLine=(...elements)=>diagnostics.append(...elements);
@@ -207,7 +215,7 @@
    if(previous||type==='reply'||type==='comment')rows.set(id,{...item,id,metadata:{...previous?.metadata,...item.metadata,requestId:id}});
   }
   const items=[...rows.values()].reverse(),active=items.filter(item=>['queued','running','cleaning'].includes(item.state));
-  const workerBusy=!!(data.counts.queued||data.active.some(item=>['running','cleaning'].includes(item.state)&&!['frame','publication-frame'].includes(item.action)));
+  const workerBusy=data.active.some(item=>['running','cleaning'].includes(item.state)&&!['frame','publication-frame'].includes(item.action));
   return {...data,active,workerBusy,completed:items.filter(item=>!active.includes(item))};
  }
  function renderQueueSelection(){
@@ -235,7 +243,7 @@
   if(key!==queueKey){
    queueKey=key;
    $('tieba-queue-counts').textContent=data.view==='replies'?'处理中 '+data.counts.running+' · 等待 '+data.counts.queued+' · 已结束 '+(data.counts.totalCompleted??data.counts.completed):'回帖记录';
-   if(pacingActive)$('tieba-queue-counts').textContent+=' · 发言间隔 '+pacing.intervalMs/1000+'–'+(pacing.maxIntervalMs??pacing.intervalMs)/1000+' 秒随机放行，下次可发送 '+paceTime(pacing.nextPublishAt)+'（香港时间）';
+   if(pacingActive)$('tieba-queue-counts').textContent+=' · 放行间隔 '+intervalDescription(pacing)+' · 下次可发送 '+paceTime(pacing.nextPublishAt)+'（香港时间）';
    const allItems=data.completed,attention=data.issueCounts?.attention??allItems.filter(i=>isProblem(i)&&!i.dismissed).length,ignored=data.issueCounts?.dismissed??allItems.filter(i=>i.dismissed).length;
    for(const button of document.querySelectorAll('[data-tieba-filter]')){const f=button.dataset.tiebaFilter;button.setAttribute('aria-pressed',String(f===queueFilter));button.textContent=f==='all'?'全部':f==='attention'?'需处理 ('+attention+')':'已忽略 ('+ignored+')';}
    $('tieba-queue-ignore-actions').hidden=!attention;
@@ -271,7 +279,14 @@
  $('tieba-queue-refresh').onclick=()=>void refreshQueue();
  $('tieba-queue-prev').onclick=()=>{if(queueData?.offset)void refreshQueue(Math.max(0,queueData.offset-queueData.limit));};
  $('tieba-queue-next').onclick=()=>{if(queueData?.hasMore)void refreshQueue(queueData.offset+queueData.limit);};
- let pendingLoading=false,pendingKey='';
+ let pendingRequest,pendingKey='',pendingPause,pendingIntervals;
+ const cancellingPublications=new Set();
+ const intervalButton=$('tieba-pending-interval'),intervalForm=$('tieba-pending-interval-form');
+ function showIntervals(timing){
+  pendingIntervals=timing;
+  intervalButton.disabled=false;
+  $('tieba-pending-spacing').textContent='当前放行间隔 '+intervalDescription(timing)+'。预计发送时间以香港时间显示。';
+ }
  function countdown(at){
   const seconds=Math.max(0,Math.ceil((at-Date.now())/1000));
   return seconds?seconds+' 秒后':'可放行，等待执行';
@@ -283,19 +298,32 @@
  function until(at){
   const label=node('strong','tieba-pending-clock',countdown(at));label.dataset.tiebaCountdown=at;return label;
  }
- async function refreshPending(){
-  if(pendingLoading||!dialog.open||document.hidden)return;
-  pendingLoading=true;
+ async function refreshPending(fresh=false){
+  if(!dialog.open||document.hidden)return;
+  if(pendingRequest){
+   if(!fresh)return pendingRequest;
+   await pendingRequest;
+  }
+  if(!pendingRequest)pendingRequest=loadPending().finally(()=>{pendingRequest=undefined;});
+  return pendingRequest;
+ }
+ async function loadPending(){
   try{
    const data=await api('tieba/queue?publications=1'),items=data.active,counts=data.counts;
    if(!Array.isArray(items))throw Error('队列接口未就绪');
-   const badge=$('tieba-pending-count');badge.hidden=!items.length;badge.textContent=items.length;
-   $('tieba-pending-status').textContent='进行中 '+counts.running+' · 排队 '+counts.queued+(data.workerBusy&&!counts.running?' · 工作器正在执行其他操作':'');
-   const next=data.publishPacing?.nextPublishAt,key=JSON.stringify([next,items]);
+   showIntervals(data.publishPacing);
+   pendingPause=data.publishPacing?.verificationPause;
+   const badge=$('tieba-pending-count');badge.hidden=!items.length&&!pendingPause;badge.textContent=items.length||'暂停';
+   $('tieba-pending-status').textContent=(pendingPause?'已暂停自动发送 · ':'')+'进行中 '+counts.running+' · 排队 '+counts.queued+(data.workerBusy&&!counts.running?' · 工作器正在执行其他操作':'');
+   const work=currentStatus?.publicationWork;
+   $('tieba-pending-verify').hidden=belongsTo(work,pendingPause?.requestId)&&['started','accepted','confirmed','unknown'].includes(work.stage);
+   $('tieba-pending-recovery').hidden=!pendingPause;
+   const next=data.publishPacing?.nextPublishAt,key=JSON.stringify([next,pendingPause,items]);
    if(key!==pendingKey){
     pendingKey=key;
     const release=$('tieba-pending-release'),box=$('tieba-pending-list');
-    if(next)release.replaceChildren('下次放行 '+paceTime(next)+' · ',until(next));
+    if(pendingPause)release.textContent='贴吧在 '+queueTime(pendingPause.detectedAt)+' 要求人工验证。新发言仍可入队，等你点「恢复发送」后继续。';
+    else if(next)release.replaceChildren('下次放行 '+paceTime(next)+' · ',until(next));
     else release.textContent='当前无间隔等待';
     box.replaceChildren();
     if(!items.length)box.append(node('p','tieba-queue-empty','没有正在处理或排队的发言。'));
@@ -307,15 +335,73 @@
      card.append(node('span','hint','入队 '+queueTime(item.createdAt)));
      if(item.scheduledAt){
       const when=node('span','hint','预计 '+queueTime(item.scheduledAt)+' · ');when.append(until(item.scheduledAt));card.append(when);
-     }else if(item.startedAt)card.append(node('span','hint','已开始 '+queueTime(item.startedAt)));
+     }else if(item.state==='queued'&&pendingPause)card.append(node('span','hint','等待手动恢复发送'));
+     else if(item.startedAt)card.append(node('span','hint','已开始 '+queueTime(item.startedAt)));
+     if(item.state==='queued'){
+      const cancel=node('button','quiet-button','取消排队');
+      cancel.type='button';cancel.disabled=cancellingPublications.has(item.id);
+      cancel.onclick=()=>void cancelQueuedPublication(item.id,cancel);
+      card.append(cancel);
+     }
      box.append(card);
     }
    }
    updateCountdowns();
   }catch(e){$('tieba-pending-status').textContent='排队状态读取失败：'+e.message;}
-  finally{pendingLoading=false;}
+ }
+ async function cancelQueuedPublication(operationId,button){
+  if(cancellingPublications.has(operationId))return;
+  const message=$('tieba-pending-error');message.textContent='';
+  cancellingPublications.add(operationId);button.disabled=true;
+  try{
+   const result=await call('tieba/queue-cancel',{operationId});
+   if(!result.cancelled)message.textContent=result.state==='running'||result.state==='cleaning'?'这条已开始处理。':'这条已经离开排队。';
+  }catch(e){message.textContent='取消失败：'+failureText(e.message);}
+  finally{cancellingPublications.delete(operationId);button.disabled=false;await refreshPending(true);void refreshQueue();}
  }
  $('tieba-pending-refresh').onclick=()=>void refreshPending();
+ intervalButton.onclick=()=>{
+  if(!pendingIntervals)return;
+  const open=intervalForm.hidden;
+  intervalForm.hidden=!open;
+  intervalButton.setAttribute('aria-expanded',String(open));
+  if(open){
+   $('tieba-interval-min').value=pendingIntervals.intervalMs/1000;
+   $('tieba-interval-max').value=pendingIntervals.maxIntervalMs/1000;
+   $('tieba-interval-error').textContent='';
+   $('tieba-interval-min').focus();
+  }
+ };
+ intervalForm.onsubmit=async event=>{
+  event.preventDefault();
+  const save=$('tieba-interval-save'),error=$('tieba-interval-error');
+  if(save.disabled)return;
+  const min=$('tieba-interval-min').valueAsNumber,max=$('tieba-interval-max').valueAsNumber;
+  if(max<min){error.textContent='最长间隔要大于或等于最短间隔。';return;}
+  save.disabled=true;error.textContent='';
+  try{
+   const timing=await call('tieba/queue-interval',{intervalMs:min*1000,maxIntervalMs:max*1000});
+   showIntervals(timing);
+   intervalForm.hidden=true;
+   intervalButton.setAttribute('aria-expanded','false');
+   intervalButton.focus();
+   await refreshPending();
+  }catch(e){error.textContent=e.message==='TIEBA_PUBLISH_INTERVAL_INVALID'?'请检查间隔秒数。':'保存失败：'+failureText(e.message);}
+  finally{save.disabled=false;}
+ };
+ $('tieba-pending-verify').onclick=()=>{
+  if(!pendingPause||working||rowOpening)return;
+  const {requestId}=pendingPause;
+  showTiebaTab('account');selectQueueReply(undefined);
+  void task(async()=>{render(await call('tieba/publication-start',{requestId}));if(currentStatus?.interaction==='publication')await frame();},'正在打开这条发言的官网验证页面…');
+ };
+ $('tieba-pending-resume').onclick=async()=>{
+  const button=$('tieba-pending-resume');if(!pendingPause||button.disabled)return;
+  const error=$('tieba-pending-error');button.disabled=true;error.textContent='';
+  try{await call('tieba/queue-resume',pendingPause);}
+  catch(e){error.textContent=e.message==='TIEBA_QUEUE_PAUSE_CHANGED'?'出现了新的人工验证，请查看最新状态。':failureText(e.message);}
+  finally{await refreshPending();button.disabled=false;}
+ };
  setInterval(()=>{void refreshQueue();void refreshPending();},2500);
  setInterval(updateCountdowns,1000);
  function render(s){
@@ -377,7 +463,7 @@
   const issue=result?.issue,detail=issue?'参数 '+issue.field+'：'+issue.reason:result?.receipt?.errorMessage||(result?.error?failureText(result.error,result?.receipt):'')||(application?'官网申请结果尚未确认':'贴吧要求安全验证');
   $('tieba-alert-text').textContent=(application?'肥鱼的小吧主申请需要处理：':'肥鱼的贴吧发言需要处理：')+detail;
   $('tieba-attempt').hidden=!a&&!w&&!application||!!w&&!application&&(!a||matched)&&!queued;
-  const queuedDetail=queued?['已进入贴吧通用排队，按1分钟到1分20秒随机间隔自动发送，勿重试勿重复发',result.queuePosition?'排队第 '+result.queuePosition+' 条':'',result.scheduledAt?'预计 '+paceTime(result.scheduledAt)+' 发送（香港时间）':''].filter(Boolean).join(' · '):'';
+  const queuedDetail=queued?['已进入贴吧通用队列',result.queuePosition?'排队第 '+result.queuePosition+' 条':'',result.verificationPause?'等待手动恢复发送':result.scheduledAt?'预计 '+paceTime(result.scheduledAt)+' 发送（香港时间）':''].filter(Boolean).join(' · '):'';
   $('tieba-attempt-detail').textContent=[application?'小吧主申请 · 吧ID '+application.forumId:request?.threadId?'帖子 '+request.threadId:request?.title?'新主题 '+request.title:'',queued?queuedDetail:result?.stage==='input_validation'?'本地参数校验未通过，请求没有发往贴吧':result?.stage==='running'?'正在处理这次请求':result?.applicationStatus==='pending_approval'?'申请已提交，等待吧主审批':result?.applicationStatus==='already_moderator'?'官网确认已是小吧主':result?.applicationStatus==='eligible'?'官网允许填写申请感言，尚未提交':result?.published?'已确认公开可见':result?.deliveryStatus==='accepted'?'贴吧已接收，正在核对公开结果':detail,request?.content||'',a?.requestId||activeId||''].filter(Boolean).join('\n');
   for(const [id,item] of [['tieba-attempt',s.attention],['tieba-publication',w]]){
    const badge=$(id+'-badge'),needsAttention=id==='tieba-attempt'?problem:item?.problem;

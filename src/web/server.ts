@@ -8,9 +8,9 @@ import { safePath } from '../paths.js';
 import { FishError,codeOf } from '../types.js';
 import type { WebApp } from './app.js';
 
-async function body(req:IncomingMessage):Promise<any>{
+async function body(req:IncomingMessage,limit=32768):Promise<any>{
   const chunks:Buffer[]=[];let length=0;
-  for await(const part of req){length+=part.length;if(length>32768)throw new FishError('BODY_LIMIT');chunks.push(part);}
+  for await(const part of req){length+=part.length;if(length>limit)throw new FishError('BODY_LIMIT');chunks.push(part);}
   try{const value=JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}');if(!value||typeof value!=='object'||Array.isArray(value))throw 0;return value;}
   catch{throw new FishError('INVALID_JSON');}
 }
@@ -40,7 +40,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         res.statusCode=403;throw new FishError('LOCAL_ONLY');
       }
       const url=new URL(req.url??'/',origin);
-      const assets:Record<string,[string,string]>={'/':['index.html','text/html'],'/web.css':['web.css','text/css'],'/appearance.js':['appearance.js','text/javascript'],'/web.js':['web.js','text/javascript'],'/portrait-motion.js':['portrait-motion.js','text/javascript'],'/activity.js':['activity.js','text/javascript'],'/neon.js':['neon.js','text/javascript'],'/exploration.js':['exploration.js','text/javascript'],'/tieba.js':['tieba.js','text/javascript'],'/fish.svg':['fish.svg','image/svg+xml']};
+      const assets:Record<string,[string,string]>={'/':['index.html','text/html'],'/web.css':['web.css','text/css'],'/appearance.js':['appearance.js','text/javascript'],'/web.js':['web.js','text/javascript'],'/portrait-motion.js':['portrait-motion.js','text/javascript'],'/activity.js':['activity.js','text/javascript'],'/neon.js':['neon.js','text/javascript'],'/exploration.js':['exploration.js','text/javascript'],'/corpus.js':['corpus.js','text/javascript'],'/tieba.js':['tieba.js','text/javascript'],'/fish.svg':['fish.svg','image/svg+xml']};
       // The independently running Tailscale gateway may have an older pathname allowlist.
       // Serve the fixed portrait assets under a read-only path older gateways already forward.
       const webAsset=url.pathname==='/web.js'?url.searchParams.get('asset'):null;
@@ -74,7 +74,17 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
       }
       if(!equal(req.headers.authorization??'','Bearer '+app.token)){res.statusCode=401;throw new FishError('LOCAL_AUTH_REQUIRED');}
       let value:unknown;
-      if(req.method==='GET'&&url.pathname==='/api/tieba')value=await tiebaStatus();
+      if(req.method==='GET'&&url.pathname==='/api/corpus')value=app.corpus(Object.fromEntries(url.searchParams));
+      else if(req.method==='GET'&&url.pathname==='/api/corpus/likes')value=app.corpusLikes(Object.fromEntries(url.searchParams));
+      else if(req.method==='POST'&&url.pathname.startsWith('/api/corpus/')){
+        const handlers:Record<string,(input:any)=>unknown>={
+          '/api/corpus/extract':app.corpusExtract,'/api/corpus/settings':app.corpusSettings,'/api/corpus/cards':app.corpusCreate,'/api/corpus/cards/update':app.corpusUpdate,
+          '/api/corpus/cards/status':app.corpusStatus,'/api/corpus/cards/delete':app.corpusDelete,
+          '/api/corpus/likes/toggle':app.corpusToggleLike,'/api/corpus/likes/delete':app.corpusDeleteLikes,
+        };
+        const handler=handlers[url.pathname];if(!handler)throw new FishError('NOT_FOUND');value=await handler(await body(req));
+      }
+      else if(req.method==='GET'&&url.pathname==='/api/tieba')value=await tiebaStatus();
       else if(req.method==='GET'&&url.pathname==='/api/tieba/queue'&&url.searchParams.get('publications')==='1')value=await app.tieba.publicationQueue();
       else if(req.method==='GET'&&url.pathname==='/api/tieba/sections')value=await app.tiebaSections();
       else if(req.method==='GET'&&['/api/tieba/actions','/api/tieba/queue'].includes(url.pathname)){
@@ -88,6 +98,7 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         value=url.pathname==='/api/tieba/actions'?await app.tieba.history(offset):
           filteredReplies?await app.tiebaReplyQueue(offset,activeOnly,selectedId,filter):
             url.searchParams.get('replies')==='1'?await app.tieba.replyQueue(offset,activeOnly,selectedId):await app.tieba.queue(offset,activeOnly);
+        if(url.pathname==='/api/tieba/queue'&&url.searchParams.get('replies')==='1'&&typeof app.corpusQueue==='function')value=app.corpusQueue(value);
         if(url.pathname==='/api/tieba/queue'&&typeof app.tiebaQueue==='function'&&!filteredReplies)value=app.tiebaQueue(value);
       }
       else if(req.method==='GET'&&url.pathname==='/api/tieba/frame'){
@@ -98,7 +109,15 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         const frame=evidence?await app.tieba.publicationEvidence(requestId,evidence):await app.tieba.publicationFrame(requestId);
         res.setHeader('Content-Type','image/png');res.setHeader('X-Tieba-Frame-At',String(frame.at));res.setHeader('X-Tieba-Frame-Live',String(frame.live));res.setHeader('X-Tieba-Frame-Request',frame.requestId);res.end(frame.bytes);return;
       }
-      else if(req.method==='GET'&&url.pathname==='/api/status')value={...app.status(),tieba:await tiebaStatus(),tiebaAttempt:app.tiebaAttempt()};
+      else if(req.method==='GET'&&url.pathname==='/api/opencode/models'){
+        const slots=url.searchParams.getAll('keySlot');
+        if(slots.length>1||[...url.searchParams.keys()].some(key=>key!=='keySlot'))throw new FishError('INVALID_KEY_SLOT');
+        value=await app.opencodeModels(slots[0]);
+      }
+      else if(req.method==='GET'&&url.pathname==='/api/status'){
+        void app.pollBalance?.();
+        value={...app.status({refreshOpenCodeQuota:true}),tieba:await tiebaStatus(),tiebaAttempt:app.tiebaAttempt()};
+      }
       else if(req.method==='GET'&&url.pathname==='/api/exploration')value=app.exploration.status();
       else if(req.method==='GET'&&url.pathname==='/api/companion')value=app.companion();
       else if(req.method==='GET'&&url.pathname==='/api/exploration/journal')value=app.exploration.journal({...Object.fromEntries(url.searchParams),offset:Number(url.searchParams.get('offset')??0),removed:url.searchParams.get('removed')==='true'});
@@ -133,12 +152,25 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         res.setHeader('Content-Disposition',"attachment; filename*=UTF-8''"+encodeURIComponent(name.split('/').at(-1)!));
         res.setHeader('Content-Security-Policy',"default-src 'none'; sandbox");res.end(content);return;
       }else if(req.method==='POST'){
-        const b=await body(req);
+        const b=await body(req,url.pathname==='/api/persona'?65536:32768);
         if(url.pathname==='/api/tieba/dismiss'){
           if(typeof app.tiebaDismiss!=='function')throw new FishError('TIEBA_ACTION_DENIED');
           value=app.tiebaDismiss(b);
         }
         else if(url.pathname==='/api/tieba/sections')value=app.saveTiebaSections(b);
+        else if(url.pathname==='/api/tieba/queue-resume'){
+          value=await app.tieba.resumePublicationQueue(b);
+          app.tiebaAudit('queue-resume',value);
+        }
+        else if(url.pathname==='/api/tieba/queue-interval'){
+          value=await app.tieba.setPublicationIntervals(b);
+          app.tiebaAudit('queue-interval',value);
+        }
+        else if(url.pathname==='/api/tieba/queue-cancel'){
+          if(Object.keys(b).length!==1||typeof b.operationId!=='string')throw new FishError('TIEBA_INPUT_INVALID');
+          value=await app.tieba.cancelQueuedPublication(b.operationId);
+          app.tiebaAudit('queue-cancel',value);
+        }
         else if(url.pathname.startsWith('/api/tieba/')){
           const action=url.pathname.slice(11);
           try{
@@ -174,6 +206,9 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         else if(url.pathname==='/api/neon/reset-conversation')value=app.neonResetConversation(b);
         else if(url.pathname==='/api/neon/interrupt')value=app.neonInterrupt(b);
         else if(url.pathname==='/api/activity/interrupt')value=app.activityInterrupt(b);
+        else if(url.pathname==='/api/connection-presets')value=app.saveConnectionPreset(b);
+        else if(url.pathname==='/api/connection-presets/delete')value=app.deleteConnectionPreset(b);
+        else if(url.pathname==='/api/opencode/models/refresh')value=await app.refreshOpencodeModels(b);
         else if(url.pathname==='/api/settings'){
           if(!Object.hasOwn(b,'companion'))value=app.configure(b);
           else{
@@ -185,6 +220,8 @@ export function webServer(app:WebApp,port=17862,onStop:()=>void=()=>{}){
         else if(url.pathname==='/api/companion')value=app.configureCompanion(b);
         else if(url.pathname==='/api/qq')value=app.configureQQ(b);
         else if(url.pathname==='/api/codex-quota/refresh')value=await app.refreshQuota();
+        else if(url.pathname==='/api/agy-quota/refresh')value=app.refreshAgyQuota(b);
+        else if(url.pathname==='/api/deepseek-balance/refresh')value=await app.refreshDeepSeekBalance(b);
         else if(url.pathname==='/api/images/reset')value=app.resetImages();
         else if(['/api/costs/reset','/api/tokens/reset'].includes(url.pathname)){
           if(Object.keys(b).length)throw new FishError('INVALID_TOKEN_RESET_REQUEST');

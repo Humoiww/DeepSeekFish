@@ -2,16 +2,17 @@ import {gifParameters} from '../image/options.js';
 import type { ModelTool } from '../types.js';
 import { imageFields } from '../web/images.js';
 import { knowledgeUpdateParameters } from '../memory/knowledge.js';
+import {OUTBOUND_VOICE_HINT} from '../character.js';
 
-const remark={type:'string',description:'想顺口对朋友说的话，可省略',maxLength:180};
+const remark={type:'string',description:'想顺口对朋友说的话，可省略。'+OUTBOUND_VOICE_HINT,maxLength:180};
 export const sendQQMessage:ModelTool={type:'function',function:{
   name:'send_message',description:'给当前 QQ 私聊发一条你想先说或补充的话。可以连续调用，或发完接着用其他工具，无需等对方回话。想结束本次问答时用 reply，已经说完可以用 reply 的空文字收尾。',
-  parameters:{type:'object',properties:{text:{type:'string',description:'这条发给对方的话'}},required:['text'],additionalProperties:false}
+  parameters:{type:'object',properties:{text:{type:'string',description:OUTBOUND_VOICE_HINT}},required:['text'],additionalProperties:false}
 }};
 export function qqChatTools(profile:boolean,image:boolean,qzone=false,channel:'qq'|'background'='qq'):ModelTool[]{
-  const imageMessage=channel==='qq'?{messageToQQ:{type:'string',description:'可选。想在开画前直接对当前 QQ 聊天里的人说话时才填，文字会原样发送。给画师的要求写在画面字段里。',maxLength:180}}:{};
+  const imageMessage=channel==='qq'?{messageToQQ:{type:'string',description:'可选。想在开画前直接对当前 QQ 聊天里的人说话时才填，文字会原样发送。给画师的要求写在画面字段里。'+OUTBOUND_VOICE_HINT,maxLength:180}}:{};
   return [
-    {type:'function',function:{name:'reply',description:'发消息并结束这一轮。memory可同时后台保存你想长期记住的内容；其他操作先用对应工具。',parameters:{type:'object',properties:{text:{type:'string',description:'你想对朋友说的话'},memory:knowledgeUpdateParameters},required:['text'],additionalProperties:false}}},
+    {type:'function',function:{name:'reply',description:'发消息并结束这一轮。memory可同时后台保存你想长期记住的内容；其他操作先用对应工具。',parameters:{type:'object',properties:{text:{type:'string',description:OUTBOUND_VOICE_HINT},memory:knowledgeUpdateParameters},required:['text'],additionalProperties:false}}},
     {type:'function',function:{name:'get_quota',description:channel==='qq'?'读取当前心情、耐力（companion）以及每日 API 费用额度和生图次数。':'读取每日 API 费用额度和生图次数。',parameters:{type:'object',properties:{},additionalProperties:false}}},
     ...(profile?[{type:'function' as const,function:{name:'get_person',description:'查看对方 QQ 头像和资料。',parameters:{type:'object',properties:{view:{type:'string',enum:['avatar','profile']},remark},required:['view'],additionalProperties:false}}}]:[]),
     ...(qzone?[{type:'function' as const,function:{name:'get_qzone',description:'看指定账号的QQ空间说说。target=self是你（肥鱼）自己的空间，speaker是当前说话人，其他人填QQ号；1最新、2上一条。结果和附件标明所属账号。',parameters:{type:'object',properties:{target:{type:'string',description:'self / speaker / 明确的QQ号'},index:{type:'integer',minimum:1,maximum:10000},count:{type:'integer',minimum:1,maximum:10},remark},required:['target','index','count'],additionalProperties:false}}}]:[]),

@@ -10,19 +10,21 @@ import {redact} from '../storage/db.js';
 import {safePath,writePrivateAtomic} from '../paths.js';
 import {FishError,codeOf} from '../types.js';
 import {BridgeRecords,bridgeText} from './bridge-records.js';
+import {parseAgyQuota} from './agy-quota.js';
 import {NativeBridgeCodex} from './agy-codex.js';
+import {AgySite,siteHtmlIssues,siteRoots} from './agy-site.js';
 import {hash,revision,type Tree} from './workspace.js';
-import {allowedBridgePath,bridgeRoots,cancelSchema,conversationPattern,resetConversationSchema,
+import {agyQuotaTtlMs,allowedBridgePath,allowedSitePath,bridgeRoots,cancelSchema,conversationPattern,inkfishchanSiteUrl,resetConversationSchema,
  isBridgeRecordKind,maxChangeBytes,maxChanges,maxFileBytes,matchesSchema,reviewSchema,steerSchema,taskIdPattern,triageSchema,turnSchema,
- type AgyCancelRequest,type AgyCancelResult,type AgyConversation,type AgyChange,type AgyStage,type AgyStatus,type AgyTurnRequest,
+ type AgyCancelRequest,type AgyCancelResult,type AgyConversation,type AgyChange,type AgyQuota,type AgyStage,type AgyStatus,type AgyTurnRequest,
  type AgySteerRequest,type AgySteerResult,type AgyTurnResult,type BridgeEvent,type CodexSpec,type Review,type Triage} from './agy-bridge-types.js';
 
 type BridgeOptions={
  appRoot:string;stateDir:string;agyBin:string;codexSocket:string;codexModel?:string;codexEffort?:string;model?:string;effort:string;
- sourceDir?:string;nativeAgy?:string;nativeCodex?:string;
+ sourceDir?:string;siteDir?:string;nativeAgy?:string;nativeCodex?:string;
  stageTimeout:number;codexTimeout:number;maxRetries:number;
 };
-type ProcessKind='agy'|'verify';
+type ProcessKind='agy'|'verify'|'site_git';
 type Invocation={command:string;args:string[];cwd:string;env:NodeJS.ProcessEnv;kind:ProcessKind};
 type Runner=(invocation:Invocation)=>Invocation;
 type Active={id:string;stage:AgyStage;startedAt:number;controller:AbortController;recentEvents:BridgeEvent[];
@@ -34,8 +36,9 @@ type CandidateFile={name:string;file?:string;hash?:string};
 type Snapshot=Map<string,Entry>;
 type Verification={
  code:{exit:number|null;timedOut:boolean};build?:Execution;test?:Execution;
- violations:string[];status:string;stat:string;diff:string;
+ violations:string[];status:string;stat:string;diff:string;siteChecks?:string[];
 };
+type EditTarget={kind:'main_repo';installed:Snapshot}|{kind:'inkfishchan_site';site:AgySite};
 
 const acceptedConfig=['package.json','package-lock.json','tsconfig.json','README.md','AGENTS.md','scripts','deploy/napcat-login-memory.mjs'];
 const roots=[...bridgeRoots,...acceptedConfig];
@@ -44,6 +47,10 @@ const safeName=(name:string)=>name.split('/').every(part=>!!part&&!part.startsWi
 const testArgs=['--test','--test-isolation=none','--test-concurrency=1','dist/tests/*.test.js'];
 const mainConversationFile='main-conversation.json';
 const mainCodexFile='main-codex-thread.json';
+const siteCodexFile='site-codex-thread.json';
+const siteFolder='humoi-forge-InkFishChan';
+const maxSiteFileBytes=10*1024*1024;
+const maxSiteChangeBytes=20*1024*1024;
 const agySessionSettings=JSON.stringify({
  agentMode:'plan',enableTerminalSandbox:false,
  permissions:{ask:[],allow:['command(*)','unsandboxed(*)']},
@@ -63,7 +70,7 @@ function gitTask(cwd:string,args:string[],diff=false){
   cwd,env:gitEnv,maxBuffer:64*1024*1024,timeout:30000,
  });
  if(result.error)throw result.error;
- if(result.status===0||diff&&result.status===1)return result.stdout;
+ if(result.status===0||diff&&result.status===1||args.includes('--check')&&(result.status===2||result.status===3))return result.stdout;
  if(args[0]==='merge-file'&&result.status!==null)return;
  throw new FishError('DEV_AGY_DIFF_FAILED');
 }
@@ -106,13 +113,13 @@ function ownedDirectory(folder:string){
  return folder;
 }
 
-function scan(folder:string,onFile?:(name:string,entry:Entry,bytes:Buffer)=>void){
+function scan(folder:string,onFile?:(name:string,entry:Entry,bytes:Buffer)=>void,site=false){
  const result:Snapshot=new Map(),violations:string[]=[];
  function visit(name:string){
   const file=path.join(folder,name);
   const stat=fs.lstatSync(file,{throwIfNoEntry:false});
   if(!stat)return;
-  if(!safeName(name)||stat.isSymbolicLink()){
+  if(!site&&!safeName(name)||stat.isSymbolicLink()){
    violations.push(name);
    return;
   }
@@ -137,7 +144,7 @@ function scan(folder:string,onFile?:(name:string,entry:Entry,bytes:Buffer)=>void
    onFile?.(name,entry,bytes);
   }finally{fs.closeSync(fd);}
  }
- for(const name of roots)visit(name);
+ for(const name of site?siteRoots(folder):roots)visit(name);
  return {result,violations};
 }
 
@@ -223,7 +230,7 @@ function run(invocation:Invocation,input:string,timeoutMs:number,signal:AbortSig
   child.once('close',(code,exitSignal)=>{
    cleanup();
    if(!stderr.discard)processEvent('进程诊断',stderr.text);
-   if(invocation.kind==='verify'&&!stdout.discard)processEvent('验证输出',stdout.text);
+   if(invocation.kind!=='agy'&&!stdout.discard)processEvent('验证输出',stdout.text);
    const after=oomKills();
    const oomKilled=before!==undefined&&after!==undefined&&after>before;
    if(oomKilled)processEvent('内存诊断','systemd cgroup 记录到 OOM kill（'+before+' → '+after+'）');
@@ -281,6 +288,9 @@ function savePatch(stateDir:string,taskId:string,patch:Buffer){
 
 class Bridge {
  private active?:Active;
+ private quota:AgyQuota={source:'agy',checkedAt:0};
+ private quotaAttemptAt=-Infinity;
+ private quotaFlight?:{controller:AbortController;result:Promise<AgyQuota>};
  private readonly schemaDir:string;
  private conversationGeneration=0;
  private readonly records:BridgeRecords;
@@ -312,6 +322,31 @@ class Bridge {
   }
  }
 
+ private async readQuota(force:boolean):Promise<AgyQuota>{
+  if(!force&&Date.now()-this.quotaAttemptAt<agyQuotaTtlMs)return this.quota;
+  if(this.active)return {...this.quota,error:'DEV_AGY_QUOTA_BUSY',stale:true};
+  if(this.quotaFlight)return this.quotaFlight.result;
+  if(force&&Date.now()-this.quotaAttemptAt<10_000)return this.quota;
+  const {agyBin,sourceDir,appRoot}=this.options,controller=new AbortController();
+  const invocation:Invocation={kind:'agy',command:agyBin,args:['-p','/quota','--print-timeout','30s'],cwd:sourceDir??appRoot,env:process.env};
+  const result=(async()=>{
+   try{
+    const read=await run(this.launch(invocation),'',35_000,controller.signal,16*1024,()=>{});
+    if(read.timedOut)throw new FishError('DEV_AGY_QUOTA_TIMEOUT');
+    if(read.code!==0)throw new FishError('DEV_AGY_QUOTA_FAILED');
+    this.quota=parseAgyQuota(read.output);
+   }catch(error){
+    if(controller.signal.aborted)return {...this.quota,error:'DEV_AGY_QUOTA_BUSY',stale:true};
+    const code=codeOf(error);
+    this.quota={...this.quota,error:code.startsWith('DEV_AGY_QUOTA_')?code:'DEV_AGY_QUOTA_FAILED',stale:true};
+   }
+   this.quotaAttemptAt=Date.now();
+   return this.quota;
+  })().finally(()=>{this.quotaFlight=undefined;});
+  this.quotaFlight={controller,result};
+  return result;
+ }
+
  private mainConversation():AgyConversation|undefined{
   const file=safePath(this.options.stateDir,mainConversationFile);
   try{
@@ -328,12 +363,13 @@ class Bridge {
  private resetConversation(){
   fs.rmSync(safePath(this.options.stateDir,mainConversationFile),{force:true});
   fs.rmSync(safePath(this.options.stateDir,mainCodexFile),{force:true});
+  fs.rmSync(safePath(this.options.stateDir,siteCodexFile),{force:true});
   this.conversationGeneration++;
  }
 
- private mainCodexThread(){
+ private codexThread(file:string){
   try{
-   const {threadId}=JSON.parse(fs.readFileSync(safePath(this.options.stateDir,mainCodexFile),'utf8'));
+   const {threadId}=JSON.parse(fs.readFileSync(safePath(this.options.stateDir,file),'utf8'));
    if(typeof threadId==='string'&&taskIdPattern.test(threadId))return threadId;
    throw new FishError('DEV_CODEX_THREAD_STATE_INVALID');
   }catch(error){
@@ -366,12 +402,15 @@ class Bridge {
   const main=request.mode==='development';
   const state=main?this.mainConversation():undefined;
   const {lastDelivery,...input}=request;
+  const cwd=this.options.sourceDir??this.options.appRoot;
+  const siteDir=this.options.siteDir??path.join(cwd,siteFolder);
   const prompt=[policy,main?'根据本次消息决定直接答复、澄清或交 Codex 实现。':
    '这是任务链内的只读提问。只能返回 reply_only，绝不委派或修改文件。',
+   '若需求涉及肥鱼的小屋（fish.humoiforge.com / humoi-forge-InkFishChan），先只读核对 '+siteDir+
+    ' 下的 README.md、InkFishChan.md 和 public/。获授权且需要改网站时用 delegate_codex 与 codexSpec.target=inkfishchan_site。主仓库任务用 main_repo 或省略 target。',
    ...(main&&lastDelivery&&lastDelivery.at>(state?.updatedAt??0)?[
     '上次交付回执 '+bridgeText(lastDelivery.text,600),
    ]:[]),JSON.stringify(diagnosticSafe(input))].join('\n\n');
-  const cwd=this.options.sourceDir??this.options.appRoot;
   return main?this.mainAgy('triage',prompt,cwd,active):this.agy('triage',prompt,cwd,active);
  }
 
@@ -417,6 +456,7 @@ class Bridge {
     text:bridgeText([result.output,result.error].filter(Boolean).join('\n'),2200)};
   });
   if(evidence?.violations.length)steps.push({role:'bridge',at:Date.now(),title:'变更检查',text:bridgeText(evidence.violations.join('、'))});
+  if(evidence?.siteChecks?.length)steps.push({role:'bridge',at:Date.now(),title:'小屋静态验收',text:bridgeText(evidence.siteChecks.join('\n'))});
   const target=path.join(directory,session+'.json'),temp=target+'.tmp';
   fs.writeFileSync(temp,JSON.stringify({taskId:active.id,steps:steps.filter(Boolean)}),{mode:0o600});
   fs.renameSync(temp,target);
@@ -425,7 +465,7 @@ class Bridge {
   for(const old of entries.slice(20))fs.rmSync(old,{force:true});
  }
 
- private execute(kind:ProcessKind,command:string,args:string[],cwd:string,active:Active,timeout:number,input='',limit=4000){
+ private execute(kind:'agy'|'verify',command:string,args:string[],cwd:string,active:Active,timeout:number,input='',limit=4000){
   active.controller.signal.throwIfAborted();
   const nodeBin=path.join(this.options.appRoot,'runtime/tools/node/bin');
   const env={...process.env,PATH:[nodeBin,process.env.PATH].filter(Boolean).join(path.delimiter),
@@ -579,6 +619,82 @@ class Bridge {
   return {evidence,changed,after,diff,candidate};
  }
 
+ private async verifySite(site:AgySite,before:Snapshot,delta:string,execution:Pick<Execution,'code'|'timedOut'>,active:Active){
+  this.phase(active,'verify','小屋静态验收');
+  const {result:after,violations}=scan(site.cwd,undefined,true);
+  const changed=descriptors(before,after);
+  const bytes=changed.reduce((total,name)=>total+(before.get(name)?.size??0)+(after.get(name)?.size??0),0);
+  const siteChecks:string[]=[];
+  const evidence:Verification={code:{exit:execution.code,timedOut:execution.timedOut},violations,
+   status:changed.map(name=>(!before.has(name)?'A ':!after.has(name)?'D ':'M ')+name).join('\n').slice(0,12000),
+   stat:'',diff:'',siteChecks};
+  let diff:Buffer|undefined;
+  for(const name of changed){
+   const entry=after.get(name);
+   if(!allowedSitePath(name)||(before.get(name)?.size??0)>maxSiteFileBytes||
+     entry&&(entry.size>maxSiteFileBytes||entry.mode!==(before.get(name)?.mode??0))){
+    violations.push('静态文件范围、权限或大小不符合要求 '+name);
+   }
+  }
+  if(!changed.length)violations.push('没有可发布的静态文件变更');
+  if(changed.length>maxChanges||bytes>maxSiteChangeBytes)violations.push('变更超过文件数或 20 MiB 总大小上限');
+  const index=after.get('public/index.html');
+  if(!index?.size||!verifiedBytes(site.cwd,'public/index.html',index).toString().trim())violations.push('public/index.html 缺失或为空');
+  if(!violations.length){
+   try{site.check(changed);}
+   catch(error){violations.push(codeOf(error)+' '+bridgeText(error instanceof Error?error.message:error,2000));}
+  }
+  if(!violations.length){
+   const staging=fs.mkdtempSync(path.join(delta,'diff-'));
+   for(const dir of ['before','after'])fs.mkdirSync(path.join(staging,dir),{mode:0o700});
+   for(const name of changed){
+    const original=before.get(name);
+    if(original){
+     const previous=site.original(name);
+     if(hash(previous)!==original.hash)throw new FishError('DEV_AGY_CANDIDATE_CHANGED');
+     scratchFile(staging,'before/'+name,previous);
+    }
+    const next=after.get(name);
+    if(!next)continue;
+    const contents=verifiedBytes(site.cwd,name,next);
+    scratchFile(staging,'after/'+name,contents);
+    if(/\.html?$/i.test(name)){
+     const issues=siteHtmlIssues(contents.toString());
+     if(issues.length)violations.push(name+' 含有 '+issues.join('、'));
+    }
+   }
+   const whitespace=gitTask(staging,['diff','--no-index','--check','--','before','after'],true)!;
+   if(whitespace.length)violations.push('git diff --check：'+whitespace.toString().slice(0,2000));
+   diff=diffOutput(staging);
+   evidence.stat=diffOutput(staging,true).toString().slice(0,12000);
+   evidence.diff=diff.length>49152?diff.subarray(0,49152).toString()+'\n（diff 超过 48 KB，已截断）':diff.toString();
+   siteChecks.push(violations.length?'HTML/CSP 或差异检查未通过':'静态路径、首页、HTML/CSP 和 git diff --check 已通过。');
+  }
+  if(!violations.length){
+   if(site.hasLocalBuild){
+    evidence.build=await this.execute('verify','npm',['run','build'],site.cwd,active,180000);
+    if(evidence.build.oomKilled)throw new FishError('DEV_AGY_OOM_KILLED');
+   }else{
+    siteChecks.push('VPS 未安装项目的 cf CLI。正式构建由 Cloudflare Workers Builds 在推送后执行。');
+   }
+   const final=scan(site.cwd,undefined,true);
+   if(final.violations.length||descriptors(after,final.result).length)evidence.violations.push('验收期间候选文件发生变化');
+  }
+  return {evidence,changed,after,diff,candidate:[]};
+ }
+
+ private siteFailure(result:AgyTurnResult,active:Active,error:unknown){
+  if(active.controller.signal.aborted)throw active.controller.signal.reason;
+  const code=codeOf(error);
+  const detail=bridgeText([code,error instanceof Error&&error.message!==code?error.message:''].filter(Boolean).join(' · '),1600);
+  this.event(active,{role:'bridge',title:'小屋发布未完成',text:detail});
+  result.outcome='escalated';
+  result.summary={...result.summary,target:'inkfishchan_site',verdict:'escalate_to_owner',sitePushed:false,siteUrl:inkfishchanSiteUrl};
+  const commit=result.summary.siteCommit;
+  result.replyToFeiyu=[commit?'小屋本地提交 '+commit+' 已创建，GitHub 推送未获确认。':'小屋任务未推送。',detail].join('\n');
+  return result;
+ }
+
  private async turn(request:AgyTurnRequest,active:Active):Promise<AgyTurnResult>{
   const cwd=this.options.sourceDir??this.options.appRoot;
   const {result:installed,violations}=scan(this.options.appRoot);
@@ -602,6 +718,18 @@ class Bridge {
   }
   if(triage.decision==='reply_only')return result;
   if(!triage.codexSpec||triage.alreadyImplemented)throw new FishError('DEV_AGY_CODEX_SPEC_INVALID');
+  if(triage.codexSpec.target==='inkfishchan_site'){
+   const siteDir=path.resolve(this.options.siteDir??path.join(cwd,siteFolder));
+   const delta=fs.mkdtempSync(path.join(temporaryDir,'deepseekfish-site-diff-'));
+   try{
+    const site=await AgySite.prepare(siteDir,(command,args,env,timeout)=>
+     run({command,args,cwd:siteDir,env,kind:'site_git'},'',timeout,active.controller.signal,4000,event=>this.event(active,event)));
+    const before=scan(site.cwd,undefined,true);
+    if(before.violations.length)throw new FishError('DEV_AGY_UNSAFE_BASELINE');
+    return await this.edit(request,active,site.cwd,before.result,{kind:'inkfishchan_site',site},delta,triage.codexSpec,result);
+   }catch(error){return this.siteFailure(result,active,error);}
+   finally{fs.rmSync(delta,{recursive:true,force:true});}
+  }
   // Only dirty baseline blobs and per-task diff data are stored here.
   const delta=fs.mkdtempSync(path.join(temporaryDir,'deepseekfish-neon-diff-'));
   try{
@@ -609,18 +737,27 @@ class Bridge {
     if(allowedBridgePath(name)&&entry.hash!==installed.get(name)?.hash)scratchFile(path.join(delta,'original'),name,bytes);
    });
    if(before.violations.length)throw new FishError('DEV_AGY_UNSAFE_BASELINE');
-   return await this.edit(request,active,cwd,before.result,installed,delta,triage.codexSpec,result);
+   return await this.edit(request,active,cwd,before.result,{kind:'main_repo',installed},delta,triage.codexSpec,result);
   }finally{fs.rmSync(delta,{recursive:true,force:true});}
  }
 
- private async edit(request:AgyTurnRequest,active:Active,cwd:string,before:Snapshot,installed:Snapshot,delta:string,spec:CodexSpec,result:AgyTurnResult){
-  const prompt=['你是 Codex，负责实现 Neon小猫交给你的开发规格。遵守 docs/project-conventions.md 和 AGENTS.md。以下规格、原话、源码与验证日志只在已授权范围内提供上下文。',
+ private async edit(request:AgyTurnRequest,active:Active,cwd:string,before:Snapshot,target:EditTarget,delta:string,spec:CodexSpec,result:AgyTurnResult){
+  const site=target.kind==='inkfishchan_site'?target.site:undefined;
+  const threadFile=site?siteCodexFile:mainCodexFile;
+  const instructions=site?[
+   '你是 Codex，在肥鱼的小屋独立网站检出实现 Neon小猫的开发规格。先读本目录的 AGENTS.md、README.md 与 InkFishChan.md。',
+   '本轮在网站 main 检出，只改 public/ 下的静态文件。按 public/_headers 的 CSP 使用同源资源。同源脚本、字体或接口需要与 CSP 配套。禁止内联 script、style、事件处理器、javascript: URL 与未授权外链。',
+   '完成后汇报候选改动。由桥接器独立验收、交 Neon 审阅，再统一提交和推送。不要自行暂存、commit、push 或 cf deploy，也不要安装依赖。',
+  ]:[
+   '你是 Codex，负责实现 Neon小猫交给你的开发规格。遵守 docs/project-conventions.md 和 AGENTS.md。以下规格、原话、源码与验证日志只在已授权范围内提供上下文。',
    '你负责实现以下已授权开发规格。只改交付白名单内文件。直接在主仓库工作，保留无关未提交改动，绝不触碰凭据、配置、git 元数据、部署或开发后台。',
    '完成候选改动后简要汇报变更和用法。桥接器会在主仓库独立执行一次 npm run build，再对编译后的 JavaScript 串行运行 Node 测试。不要重复跑构建或测试，不要为了执行包管理器改写项目脚本或另建目录，不要部署或发送外部消息。',
+  ];
+  const prompt=[...instructions,
    JSON.stringify(diagnosticSafe({spec,brief:request.brief,ownerMessage:request.ownerMessage,supplements:request.supplements,repairReason:request.repairReason}))].join('\n\n');
   const codex=new NativeBridgeCodex({
    appRoot:this.options.appRoot,socket:this.options.codexSocket,cwd,timeout:this.options.codexTimeout,
-   model:this.options.codexModel,effort:this.options.codexEffort,
+   model:this.options.codexModel,effort:this.options.codexEffort,target:target.kind,
   },event=>this.event(active,event));
   active.codex=codex;
   try{
@@ -629,27 +766,31 @@ class Bridge {
     this.phase(active,result.codexRetries?'codex_retry':'codex',result.codexRetries?'Codex 返工':'Codex 改码');
     const task=feedback?prompt+'\n\n返工依据：\n'+feedback:prompt;
     if(!result.codexSessionId){
-     const saved=active.generation===this.conversationGeneration?this.mainCodexThread():undefined;
+     const saved=active.generation===this.conversationGeneration?this.codexThread(threadFile):undefined;
      result.codexSessionId=await codex.open(active.controller.signal,saved);
      if(active.generation===this.conversationGeneration&&saved!==result.codexSessionId){
-      writePrivateAtomic(this.options.stateDir,mainCodexFile,JSON.stringify({threadId:result.codexSessionId,updatedAt:Date.now()}));
+      writePrivateAtomic(this.options.stateDir,threadFile,JSON.stringify({threadId:result.codexSessionId,updatedAt:Date.now()}));
      }
      this.saveVerification(active,result.codexSessionId);
     }
     const execution=await codex.turn(task,active.controller.signal);
     await Promise.all(active.steering.values());
     active.controller.signal.throwIfAborted();
-    const {evidence,changed,after,diff,candidate}=await this.verify(cwd,before,installed,delta,execution,active);
+    const {evidence,changed,after,diff,candidate}=target.kind==='inkfishchan_site'?
+     await this.verifySite(target.site,before,delta,execution,active):
+     await this.verify(cwd,before,target.installed,delta,execution,active);
     this.saveVerification(active,result.codexSessionId,evidence);
-    const buildPassed=evidence.build&&evidence.build.code===0&&!evidence.build.timedOut;
-    const testPassed=evidence.test&&evidence.test.code===0&&!evidence.test.timedOut;
+    const buildPassed=site&&!site.hasLocalBuild?!evidence.violations.length:evidence.build&&evidence.build.code===0&&!evidence.build.timedOut;
+    const testPassed=site?!evidence.violations.length:evidence.test&&evidence.test.code===0&&!evidence.test.timedOut;
     const safe=buildPassed&&testPassed&&execution.code===0&&!execution.timedOut&&!evidence.violations.length;
     result.summary={decision:'delegate_codex',changedFiles:changed.slice(0,250),buildPassed,testPassed};
+    if(site)Object.assign(result.summary,{target:'inkfishchan_site',siteUrl:inkfishchanSiteUrl,sitePushed:false});
     const followUps=[...active.steered.values()].map(({request})=>request);
     result.steered=[...active.steered.entries()].map(([source,{turnId}])=>({source,turnId}));
     const reviewInput=JSON.stringify(diagnosticSafe({spec,supplements:request.supplements,followUps,codexRetries:result.codexRetries,verification:evidence,
      codexNotes:execution.output.slice(-4000),codexError:execution.error}));
     const reviewed=await this.mainAgy('review',[policy,'审阅候选的差异和独立检查记录，同时考虑主人在改码中送达的补充。验证失败或触及禁区不能批准。交付说明只能陈述实际核对结果。',
+     ...(site?['当前候选是肥鱼的小屋。核对 public/ 白名单、保密和 CSP。批准后由桥接器推送 GitHub，Cloudflare 构建和实际发布尚需等待。']:[]),
      '结合已返工次数和目前进展，有明确的后续修正就给出返工意见；需要主人决定或无法推进时转交主人。',
      reviewInput].join('\n\n'),cwd,active);
     result.conversationId=reviewed.conversationId;
@@ -661,8 +802,22 @@ class Bridge {
      evidence.test&&!testPassed?'独立测试失败（退出码 '+evidence.test.code+'）':'',
     ].filter(Boolean).join('。');
     if(review.verdict==='approve'&&safe){
-     const reviewedTree=scan(cwd);
+     active.controller.signal.throwIfAborted();
+     const reviewedTree=scan(cwd,undefined,!!site);
      if(reviewedTree.violations.length||descriptors(after,reviewedTree.result).length)throw new FishError('DEV_AGY_CANDIDATE_CHANGED');
+     if(site){
+      result.summary.patchArchive=savePatch(this.options.stateDir,request.taskId,diff!);
+      const release=await site.publish(request.taskId,changed,after);
+      result.summary.siteCommit=release.commit;
+      this.event(active,{role:'bridge',title:'小屋提交已创建，开始推送',text:release.commit});
+      await release.push();
+      result.outcome='approved';
+      result.summary.verdict='approve';
+      result.summary.sitePushed=true;
+      result.replyToFeiyu=[bridgeText(redact(review.replyToFeiyu),3650),
+       '小屋提交 '+release.commit+' 已推送到 origin/main，Cloudflare Workers Builds 将自动构建和发布。站点 '+inkfishchanSiteUrl].join('\n');
+      return result;
+     }
      result.outcome='approved';
      result.summary.verdict='approve';
      result.replyToFeiyu=bridgeText(redact(review.replyToFeiyu),4000)!;
@@ -703,6 +858,15 @@ class Bridge {
   }
   if(req.method==='GET'&&req.url==='/v1/records'){
    send(res,200,{ok:true,records:this.records.list()});
+   return;
+  }
+  if((req.method==='GET'&&req.url==='/v1/quota')||(req.method==='POST'&&req.url==='/v1/quota/refresh')){
+   if(req.method==='POST'&&!matchesSchema(resetConversationSchema,await body(req))){
+    send(res,400,{ok:false,error:'DEV_AGY_INVALID_REQUEST'});
+    return;
+   }
+   const quota=await this.readQuota(req.method==='POST');
+   if(!res.destroyed)send(res,200,{ok:true,quota});
    return;
   }
   if(req.method==='GET'&&req.url?.startsWith('/v1/record?')){
@@ -764,6 +928,11 @@ class Bridge {
   this.active=active;
   res.once('close',()=>{if(!res.writableEnded)active.controller.abort(new FishError('DEV_AGY_CANCELLED'));});
   try{
+   const quota=this.quotaFlight;
+   if(quota){
+    quota.controller.abort();
+    await quota.result;
+   }
    const value=await this.turn(request,active);
    if(!res.destroyed)send(res,200,value);
   }catch(error){
@@ -809,6 +978,7 @@ async function main(){
   codexSocket:env.CODEX_NATIVE_SOCKET??path.join(homedir(),'.codex/app-server-control/app-server-control.sock'),
   codexModel:env.CODEX_NATIVE_MODEL||undefined,codexEffort:env.CODEX_NATIVE_EFFORT||undefined,
   sourceDir:process.cwd(),
+  siteDir:env.AGY_SITE_DIR||undefined,
   nativeAgy:path.join(homedir(),'.gemini/antigravity-cli/brain'),
   nativeCodex:path.join(env.CODEX_HOME??path.join(homedir(),'.codex'),'sessions'),
   effort:env.AGY_EFFORT||'high',model:env.AGY_MODEL||undefined,

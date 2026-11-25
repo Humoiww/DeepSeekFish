@@ -22,7 +22,9 @@ test('official tokenizer: 5000 tokens accepted, 5001 rejected atomically; stale 
     const stale=updateKnowledge(f.root,{version:0,changes:[{action:'delete',id:1}]});assert.equal('error' in stale&&stale.error,'KNOWLEDGE_CHANGED');
     const replaced=updateKnowledge(f.root,{version:1,changes:[{action:'delete',id:1},{action:'add',text:'鲸会轮流让半脑休息。'}]});
     assert.equal(replaced.ok,true);assert.equal(knowledgeSnapshot(f.root).content,replaced.content);
-    for(const [name,system] of Object.entries(promptSystems(f.root)))assert.ok(system.includes(replaced.content),name);
+    const {curiosity,...knowledgeChannels}=promptSystems(f.root);
+    for(const [name,system] of Object.entries(knowledgeChannels))assert.ok(system.includes(replaced.content),name);
+    assert.ok(!curiosity.includes(replaced.content),'the conversation summary uses its own scoped history');
     assert.throws(()=>updateKnowledge(f.root,{version:2,changes:[{action:'delete',id:999}]}),/LINE_MISSING/);
     assert.equal(knowledgeSnapshot(f.root).version,2);
   }finally{f.cleanup();}

@@ -8,10 +8,17 @@ const publicHost='100.100.25.7:17863';
 async function listen(server:Server){server.listen(0,'127.0.0.1');await once(server,'listening');return (server.address() as import('node:net').AddressInfo).port;}
 test('tailnet gateway validates origin, preserves auth/stream, strips approval and denies management routes',async()=>{
   let seen:any,count=0;
-  const upstream=createServer((req,res)=>{count++;seen={url:req.url,headers:req.headers};res.writeHead(200,{'content-type':'application/x-ndjson','content-security-policy':"default-src 'self'"});res.write('{"type":"start"}\n');setImmediate(()=>res.end('{"type":"done"}\n'));});
+  const upstream=createServer((req,res)=>{
+    count++;seen={url:req.url,headers:req.headers,bytes:0};
+    req.on('data',chunk=>{seen.bytes+=chunk.length;});
+    req.on('end',()=>{
+      res.writeHead(200,{'content-type':'application/x-ndjson','content-security-policy':"default-src 'self'"});
+      res.write('{"type":"start"}\n');setImmediate(()=>res.end('{"type":"done"}\n'));
+    });
+  });
   const upstreamPort=await listen(upstream),gateway=tailnetGateway(publicHost,upstreamPort),port=await listen(gateway);
-  const call=(url:string,headers:Record<string,string>={},method='GET')=>new Promise<{status:number;body:string;headers:any}>((resolve,reject)=>{
-    const req=request({hostname:'127.0.0.1',port,path:url,method,headers:{Host:publicHost,...headers}},res=>{let body='';res.on('data',chunk=>{body+=chunk;});res.on('end',()=>resolve({status:res.statusCode!,body,headers:res.headers}));});req.on('error',reject);req.end();
+  const call=(url:string,headers:Record<string,string>={},method='GET',payload?:Buffer)=>new Promise<{status:number;body:string;headers:any}>((resolve,reject)=>{
+    const req=request({hostname:'127.0.0.1',port,path:url,method,headers:{Host:publicHost,...headers}},res=>{let body='';res.on('data',chunk=>{body+=chunk;});res.on('end',()=>resolve({status:res.statusCode!,body,headers:res.headers}));});req.on('error',reject);req.end(payload);
   });
   try{
     const ok=await call('/api/chat',{Origin:'http://'+publicHost,Authorization:'Bearer dummy','x-fish-local-approval':'forged','x-forwarded-host':'evil.example'},'POST');
@@ -22,14 +29,27 @@ test('tailnet gateway validates origin, preserves auth/stream, strips approval a
     assert.equal((await call('/api/status',{Origin:'https://evil.example'})).status,403);
     assert.equal((await call('/api/status',{'sec-fetch-site':'cross-site'})).status,403);
     assert.equal(count,1);
+    const persona=Buffer.alloc(35000,32),headers={'Content-Length':String(persona.length)};
+    assert.equal((await call('/api/persona',headers,'POST',persona)).status,200);
+    assert.equal(seen.bytes,persona.length);
+    assert.equal((await call('/api/chat',headers,'POST',persona)).status,413);
     assert.equal((await call('/api/bootstrap',{},'POST')).status,200);
     assert.equal((await call('/api/qq')).status,200);
     assert.equal((await call('/api/qq',{},'POST')).status,200);
-    for(const route of ['/neon.js','/api/neon','/api/neon/record?kind=codex&id=x','/api/activity/active']){
+    for(const route of ['/corpus.js','/api/corpus?kind=meme&status=pending','/api/corpus/likes?platform=qq']){
+      assert.equal((await call(route)).status,200);
+      assert.equal((await call(route,{Origin:'https://evil.example'})).status,403);
+    }
+    for(const route of ['/api/corpus/extract','/api/corpus/settings','/api/corpus/cards','/api/corpus/cards/update','/api/corpus/cards/status','/api/corpus/cards/delete','/api/corpus/likes/toggle','/api/corpus/likes/delete']){
+      assert.equal((await call(route,{},'POST')).status,200);
+      assert.equal((await call(route,{Origin:'https://evil.example'},'POST')).status,403);
+      assert.equal((await call(route)).status,403);
+    }
+    for(const route of ['/neon.js','/api/neon','/api/neon/record?kind=codex&id=x','/api/activity/active','/api/opencode/models?keySlot=work']){
       assert.equal((await call(route)).status,200);
       assert.equal((await call(route,{},'POST')).status,403);
     }
-    for(const route of ['/api/neon/interrupt','/api/activity/interrupt','/api/neon/reset-conversation','/api/tieba/dismiss']){
+    for(const route of ['/api/neon/interrupt','/api/activity/interrupt','/api/neon/reset-conversation','/api/tieba/dismiss','/api/agy-quota/refresh','/api/deepseek-balance/refresh','/api/opencode/models/refresh','/api/connection-presets','/api/connection-presets/delete']){
       assert.equal((await call(route,{},'POST')).status,200);
       assert.equal((await call(route,{Origin:'https://evil.example'},'POST')).status,403);
       assert.equal((await call(route)).status,403);

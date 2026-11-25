@@ -51,6 +51,9 @@ export class TiebaAccountClient {
  history(offset=0){return this.rpc('history',{offset});}
  queue(offset=0,activeOnly=false){return this.rpc('queue',{offset,...(activeOnly?{activeOnly}:{})});}
  publicationQueue(){return this.rpc('queue',{publications:true});}
+ resumePublicationQueue(expected:{requestId:string;detectedAt:number}){return this.rpc('queue-resume',expected);}
+ setPublicationIntervals(intervals:{intervalMs:number;maxIntervalMs:number}){return this.rpc('queue-interval',intervals);}
+ cancelQueuedPublication(operationId:string){return this.rpc('queue-cancel',{operationId});}
  async replyQueue(offset=0,activeOnly=false,selectedId?:string){
   try{return await this.rpc('queue',{offset,...(activeOnly?{activeOnly}:{}),replies:true,...(selectedId?{selectedId}:{})});}
   catch(error){if(!(error instanceof FishError)||error.code!=='TIEBA_INPUT_INVALID')throw error;return this.queue(offset,activeOnly);}

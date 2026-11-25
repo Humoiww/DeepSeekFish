@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import {test} from 'node:test';
 import {SharedTools} from '../src/agent/shared-tools.js';
 import {TurnContext} from '../src/agent/context.js';
@@ -10,6 +12,7 @@ import {TiebaAccountClient} from '../src/tieba/client.js';
 import {tiebaTools} from '../src/tieba/posting.js';
 import {annotateTiebaReplies,isTiebaReplySeen,markTiebaRepliesSeen,tiebaReplyBadge} from '../src/tieba/reply-badge.js';
 import {TiebaReplyWatch} from '../src/tieba/reply-watch.js';
+import {TiebaSessionManager} from '../src/tieba/session.js';
 import type {TiebaReply} from '../src/tieba/replies.js';
 import {fixture,message} from './helpers.js';
 
@@ -87,6 +90,48 @@ test('checkNow lights the badge, get_tieba_replies annotates and clears it, and 
   now+=300000;watcher.tick();await watcher.idle();watcher.tick(false);
   assert.equal(state.status().active,null);assert.equal(tiebaReplyBadge(f.store).unreadCount,0);
  }finally{f.cleanup();}
+});
+
+test('Tieba reply tools and wake notifications derive scope from the actual reply target',async()=>{
+ const f=fixture({qqTransport:'onebot',privateUsers:[owner]}),dir=path.join(f.root,'tieba');
+ fs.mkdirSync(dir);
+ fs.writeFileSync(path.join(dir,'installed.json'),'{}');
+ const topic='https://tieba.baidu.com/p/200';
+ const child={...reply('302'),isFloor:true,replyTarget:undefined,replyToPostId:'900'};
+ const session=new TiebaSessionManager(dir,async()=>({
+  async identity(){return account;},async login(){},async frame(){return Buffer.alloc(0);},async input(){},async close(){},
+  async replies(page){return {page,hasMore:false,replies:[reply('301'),child]};},
+  async mentions(page){return {page,hasMore:false,mentions:[
+   {...reply('401'),threadTitle:'主题里的 @',isThread:true,url:topic,replyTarget:topic},
+   {...reply('402'),threadTitle:'未定位的 @',isThread:false,isFloor:true,replyTarget:undefined,targetStatus:'unresolved'},
+  ]};},
+  async read(url){
+   assert.equal(url,'https://tieba.baidu.com/p/comment?tid=200&pid=900&pn=1');
+   return {status:'content',thread:{id:'200'},parentPost:{id:'900',parentPostId:null,floor:2},posts:[{id:child.id,parentPostId:'900'}]};
+  },
+ }));
+ const client=new TiebaAccountClient(async(action,input:any)=>{
+  assert.ok(action==='replies'||action==='mentions');
+  return session[action](input.page);
+ });
+ try{
+  const tools=shared(f,client),m=message('',{group:'private:'+owner,user:owner});
+  const read=async(kind:string)=>(await tools.execute(tiebaTools.find(t=>t.function.name==='get_tieba_'+kind)!,{},m,'read',()=> 'scope-read'))!.result[kind];
+  const replies=await read('replies'),mentions=await read('mentions');
+  assert.deepEqual(replies.map((r:TiebaReply)=>r.replyScope),['floor','subreply']);
+  assert.equal(replies[1].replyTarget,'https://tieba.baidu.com/p/comment?tid=200&pid=900&pn=1#302');
+  assert.deepEqual(mentions.map((r:TiebaReply)=>r.replyScope),['thread',null]);
+
+  const now=()=>start+300000,state=new ExplorationState(f.store,f.cfg,now),watcher=new TiebaReplyWatch(state,()=>true,client,now);
+  state.save({enabled:true});
+  cursors(f.store);
+  event(f.store,{...reply('405'),isFloor:true,targetStatus:'verified',replyTarget:'https://tieba.baidu.com/p/comment?tid=200&pid=900#405',replyScope:'floor'},'mention');
+  event(f.store,reply('406'));
+  watcher.tick(false);
+  const wake=JSON.parse(String(state.status().active?.instruction));
+  assert.deepEqual(wake.mentions.map((r:TiebaReply)=>r.replyScope),['subreply']);
+  assert.deepEqual(wake.replies.map((r:TiebaReply)=>r.replyScope),['floor']);
+ }finally{await session.close();f.cleanup();}
 });
 
 test('pre-check skips disabled and leased inboxes and handles unconfigured/offline accounts without reads',async()=>{

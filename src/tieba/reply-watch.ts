@@ -3,6 +3,7 @@ import {FishError,codeOf} from '../types.js';
 import type {ExplorationState} from '../exploration/state.js';
 import {TiebaAccountClient} from './client.js';
 import {threadReplyTarget,type TiebaReply} from './replies.js';
+import {replyScopeForTarget} from './reply-target.js';
 import type {TiebaMention} from './mentions.js';
 import {ensureTiebaReplyBadge,isTiebaReplySeen} from './reply-badge.js';
 
@@ -137,8 +138,9 @@ export class TiebaReplyWatch {
    if(!rows.length)return;
    const format=(r:PendingNotice)=>{
     const p:Notice=JSON.parse(r.payload),resolved=!p.isFloor||p.targetStatus==='verified';
+    const replyTarget=resolved?p.replyTarget:undefined;
     return {id:p.id,threadId:p.threadId,threadTitle:p.threadTitle,forum:p.forum,floor:p.floor??null,author:p.author??null,replyTo:p.replyTo??null,text:p.text,
-      threadReplyTarget:threadReplyTarget(p.threadId),replyTarget:resolved?p.replyTarget:undefined,url:p.url,parentPostId:resolved?p.parentPostId:null,replyToPostId:p.replyToPostId??p.parentPostId,
+      threadReplyTarget:threadReplyTarget(p.threadId),replyTarget,replyScope:replyScopeForTarget(replyTarget),url:p.url,parentPostId:resolved?p.parentPostId:null,replyToPostId:p.replyToPostId??p.parentPostId,
       isThread:p.isThread,isFloor:p.isFloor,publishedAt:p.time,detectedAt:r.detected,targetStatus:p.targetStatus,targetError:p.targetError};
    };
    const mentions=rows.filter(r=>r.kind==='mention').map(format),replies=rows.filter(r=>r.kind==='reply').map(format);

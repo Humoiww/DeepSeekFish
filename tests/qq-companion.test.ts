@@ -16,7 +16,7 @@ import { QQImageClient } from '../src/qq/image-client.js';
 import { startQQImageBroker } from '../src/qq/image-broker.js';
 import { qqResources } from '../src/qq/resources.js';
 import { CodexQuotaMonitor } from '../src/codex/quota.js';
-import { personaSettings,savePersona } from '../src/character.js';
+import { personalityPrefix,personaSettings,savePersona } from '../src/character.js';
 import { requestsImage } from '../src/web/images.js';
 import { FishError,type Model,type ToolCall } from '../src/types.js';
 import { hasToolMarkup } from '../src/agent/tool-protocol.js';
@@ -129,7 +129,8 @@ test('textual tool protocol is repaired through native JSON, kept out of chat/hi
     assert.ok(f.transport.sent.every(m=>!hasToolMarkup(m.text)));
     const records=fs.readdirSync(f.root+'/runtime/logs/qq').map(n=>JSON.parse(fs.readFileSync(f.root+'/runtime/logs/qq/'+n,'utf8')));
     assert.ok(records[0].trace.some((t:any)=>t.protocolRepair?.tool==='generate_image'));
-    assert.ok(records[0].trace.some((t:any)=>t.assistant===leaked));assert.ok(records[0].system.split('\n知识库（')[0].length<320);
+    assert.ok(records[0].trace.some((t:any)=>t.assistant===leaked));
+    assert.ok(records[0].system.slice(personalityPrefix(f.root).length+1).split('\n知识库（')[0].length<320);
   }finally{await f.bot.stop();f.cleanup();}
 });
 test('unknown or repeated textual protocol never executes and never reaches QQ',async()=>{

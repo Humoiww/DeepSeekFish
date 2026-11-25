@@ -4,10 +4,10 @@ import {nativeDaemonSpec} from '../codex/platform.js';
 import {initialize} from '../codex/probe.js';
 import {FishError,codeOf} from '../types.js';
 import {bridgeText,liveCodexEvents} from './bridge-records.js';
-import {taskIdPattern,type BridgeEvent} from './agy-bridge-types.js';
+import {taskIdPattern,type AgyTarget,type BridgeEvent} from './agy-bridge-types.js';
 
 type NativeOptions={
- appRoot:string;socket:string;cwd:string;timeout:number;model?:string;effort?:string;
+ appRoot:string;socket:string;cwd:string;timeout:number;model?:string;effort?:string;target?:AgyTarget;
 };
 type CodexTurn={id:string;status:string;items?:unknown[];error?:{message?:string}};
 const policy={approvalPolicy:'on-request',approvalsReviewer:'auto_review'};
@@ -56,7 +56,9 @@ export class NativeBridgeCodex{
   const opts={
    cwd,sandbox:'workspace-write',...policy,
    ...(model?{model}:{}),...(effort?{config:{model_reasoning_effort:effort}}:{}),
-   developerInstructions:'按本轮授权规格在主仓库工作。保留已有未提交改动，只修改发布白名单内的文件。不要部署、提交 Git、修改开发后台或重复执行整套构建测试。主人可以在原生 Codex 界面补充要求或打断本轮。',
+   developerInstructions:this.options.target==='inkfishchan_site'?
+    '在肥鱼的小屋网站仓库工作，只修改 public/ 静态资源。保留已有未提交改动。桥接器负责验收和发布，不得自行暂存、提交、推送、运行部署或修改 Git 配置。':
+    '按本轮授权规格在主仓库工作。保留已有未提交改动，只修改发布白名单内的文件。不要部署、提交 Git、修改开发后台或重复执行整套构建测试。主人可以在原生 Codex 界面补充要求或打断本轮。',
   };
   let reply:any;
   if(existing){

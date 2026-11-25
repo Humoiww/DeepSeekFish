@@ -47,7 +47,7 @@ async function main():Promise<void>{
       // No incoming QQ handler in this scheduled sender. The normal bot stays
       // connected in its own service and shares the existing atomic ledger.
       qq=new OneBotTransport(root,app.cfg().onebotUrl,onebotCredential(root),app.store,async()=>{},g=>g==='private:'+settings.owner&&app.cfg().privateUsers.includes(settings.owner));
-      const search=new SearchService(new DeepSeekSearchProvider(deepseekCredential(root),app.cfg),app.ledger,app.cfg);
+      const search=new SearchService(new DeepSeekSearchProvider(()=>deepseekCredential(root),app.cfg),app.ledger,app.cfg);
       const sender=qq,daily=new DailyNews(root,app.store,app.cfg,app.model,search,{async send(m,text){
         try{await sender.inspect();}catch(e){app.store.audit('daily-news-connect','',codeOf(e));throw new FishError('DAILY_NEWS_CONNECT_FAILED');}
         await sender.send(m,text);
@@ -104,7 +104,7 @@ async function main():Promise<void>{
     const data=await response.json();if(!response.ok)throw new FishError(data.error??'WEBUI_API_ERROR');print(data);
   }else if(command==='start'){
     const app=createApp(root,args.includes('--mock'));let closing=false;
-    const stop=()=>{if(closing)return;closing=true;void (async()=>{await Promise.all([app.exploration.stop(),app.activityChains?.stop(),app.curiositySummary.stop()]);await app.bot.stop();server.close();await once(server,'close');clearInterval(prune);app.store.close();})();};
+    const stop=()=>{if(closing)return;closing=true;void (async()=>{await Promise.all([app.exploration.stop(),app.activityChains?.stop(),app.curiositySummary.stop(),app.corpusExtract.stop()]);await app.bot.stop();server.close();await once(server,'close');clearInterval(prune);app.store.close();})();};
     const server=adminServer(app,stop);
     server.listen(app.cfg().port,'127.0.0.1');await once(server,'listening');
     app.tasks.recover();
@@ -114,6 +114,7 @@ async function main():Promise<void>{
     app.exploration.start();
     app.activityChains?.start();
     app.curiositySummary.start();
+    app.corpusExtract.start();
     process.once('SIGINT',stop);process.once('SIGTERM',stop);
     print(`DeepSeekFish ${app.mock?'Mock':'Live'} 运行中：http://127.0.0.1:${app.cfg().port}；Ctrl+C 停止。`);
     print('本机令牌位于 runtime/data/admin-token。真实 Codex 无人值守执行关闭。');

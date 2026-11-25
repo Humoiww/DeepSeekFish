@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN" data-appearance="glass">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"><meta name="color-scheme" content="light"><title>DeepSeekFish · 本地助手</title><link rel="icon" href="/fish.svg" type="image/svg+xml"><script src="/appearance.js"></script><link rel="stylesheet" href="/web.css?v=tieba-issues-2"><script type="module" src="/web.js?asset=portrait-motion"></script><script src="/web.js?v=neon" defer></script><script src="/neon.js?v=conversation" defer></script><script src="/activity.js?v=neon" defer></script><script src="/exploration.js?v=tieba-patrol-1" defer></script><script src="/tieba.js?v=tieba-issues-2" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"><meta name="color-scheme" content="light"><title>DeepSeekFish · 本地助手</title><link rel="icon" href="/fish.svg" type="image/svg+xml"><script src="/appearance.js"></script><link rel="stylesheet" href="/web.css?v=tieba-issues-2"><script type="module" src="/web.js?asset=portrait-motion"></script><script src="/web.js?v=neon" defer></script><script src="/neon.js?v=conversation" defer></script><script src="/corpus.js?v=1" defer></script><script src="/activity.js?v=neon" defer></script><script src="/exploration.js?v=tieba-patrol-1" defer></script><script src="/tieba.js?v=tieba-issues-2" defer></script></head>
 <body>
 <div class="app-shell">
   <!-- Mobile app-shell is a stacking context; keep its backdrop beside the drawers. -->
@@ -15,6 +15,7 @@
       <nav id="sidebar-features" aria-label="工作台功能">
         <div class="sidebar-feature"><button id="qq-button" class="sidebar-action"><span>◉</span> QQ 对话 <span class="arrow">↗</span></button><button type="button" class="sidebar-grip" aria-label="移动 QQ 对话" title="拖动排序，也可使用方向键">⠿</button></div>
         <div class="sidebar-feature"><button id="tieba-button" class="sidebar-action"><span>☷</span> 贴吧账号 <small id="tieba-attention" hidden>待处理</small><span class="arrow">↗</span></button><button type="button" class="sidebar-grip" aria-label="移动 贴吧账号" title="拖动排序，也可使用方向键">⠿</button></div>
+        <div class="sidebar-feature"><button id="corpus-button" class="sidebar-action"><span>✦</span> 语料库 <small id="corpus-pending" hidden>待审 0</small><span class="arrow">↗</span></button><button type="button" class="sidebar-grip" aria-label="移动 语料库" title="拖动排序，也可使用方向键">⠿</button></div>
         <div class="sidebar-feature"><button id="exploration-button" class="sidebar-action"><span>♧</span> 自主探索 <span class="arrow">↗</span></button><button type="button" class="sidebar-grip" aria-label="移动 自主探索" title="拖动排序，也可使用方向键">⠿</button></div>
         <div class="sidebar-feature"><button id="activity-button" class="sidebar-action"><span>≡</span> 活动记录 <span class="arrow">↗</span></button><button type="button" class="sidebar-grip" aria-label="移动 活动记录" title="拖动排序，也可使用方向键">⠿</button></div>
         <div class="sidebar-feature"><button id="neon-button" class="sidebar-action"><span>⌘</span> Neon / Codex <small id="neon-badge" hidden>运行中</small><span class="arrow">↗</span></button><button type="button" class="sidebar-grip" aria-label="移动 Neon / Codex" title="拖动排序，也可使用方向键">⠿</button></div>
@@ -74,12 +75,25 @@
     </div>
   </main>
   <aside class="workspace-panel" id="workspace-panel">
-    <div class="panel-header"><h2>这次对话的工作区</h2><button id="close-panel" class="icon-button" aria-label="关闭工作区">×</button></div>
-    <section class="quota-card" aria-label="Codex 账号额度"><div class="quota-heading"><strong>Codex 额度</strong><button id="refresh-quota" type="button">↻ 刷新</button></div><div id="codex-quota-content"><p class="muted">正在读取项目账号额度…</p></div><div class="local-image-quota"><span>今日生图 <strong id="image-quota">— / 20</strong></span><button id="reset-images" type="button">Reset 本地计数</button></div><small class="quota-footnote">每天按生图张数计额；Codex 百分比仅供查看。</small></section><div class="boundary-card"><span class="boundary-icon">◇</span><strong>能力有边界，想法没边界。</strong><p>助手只能读写本次会话的文件。其他项目、私人文件和凭据不在它的操作范围内。</p></div>
-    <div class="panel-section"><div class="section-title">可用操作 <span id="mode-label">聊天</span></div><ul class="capabilities"><li><span>✓</span> 查看和读写会话文本文件</li><li><span>✓</span> 下载已生成的文本文件</li><li><span>✓</span> 明确请求后生成单张图片</li><li><span id="search-dot">○</span> 公开搜索 <small id="search-state">未开启</small></li><li><span id="codex-dot">○</span> 提交 Codex 待审任务 <small id="codex-state">未开启</small></li></ul><div class="limit-note">无任意终端、删除或安装。画图请求仅授权一张。<br>每条消息最多 6 次工具调用。</div></div>
+    <div class="panel-header"><h2>额度与工作区</h2><button id="close-panel" class="icon-button" aria-label="关闭工作区">×</button></div>
+    <section class="quota-card" id="deepseek-balance-card" aria-label="DeepSeek API 余额">
+      <div class="quota-heading"><strong>DeepSeek API 余额</strong><button id="refresh-deepseek-balance" type="button" aria-label="刷新 DeepSeek API 余额">↻ 刷新</button></div>
+      <div id="deepseek-balance-content"><p class="muted">等待读取余额…</p></div>
+    </section>
+    <section class="quota-card" id="opencode-quota-card" aria-label="OpenCode Go 订阅额度" hidden>
+      <div class="quota-heading"><strong>OpenCode Go 订阅额度</strong></div>
+      <div id="opencode-quota-content"></div>
+    </section>
+    <section class="quota-card" aria-label="AGY 通用额度">
+      <div class="quota-heading"><strong>AGY 通用额度</strong><button id="refresh-agy-quota" type="button" aria-label="刷新 AGY 通用额度">↻ 刷新</button></div>
+      <div id="agy-quota-content"><p class="muted">等待读取 Gemini Models 额度…</p></div>
+    </section>
+    <section class="quota-card" aria-label="Codex 账号额度">
+      <div class="quota-heading"><strong>Codex 额度</strong><button id="refresh-quota" type="button" aria-label="刷新 Codex 额度">↻ 刷新</button></div>
+      <div id="codex-quota-content"><p class="muted">等待读取 Codex 额度…</p></div>
+      <div class="local-image-quota"><span>今日生图 <strong id="image-quota">— / 20</strong></span><button id="reset-images" type="button">Reset 本地计数</button></div>
+    </section>
     <div class="panel-section"><div class="section-title">会话文件 <span id="file-count">0</span></div><div id="files" class="files"><div class="empty-files"><span>▱</span><p>文件会出现在这里</p><small>试试让助手创建 notes.md</small></div></div><small class="file-limit">最多 20 个文件 · 合计 1 MiB</small></div>
-    <div class="panel-section task-section"><div class="section-title">Codex 任务 <span id="task-count">0</span></div><div id="tasks" class="tasks"><p class="muted">暂时没有待审任务</p></div></div>
-    <div class="panel-footer"><i></i> 文件与对话都保存在本机项目目录</div>
   </aside>
 </div>
 <dialog id="qq-dialog"><form id="qq-form">
@@ -97,17 +111,18 @@
 </form></dialog>
 <dialog id="persona-dialog" aria-labelledby="persona-heading"><form id="persona-form">
   <div class="dialog-heading"><h2 id="persona-heading">人格与提示词</h2><button type="button" class="icon-button" data-close="persona-dialog" aria-label="关闭人格设置">×</button></div>
-  <p class="dialog-description">人格按下列顺序组合。保存后，QQ、网页和每日动态在下一轮读取。</p>
+  <p class="dialog-description">人格按下列顺序组合，保存后各渠道在下一轮读取。</p>
   <p id="persona-loading" role="status" hidden>正在加载人格与提示词…</p>
   <p id="persona-error" class="form-error" role="alert"></p><button id="persona-retry" type="button" class="quiet-button" hidden>重新加载</button>
   <div class="persona-tabs"><button id="persona-edit-tab" type="button" aria-pressed="true">分块编辑人格</button><button id="persona-view-tab" type="button" aria-pressed="false">查看完整提示词</button></div>
   <section id="persona-editor"><div id="persona-blocks"></div><button id="persona-add" class="quiet-button" type="button">＋ 添加一块</button>
     <details class="persona-appearance"><summary>外观描述</summary><label>外观文字<textarea id="persona-appearance" rows="5" maxlength="4000"></textarea><small>只修改文字，设定图仍使用已有图片。</small></label></details>
+    <details class="persona-appearance"><summary>发言与内心独白示例</summary><label>口吻示例<textarea id="persona-voice-examples" rows="5" maxlength="4000"></textarea><small>可填 2～4 条肥鱼平常说的短句或内心独白。留空则不注入，保存后各渠道在下一轮生效。</small></label></details>
   </section>
   <section id="persona-viewer" hidden>
-    <label>提示词入口<select id="prompt-channel"><option value="qq">QQ 对话</option><option value="web">网页聊天 / 受限助手</option><option value="image">网页生图规划</option><option value="portrait">网页生图规划 · 自拍</option><option value="daily">每日 QQ 空间动态</option><option value="news">每日新闻私聊</option><option value="memory">后台记忆回顾</option><option value="exploration">自主探索</option></select></label>
+    <label>提示词入口<select id="prompt-channel"><option value="qq">QQ 对话</option><option value="web">网页聊天 / 受限助手</option><option value="image">网页生图规划</option><option value="portrait">网页生图规划 · 自拍</option><option value="daily">每日 QQ 空间动态</option><option value="news">每日新闻私聊</option><option value="memory">后台记忆回顾</option><option value="curiosity">会话好奇心整理</option><option value="exploration">自主探索</option></select></label>
     <p id="prompt-info" class="dialog-description"></p>
-    <label>当前完整 system 提示词（已保存版本）<textarea id="prompt-system" readonly rows="12"></textarea></label>
+    <label>已保存的静态开头与末尾人格<textarea id="prompt-system" readonly rows="12"></textarea></label>
     <div class="persona-tabs"><button id="prompt-refresh" type="button">刷新实际记录</button><button id="prompt-copy" type="button">复制系统提示词</button></div>
     <details><summary>最近一次实际请求：上下文、工具定义和调用参数</summary><p id="prompt-record-info" class="dialog-description"></p><textarea id="prompt-record" readonly rows="18" aria-label="最近一次实际模型请求"></textarea><button id="prompt-record-copy" type="button" class="quiet-button">复制完整请求</button></details>
     <small>记录可能属于保存前的上一轮；下一条消息才会采用新的人格。图片显示附件标记，凭据不展示。</small>
@@ -130,10 +145,38 @@
     </select>
     <small id="appearance-help" role="status">即时生效，保存在当前浏览器。</small>
   </div>
-  <form id="settings-form"><p class="dialog-description">DeepSeek 密钥只保存在本机服务器，不会返回浏览器。保存配置不会发起模型请求。</p>
-  <label>API Key <span id="key-state">尚未配置</span><input id="api-key" name="apiKey" type="password" placeholder="sk-…（已有密钥时留空保留）" autocomplete="off" spellcheck="false"></label>
-  <label>模型<input id="model" name="model" value="deepseek-flash" maxlength="80" required spellcheck="false"><small>官方接口：https://api.deepseek.com · 当前使用非思考模式</small></label>
-  <div class="form-grid"><label>单次最多输出 tokens<input id="max-output" type="number" min="128" max="4096" step="1" value="1024" required></label><label>每日全局费用上限（元）<input id="daily-cny" type="number" min="0" step="0.01" value="5" required></label><label>每个QQ群费用上限（元，0 为共用全局）<input id="group-daily-cny" type="number" min="0" step="0.01" value="0" required></label></div>
+  <form id="settings-form">
+  <fieldset class="connection-presets">
+    <legend>连接预设</legend>
+    <div class="form-grid">
+      <label>当前预设<select id="connection-preset"><option value="">自定义连接</option></select></label>
+      <label>预设名称<input id="preset-name" type="text" maxlength="64" placeholder="如：日常聊天"></label>
+    </div>
+    <div class="preset-actions">
+      <button class="quiet-button" id="preset-create" type="button">另存为预设</button>
+      <button class="quiet-button" id="preset-save" type="button" disabled>保存</button>
+      <button class="quiet-button" id="preset-delete" type="button" disabled>删除</button>
+    </div>
+  </fieldset>
+  <div class="form-grid">
+    <label>API Provider<select id="api-provider"><option value="deepseek">DeepSeek（默认）</option><option value="opencode_go">OpenCode Go</option></select></label>
+    <label>密钥槽<input id="api-key-slot" maxlength="48" spellcheck="false" list="provider-key-slots"><datalist id="provider-key-slots"></datalist><small>自定义槽名可为预设保存独立密钥。</small></label>
+  </div>
+  <label><span id="api-key-label">DeepSeek API Key</span> <span id="key-state">尚未配置</span><input id="api-key" name="apiKey" type="password" maxlength="512" placeholder="留空保留已有密钥" autocomplete="off" spellcheck="false"><small>密钥只存于服务器。搜索、抓取和视觉回落使用默认 DeepSeek 密钥。</small></label>
+  <button class="quiet-button" id="save-api-key" type="button">单独保存密钥</button>
+  <label id="deepseek-model-field">模型<input id="model" name="model" value="deepseek-flash" maxlength="80" required spellcheck="false"><small>DeepSeek 官方接口 · 非思考模式</small></label>
+  <div id="opencode-model-field" hidden>
+    <label for="opencode-model">模型</label>
+    <div class="model-field-control"><select id="opencode-model" aria-describedby="opencode-model-note" disabled></select><button class="quiet-button" id="refresh-opencode-models" type="button">↻ 刷新模型</button></div>
+    <small id="opencode-model-note" role="status"></small>
+    <label class="checkbox-row"><input id="opencode-disable-thinking" type="checkbox" aria-describedby="opencode-thinking-note" checked disabled><span><strong>关闭思考模式</strong><small id="opencode-thinking-note" role="status"></small></span></label>
+  </div>
+  <div class="form-grid">
+    <label>单次最多输出 tokens<input id="max-output" type="number" min="1" max="4096" step="1" value="1024" required></label>
+    <label>每日全局费用上限（元）<input id="daily-cny" type="number" min="0" step="0.01" value="5" required></label>
+    <label>每个 QQ 群费用上限（元，0 为共用全局）<input id="group-daily-cny" type="number" min="0" step="0.01" value="0" required></label>
+    <label>USD → CNY 折算汇率<input id="usd-to-cny" type="number" min="0.0001" max="100" step="any" value="7.2" required></label>
+  </div>
   <label class="checkbox-row"><input id="group-chat-search" type="checkbox" checked><span><strong>私聊检索授权群聊</strong><small>仅允许的主人私聊可跨群查阅，显示真实群名。</small></span></label>
   <label class="checkbox-row"><input id="curiosity-public-search" type="checkbox" checked><span><strong>公开查询好奇心日志</strong><small>QQ 私聊和群聊均可只读查询，隐藏账号和群号。</small></span></label>
   <label class="checkbox-row"><input id="curiosity-auto-summary" type="checkbox" checked><span><strong>会话结束后整理好奇心</strong><small>肥鱼约 30 分钟未再发言后，自行决定记录或跳过；共用每日预算。</small></span></label>
@@ -200,6 +243,22 @@
   </div>
 </dialog>
 
+<dialog id="corpus-dialog" class="corpus-dialog" aria-labelledby="corpus-title">
+ <div class="dialog-heading"><div><span class="eyebrow">EXPRESSION LIBRARY</span><h2 id="corpus-title">语料库</h2></div><button type="button" class="icon-button" data-close="corpus-dialog" aria-label="关闭语料库">×</button></div>
+ <nav class="corpus-tabs" role="tablist" aria-label="语料库分页"><button type="button" role="tab" data-corpus-tab="cards" class="selected" aria-selected="true" aria-controls="corpus-cards-pane">语料卡片</button><button type="button" role="tab" data-corpus-tab="likes" aria-selected="false" aria-controls="corpus-likes-pane">满意回复</button><button type="button" role="tab" data-corpus-tab="settings" aria-selected="false" aria-controls="corpus-settings-pane">学习设置</button></nav>
+ <p id="corpus-notice" class="hint" role="status" aria-live="polite"></p>
+ <section data-corpus-pane="cards" id="corpus-cards-pane" role="tabpanel">
+  <div class="corpus-toolbar"><input id="corpus-filter-q" type="search" placeholder="检索词条、含义与线索" aria-label="检索语料"><button type="button" id="corpus-new" class="primary-button">新增语料</button><button type="button" id="corpus-extract" class="quiet-button">立即提取一次</button><button type="button" id="corpus-refresh" class="quiet-button">刷新</button></div>
+  <p id="corpus-extract-state" class="hint" role="status" aria-live="polite">正在读取提取状态…</p><p id="corpus-counts" class="hint"></p>
+  <div class="corpus-workspace"><aside class="corpus-list-pane" aria-label="筛选与语料列表">
+   <div class="corpus-filters"><label>分类<select id="corpus-filter-kind"><option value="">全部分类</option><option value="meme">梗</option><option value="phrase">说法</option><option value="habit">习惯</option></select></label><label>状态<select id="corpus-filter-status"><option value="">全部状态</option><option value="pending">待审</option><option value="trial">试用</option><option value="active">已生效</option><option value="paused">已暂停</option><option value="retired">已停用</option></select></label><label>作用域<select id="corpus-filter-scope"><option value="">全部</option><option value="global">全局</option><option value="qq">QQ</option><option value="tieba">贴吧 / 探索</option></select></label><label>精确作用域<input id="corpus-filter-exact" placeholder="conversation:private:会话ID"></label></div>
+   <div class="corpus-bulk"><label><input type="checkbox" id="corpus-select-page"> 本页全选</label><span id="corpus-selected-count">已选 0</span><select id="corpus-bulk-status" aria-label="批量设置状态"><option value="active">批准生效</option><option value="paused">暂停</option><option value="pending">退回待审</option><option value="trial">试用</option><option value="retired">停用</option></select><button id="corpus-bulk-status-apply" type="button" class="quiet-button" disabled>应用</button><button id="corpus-bulk-delete" type="button" class="quiet-button" disabled>删除所选</button><button id="corpus-clear-filter" type="button" class="quiet-button">清空筛选结果</button></div>
+   <div id="corpus-list" class="corpus-list"></div><footer class="corpus-pagination"><button id="corpus-prev" type="button" class="quiet-button">上一页</button><span id="corpus-page"></span><button id="corpus-next" type="button" class="quiet-button">下一页</button></footer>
+  </aside><section class="corpus-detail" aria-label="编辑与审批"><p class="hint">选择左侧卡片进行编辑、审批或暂停；只参考表达，不改人格与权限。</p><div id="corpus-editor" hidden><h3 id="corpus-editor-title">新增语料</h3><p id="corpus-editor-state" class="hint"></p><form id="corpus-card-form"><label>分类<select id="corpus-edit-kind"><option value="meme">梗</option><option value="phrase">说法</option><option value="habit">习惯</option></select></label><label>词条<input id="corpus-edit-label" maxlength="80" required></label><label>含义<textarea id="corpus-edit-meaning" maxlength="500" required rows="2"></textarea></label><label>触发线索（关键词）<textarea id="corpus-edit-cues" maxlength="240" rows="2"></textarea></label><label>适用情境<textarea id="corpus-edit-applies_to" maxlength="240" rows="2"></textarea></label><label>避用情境<textarea id="corpus-edit-avoid_in" maxlength="240" rows="2"></textarea></label><label>正例<textarea id="corpus-edit-example_good" maxlength="400" rows="2"></textarea></label><label>反例<textarea id="corpus-edit-example_bad" maxlength="400" rows="2"></textarea></label><label>作用域：global / tieba / conversation:会话ID<input id="corpus-edit-scope" maxlength="240" required></label><label>来源备注<textarea id="corpus-edit-source_note" maxlength="240" rows="2"></textarea></label><button id="corpus-card-save" type="submit" class="primary-button">保存语料</button></form><div id="corpus-entry-actions" class="corpus-toolbar" hidden><button type="button" class="quiet-button" data-corpus-status="active">恢复生效</button><button type="button" class="quiet-button" data-corpus-status="paused">暂停 / 禁用</button><button type="button" class="quiet-button" data-corpus-status="pending">退回待审</button><button type="button" class="quiet-button" data-corpus-status="retired">停用</button><button type="button" id="corpus-delete-one" class="quiet-button">删除</button></div><details><summary>来源与修改历史</summary><pre id="corpus-history"></pre></details></div></section></div>
+ </section>
+ <section data-corpus-pane="likes" id="corpus-likes-pane" role="tabpanel" hidden><div class="corpus-toolbar"><label>平台<select id="corpus-like-platform"><option value="">全部平台</option><option value="qq">QQ</option><option value="tieba">贴吧</option><option value="web">网页</option></select></label><input id="corpus-like-query" type="search" placeholder="检索满意回复" aria-label="检索满意回复"><button id="corpus-likes-refresh" type="button" class="quiet-button">刷新</button><button id="corpus-likes-clear" type="button" class="quiet-button">撤回该平台全部点赞</button></div><p class="hint">私聊只参考原私聊，群聊只参考原群；贴吧与探索共用贴吧参考。只借用表达，不照抄或冒认经历。</p><div id="corpus-likes-list"></div><footer class="corpus-pagination"><button id="corpus-likes-prev" type="button" class="quiet-button">上一页</button><span id="corpus-likes-page"></span><button id="corpus-likes-next" type="button" class="quiet-button">下一页</button></footer></section>
+ <section data-corpus-pane="settings" id="corpus-settings-pane" role="tabpanel" hidden><p class="hint">设置保存后立即生效。默认自动试用并立即可用，自动提取开启、每日最多 6 批，共享现有模型预算。主人可随时暂停卡片或关闭来源；普通检索与教梗、反馈识别都在本地完成。</p><div class="corpus-settings"><label class="corpus-toggle"><input type="checkbox" id="corpus-setting-enabled" data-corpus-setting="enabled">启用语料库</label><label class="corpus-toggle"><input type="checkbox" id="corpus-setting-autoExtract" data-corpus-setting="autoExtract">自动提取（默认开启，使用共享模型预算）</label><label class="corpus-toggle"><input type="checkbox" id="corpus-setting-extractQQ" data-corpus-setting="extractQQ">QQ 私聊与群归档提梗（私聊默认留在原会话）</label><label class="corpus-toggle"><input type="checkbox" id="corpus-setting-extractPublic" data-corpus-setting="extractPublic">公域提梗（贴吧 / 推特 / B站 / 网页）</label><label>每日自动提取上限<input type="number" id="corpus-setting-extractMaxPerDay" data-corpus-setting="extractMaxPerDay" min="1" max="50" step="1"></label><label class="corpus-toggle"><input type="checkbox" id="corpus-setting-allowActiveUse" data-corpus-setting="allowActiveUse">允许主动用梗与表达（关闭后仅参考释义）</label><label class="corpus-toggle"><input type="checkbox" id="corpus-setting-allowTieba" data-corpus-setting="allowTieba">允许贴吧回帖与自主探索使用全局 / 贴吧语料</label><label class="corpus-toggle"><input type="checkbox" id="corpus-setting-replyLearningEnabled" data-corpus-setting="replyLearningEnabled">参考同作用域的满意回复</label><label>新学习卡片的处理方式<select id="corpus-setting-reviewMode" data-corpus-setting="reviewMode"><option value="manual">手动待审：批准后才生效</option><option value="auto">自动通过试用：立即可用，可暂停或删除</option></select></label><label>同一表达冷却（分钟）<input type="number" id="corpus-setting-memeCooldownMinutes" data-corpus-setting="memeCooldownMinutes" min="0" max="10080" step="1"></label><label>每段上下文最多提供几个梗<input type="number" id="corpus-setting-maxMemeUsesPerContext" data-corpus-setting="maxMemeUsesPerContext" min="1" max="10" step="1"></label><label>每轮参考总字数<input type="number" id="corpus-setting-maxHintChars" data-corpus-setting="maxHintChars" min="160" max="1200" step="1"></label></div></section>
+</dialog>
 <dialog id="activity-dialog" class="activity-dialog" aria-labelledby="activity-title">
   <header class="activity-heading"><div><h2 id="activity-title">肥鱼的活动记录</h2><p>对话、调用与结果 · 香港时间</p></div><button id="activity-interrupt" class="quiet-button activity-stop" type="button" disabled>急停</button><button id="activity-refresh" class="quiet-button" type="button">刷新</button><button id="activity-close" class="icon-button" type="button" aria-label="关闭活动记录">×</button></header>
   <section id="activity-live" class="activity-live" aria-label="当前活动">
@@ -286,10 +345,29 @@
   <details class="tieba-card tieba-collapse"><summary>验证贴吧读取</summary><form id="tieba-read-form"><label>贴吧名或帖子链接<input id="tieba-read-url" maxlength="1000" placeholder="DeepSeek 或 https://tieba.baidu.com/p/帖子ID"></label><label>读取方式<select id="tieba-read-mode"><option value="public">原有读取路径（公开优先）</option><option value="account">验证使用当前账号读取</option></select></label><button type="submit" class="quiet-button">读取</button></form><pre id="tieba-read-result"></pre></details>
   </div></div></div>
   <section id="tieba-pending-panel" class="tieba-card" aria-labelledby="tieba-pending-heading" hidden>
-    <div class="tieba-card-heading"><h3 id="tieba-pending-heading">发帖与回帖排队</h3><button id="tieba-pending-refresh" type="button" class="quiet-button">刷新</button></div>
+    <div class="tieba-card-heading"><h3 id="tieba-pending-heading">发帖与回帖排队</h3>
+      <div class="tieba-pending-toolbar">
+        <button id="tieba-pending-interval" type="button" class="quiet-button" aria-expanded="false" aria-controls="tieba-pending-interval-form" disabled>调整放行间隔</button>
+        <button id="tieba-pending-refresh" type="button" class="quiet-button">刷新</button>
+      </div>
+    </div>
     <p id="tieba-pending-status" role="status">正在读取队列…</p>
-    <p class="hint">每次发言结束后随机等待 60～80 秒。下次放行和预计发送时间以香港时间显示。</p>
+    <p id="tieba-pending-spacing" class="hint"></p>
+    <form id="tieba-pending-interval-form" hidden>
+      <div class="tieba-interval-fields">
+        <label>最短间隔（秒）<input id="tieba-interval-min" type="number" min="0" max="2147483" step="1" required></label>
+        <label>最长间隔（秒）<input id="tieba-interval-max" type="number" min="0" max="2147483" step="1" required></label>
+      </div>
+      <p class="hint">两个值相同时使用固定间隔。</p>
+      <button id="tieba-interval-save" type="submit" class="primary-button">保存间隔</button>
+      <p id="tieba-interval-error" class="form-error" role="status"></p>
+    </form>
     <p id="tieba-pending-release"></p>
+    <div id="tieba-pending-recovery" class="tieba-actions" hidden>
+      <button id="tieba-pending-verify" type="button" class="quiet-button">打开人工验证</button>
+      <button id="tieba-pending-resume" type="button" class="primary-button">恢复发送</button>
+    </div>
+    <p id="tieba-pending-error" class="form-error" role="status"></p>
     <div id="tieba-pending-list"></div>
   </section>
   <section id="tieba-sections-panel" class="tieba-card" aria-labelledby="tieba-sections-heading" hidden>

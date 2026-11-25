@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { fixture } from './helpers.js';
 import { Store } from '../src/storage/db.js';
 import { Ledger, dayKey } from '../src/budget/ledger.js';
+import { validateConfig } from '../src/config.js';
 import { MockModel, BudgetedModel } from '../src/agent/model.js';
 import { qqResources } from '../src/qq/resources.js';
 test('QQ private shares global CNY while per-group cash caps and denial diagnostics are explicit',async()=>{
@@ -19,18 +20,22 @@ test('QQ private shares global CNY while per-group cash caps and denial diagnost
   assert.equal(denial.reason,'cost');assert.equal(denial.scope,'daily');assert.ok(denial.requiredCny>0);
  }finally{f.cleanup();}
 });
-test('cash/request limits precheck provider, actual usage settles and survives reopen',async()=>{
- const f=fixture({dailyCny:1,groupDailyCny:0.5,userDailyRequests:1});try{
+test('cash limit prechecks provider while request counts remain telemetry and usage survives reopen',async()=>{
+ const config=validateConfig({dailyCny:1,groupDailyCny:0.5,userDailyRequests:1});
+ assert.equal('userDailyRequests' in config,false);
+ const f=fixture(config);try{
   const provider=new MockModel(),model=new BudgetedModel(provider,f.ledger,f.cfg);
+  f.ledger.add('requests',1000,'u:admin');
   const result=await model.complete('g','admin',[{role:'user',content:'hello'}]);
-  await assert.rejects(model.call('g','admin',[{role:'user',content:'{}'}]),/DAILY_REQUEST_LIMIT/);
+  assert.equal(f.ledger.value('requests','u:admin'),1001);
+  assert.equal(qqResources(f.cfg(),f.ledger,'g','admin').energy.requestsToday,1001);
   assert.equal(provider.calls,1);assert.ok(result.billing!.amountCny>0);
   const second=new Store(f.root);try{const ledger=new Ledger(second,f.cfg);assert.deepEqual(ledger.receipt(result.billing!.reservationId),result.billing);assert.equal(ledger.value('tokens'),f.ledger.value('input')+f.ledger.value('output'));}finally{second.close();}
   f.set({dailyCny:0});await assert.rejects(model.call('g','new',[{role:'user',content:'{}'}]),/CNY_BUDGET/);assert.equal(provider.calls,1);
  }finally{f.cleanup();}
 });
 test('four processes cannot overbook the cash allowance, including off-peak reservation',async()=>{
- const f=fixture({dailyCny:0.001,groupDailyCny:0,userDailyRequests:100});
+ const f=fixture({dailyCny:0.001,groupDailyCny:0});
  const workers=Array.from({length:4},()=>new Worker(new URL('./budget-worker.js',import.meta.url),{workerData:{root:f.root,config:f.cfg()}}));
  try{
   await Promise.all(workers.map(w=>once(w,'message')));const results=workers.map(w=>once(w,'message'));workers.forEach(w=>w.postMessage('go'));

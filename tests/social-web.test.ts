@@ -81,7 +81,7 @@ test('WebUI offers unified browsing only with search enabled, executes model-sel
  const app=createWebApp(f.root,false,http,undefined,undefined,async url=>{reads.push(url);return json(url,{code:200,status:tweet()});});
  try{
   app.configure({apiKey:'fixture-key',search:true});const session=app.createSession();await app.chat(session.id,'Read this post','agent',new AbortController().signal,()=>{});
-  assert.equal(payloads[0].tool_choice,'auto');assert.ok(payloads[0].tools.some((t:any)=>t.function.name==='browse_page'));assert.equal(reads.length,1);assert.equal(payloads[1].messages.at(-1).role,'tool');assert.equal(payloads[1].messages.at(-1).tool_call_id,'read1');assert.match(payloads[1].messages.at(-1).content,/A public post/);
+  assert.equal(payloads[0].tool_choice,'auto');assert.ok(payloads[0].tools.some((t:any)=>t.function.name==='browse_page'));assert.equal(reads.length,1);assert.equal(payloads[1].messages.at(-3).role,'tool');assert.equal(payloads[1].messages.at(-3).tool_call_id,'read1');assert.match(payloads[1].messages.at(-3).content,/A public post/);
   const turn=app.detail(session.id).turns[0];assert.equal(turn.state,'completed');assert.ok(turn.trace.some((t:any)=>t.name==='browse_page'&&t.state==='completed'));assert.equal(app.status().web.requests,0);
   app.configure({search:false});await app.chat(session.id,'Hi','agent',new AbortController().signal,()=>{});assert.ok(!payloads.at(-1).tools.some((t:any)=>t.function.name==='browse_page'));assert.equal(reads.length,1);
  }finally{await app.close();f.cleanup();}

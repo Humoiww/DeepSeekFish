@@ -1,3 +1,5 @@
+import {Corpus,corpusSourceKind,type CorpusContext} from '../memory/corpus.js';
+import {PromptNumberGuard,privateQQNumbers} from './prompt-numbers.js';
 import {qqSpeakerLabel,type QQSpeakers} from '../qq/speaker.js';
 import {conversationAllowed,type Config} from '../config.js';
 import {groupName} from '../memory/group-names.js';
@@ -21,7 +23,7 @@ import type {Store} from '../storage/db.js';
 import {TiebaAccountClient} from '../tieba/client.js';
 import {annotateTiebaReplies} from '../tieba/reply-badge.js';
 import {stageTiebaAttachments, TIEBA_IMAGE_COUNT} from '../tieba/images.js';
-import {publishInput, publishSectionFeedback, tiebaTools, trackTiebaPublication, type PublishInput} from '../tieba/posting.js';
+import {publishInput, publishSectionFeedback, tiebaTools, trackTiebaPublication, recordTiebaKaomoji, type PublishInput} from '../tieba/posting.js';
 import {tiebaSectionSettings} from '../tieba/section-settings.js';
 import type {BigFishPostingSections} from '../tieba/sections.js';
 import {FishError, type ChatPart, type Message, type ModelTool} from '../types.js';
@@ -87,6 +89,7 @@ interface SharedOptions {
  externalPeople?:ExternalPeople;
  allowedRecall?: (conversation:string)=>boolean;
  cfg?:()=>Config;
+ corpusContext?:CorpusContext;
  memoryOrigin: string;
  searchActor: string;
  charge?: (usage:WebCharge)=>void;
@@ -111,10 +114,21 @@ export class SharedTools {
   this.account=options.account??new TiebaAccountClient();
  }
 
- async execute(tool: ModelTool,args: any,m: Message,callId: string,requestId: ()=>string,beforeProfile?:()=>Promise<void>): Promise<SharedResult|undefined> {
+ async execute(tool: ModelTool,args: any,m: Message,callId: string,requestId: ()=>string,beforeProfile?:()=>Promise<void>,privacy?:PromptNumberGuard): Promise<SharedResult|undefined> {
   const o=this.options,name=tool.function.name;
   const out=(result:any,parts?:ChatPart[],viewedIds?:string[])=>({result,parts,viewedIds});
+  const observe=(kind:string|undefined,data:unknown)=>{
+   if(!kind||!data||(data as any).error||['unavailable','error','login_required'].includes((data as any).status))return;
+   try{o.guard();new Corpus(o.store,()=>o.cfg?privateQQNumbers(o.cfg(),m.user,o.identity.self):[]).observePublic(kind,data,privacy,[m.user,o.identity.self]);}
+   catch(error){o.onDiagnostic?.(errorDiagnostic(error));}
+  };
   const privateAccess=()=>{const c=o.cfg?.();return m.group==='private:'+m.user&&!!c?.enabled&&conversationAllowed(c,m.group);};
+  if(name==='search_corpus'||name==='save_corpus_card'){
+   o.guard();validateToolArguments(tool,args);
+   const corpus=new Corpus(o.store,()=>o.cfg?privateQQNumbers(o.cfg(),o.identity.self,m.user):[]);
+   const ctx=o.corpusContext??{platform:'qq' as const,conversation:m.group,contextId:o.memoryOrigin,accounts:[m.user,...(o.identity.self?[o.identity.self]:[])]};
+   return out(corpus.runTool(name,args,ctx,privacy));
+  }
   if(name==='read_curiosity'){
    const c=o.cfg?.();
    if(!c?.enabled||!c.curiosityPublicSearch||!conversationAllowed(c,m.group))throw new FishError('TOOL_NOT_ALLOWED');
@@ -130,7 +144,7 @@ export class SharedTools {
   if(name==='publish_tieba'){
    if(!o.searchEnabled())throw new FishError('SEARCH_DISABLED');
    const id=requestId();
-   return out(await trackTiebaPublication(o.store,args,id,async()=>{
+   const result=await trackTiebaPublication(o.store,args,id,async()=>{
     const feedback=publishSectionFeedback(args,this.sections);
     if(feedback)return feedback;
     const input=publishInput(args);
@@ -143,7 +157,18 @@ export class SharedTools {
     const authorizedRetryOf=o.reservePublication?.(input,callId);
     if(input.action==='thread'&&input.forumId===this.sections?.forum.id)this.sections=undefined;
     return this.account.publish(input,id,authorizedRetryOf);
-   }));
+   });
+   try{recordTiebaKaomoji(o.store,typeof result?.requestId==='string'?result.requestId:id,[args?.title,args?.content].filter(value=>typeof value==='string').join('\n'),result);}
+   catch(error){o.onDiagnostic?.(errorDiagnostic(error));}
+   const accepted=result&&!['failed','deleted'].includes(result.deliveryStatus)&&
+    (['queued','accepted','confirmed'].includes(result.deliveryStatus)||result.queued===true||result.submitted===true||
+     result.submissionStatus==='accepted'||result.published===true||result.publicVerified===true||result.receipt?.accepted===true);
+   if(accepted)try{
+    new Corpus(o.store,()=>o.cfg?privateQQNumbers(o.cfg(),m.user,o.identity.self):[]).recordUse(
+     {platform:'tieba',conversation:'tieba',contextId:id,accounts:[m.user,o.identity.self]},
+     [args.title,args.content].filter(value=>typeof value==='string').join('\n'),id);
+   }catch(error){o.onDiagnostic?.(errorDiagnostic(error));}
+   return out(result);
   }
   if(name==='recall_chat'){
    if(!args||typeof args!=='object'||Array.isArray(args))invalidRecall('arguments','expected_object');
@@ -165,13 +190,15 @@ export class SharedTools {
    case 'get_tieba_account':
    case 'get_tieba_sections':
    case 'get_tieba_replies':
+   case 'get_tieba_mentions':
    case 'check_tieba_publication':
    case 'apply_tieba_moderator':
     if(!o.searchEnabled())throw new FishError('SEARCH_DISABLED');
     validateToolArguments(tool,args);
     if(name==='get_tieba_account')return out(await this.account.account());
+    if(name==='get_tieba_mentions'){const page=await this.account.mentions(args.page??1);observe('tieba',page);return out(page);}
     if(name==='get_tieba_replies'){
-     const page=annotateTiebaReplies(o.store,await this.account.replies(args.page??1));
+     const page=annotateTiebaReplies(o.store,await this.account.replies(args.page??1));observe('tieba',page);
      try{return out(o.externalPeople?.incoming(m.user,page)??page);}catch(error){o.onDiagnostic?.(errorDiagnostic(error));return out(page);}
     }
     if(name==='check_tieba_publication'){
@@ -198,6 +225,7 @@ export class SharedTools {
     if(name==='browse_page'){
      if(typeof args.url!=='string')throw new FishError('INVALID_TOOL_ARGS');
      const page=await (o.browse??browsePage)(args.url,args.offset,o.signal,undefined,args.query,args.textOffset);
+     observe(corpusSourceKind(page.url??args.url),page);
      try{return out(o.externalPeople?.browse(m.user,page)??page);}catch(error){o.onDiagnostic?.(errorDiagnostic(error));return out(page);}
     }
     if(name==='download_image')return this.downloadImages(args,m);
@@ -211,6 +239,8 @@ export class SharedTools {
      const result=name==='search_web'
       ? searchEvidence(await o.search.search(args.query,m.group,o.searchActor,args.fresh,charge))
       : {source:'DeepSeek Fetch',...await o.search.fetch(args.url,m.group,o.searchActor,args.offset,args.fresh,charge)};
+     if(name==='search_web')for(const item of (result as any).results??[])observe(corpusSourceKind(item.url??''),item);
+     else observe(corpusSourceKind(args.url),result);
      return out({...result,...(billing?{billing}:{})});
     }catch(error){
      if(!billing)throw error;

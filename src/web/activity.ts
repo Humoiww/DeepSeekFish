@@ -10,6 +10,7 @@ import { MAX_IMAGE_BYTES } from '../image/limits.js';
 import { makeDir,safePath,writePrivateAtomic } from '../paths.js';
 import {diagnosticSafe} from '../diagnostics.js';
 import {developmentActivityFolder} from '../development/activity.js';
+import type {CorpusLike} from '../memory/corpus.js';
 
 export type ActivityKind='qq'|'web'|'news'|'memory'|'diary'|'image'|'audit'|'exploration'|'development'|'chain';
 type Step={type:string;name:string;state?:string;at?:number;durationMs?:number;request?:any;diagnostic?:any;args?:unknown;result?:any;qqAccess?:QQAccess;usage?:Usage;callId?:string;round?:number;phases?:unknown[];modelCall?:number;decision?:{call:number;usage?:Usage;actions:string[]}};
@@ -23,7 +24,7 @@ const logFolders={qq:'runtime/logs/qq',news:'runtime/logs/daily-news',memory:'ru
 const summaryFile='runtime/cache/activity-summaries-v1.json';
 const maxLogBytes=16*1024*1024;
 const kinds=new Set(['qq','web','news','memory','diary','image','audit','exploration','development','chain','qq_access']);
-const isMemoryLog=(name:string)=>name.startsWith('memory-')||name.startsWith('curiosity-');
+const isMemoryLog=(name:string)=>name.startsWith('memory-')||name.startsWith('curiosity-')||name.startsWith('corpus-');
 const secret=/^(?:authorization|cookie|set-cookie|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|skey|p_skey|rkey)$/i;
 /** Log data is display-only. Never expose credentials, signed media handles or inline binaries. */
 export function activitySafe(value:any,root='',depth=0):any{
@@ -66,7 +67,7 @@ function traceRecord(r:RecordItem,trace:any[]){
   let currentModel:Step|undefined;
   const diagnostic=(e:any)=>e.diagnostic??(e.diagnostics?.length?e.diagnostics:undefined)??(e.error==='INTERNAL_ERROR'?{missing:true,message:'旧版本只保存了 INTERNAL_ERROR，没有保留原始异常，无法从该记录恢复具体原因。'}:undefined);
   const recordModel=(e:any,calls:any[])=>{
-    currentModel={type:'model',name:'DeepSeek',modelCall:e.notRequested?undefined:r.usage.calls+1,round:e.round,at:e.startedAt,durationMs:e.durationMs,request:e.request,diagnostic:diagnostic(e),usage:e.notRequested?undefined:addUsage(r,e.usage),state:e.error?'failed':e.state??'completed',result:{text:e.assistant??e.text??'',finishReason:e.finishReason,error:e.error,responseId:e.responseId,billing:e.billing,reservation:e.reservation,notRequested:e.notRequested,toolCalls:calls?.map((c:any)=>c.function?.name??c.name)}};
+    currentModel={type:'model',name:e.provider==='opencode_go'?'OpenCode Go':'DeepSeek',modelCall:e.notRequested?undefined:r.usage.calls+1,round:e.round,at:e.startedAt,durationMs:e.durationMs,request:e.request,diagnostic:diagnostic(e),usage:e.notRequested?undefined:addUsage(r,e.usage),state:e.error?'failed':e.state??'completed',result:{text:e.assistant??e.text??'',finishReason:e.finishReason,error:e.error,responseId:e.responseId,billing:e.billing,reservation:e.reservation,notRequested:e.notRequested,provider:e.provider,model:e.model,fallbackFrom:e.fallbackFrom,toolCalls:calls?.map((c:any)=>c.function?.name??c.name)}};
     if(e.reservation?.state==='unknown')r.usage.unconfirmedTokens+=finite(e.reservation.reservedTokens??e.reservation.retainedTokens);
     r.events.push(currentModel);
   };
@@ -145,10 +146,34 @@ function parseLog(id:string,kind:ActivityKind,d:any,mtime:number):RecordItem{
     r.reply=obj(d.draft)?.text??'';r.state=({sent:'completed',published:'completed',completed:'completed',failed:'failed',unknown:'unconfirmed',publishing:'running',sending:'running',running:'running'} as any)[d.state]??'unknown';
     r.events=[{type:'result',name:r.title,result:d}];if(d.image_id)r.related=['image:'+d.image_id];if(d.error)r.errors=1;return r;
   }
-  r.title=d.kind==='curiosity-summary'?'会话结束后的好奇心整理'+(d.groupName?' · '+d.groupName:''):kind==='exploration'?String(d.request??'自主探索'):kind==='qq'?String(d.request??'QQ 对话'):kind==='memory'?'后台记忆回顾':'早间新闻检索';
+  r.title=d.kind==='corpus-extract'?(d.manual?'手动提取语料':d.source==='public'?'公域观察提梗':'QQ 会话提梗'):d.kind==='curiosity-summary'?'会话结束后的好奇心整理'+(d.groupName?' · '+d.groupName:''):kind==='exploration'?String(d.request??'自主探索'):kind==='qq'?String(d.request??'QQ 对话'):kind==='memory'?'后台记忆回顾':'早间新闻检索';
   traceRecord(r,d.trace??[]);if(['running','completed','failed','unconfirmed','paused','cancelled','interrupted'].includes(d.state))
     r.state=kind==='exploration'&&d.state==='paused'?'failed':d.state;
   return r;
+}
+/** Only receipts for actual replies are eligible; exploratory thoughts, drafts,
+ * accepted submissions and uncertain deliveries cannot become liked replies. */
+export function corpusTiebaReply(item:any):CorpusLike|undefined{
+ const m=item?.metadata??{},r=item?.result??{};
+ if(['queued','running','cleaning'].includes(item?.state)||!(r.publicVerified===true||r.visibility==='public'||r.outcome==='public')||m.action==='thread')return;
+ const reply=m.content??m.text;if(typeof reply!=='string'||!reply.trim())return;
+ return {source_key:'tieba:'+(m.requestId??r.requestId??item.id),platform:'tieba',conversation:'tieba',topic:String(m.title??'贴吧回复').slice(0,300),reply_text:reply};
+}
+export function corpusReplyCandidates(record:any):CorpusLike[]{
+ const found:CorpusLike[]=[];
+ if(record.kind==='web'&&record.state==='completed'&&record.reply?.trim())found.push({source_key:record.id,platform:'web',conversation:record.conversation,topic:record.title.slice(0,300),reply_text:record.reply});
+ for(const event of record.events??[]){
+  const a=event.args??{},r=event.result??{};
+  if(event.name==='publish_tieba'&&a.action==='reply'&&(r.publicVerified===true||r.visibility==='public'||r.outcome==='public')){
+   const reply=r.content??a.content??a.text;if(typeof reply==='string'&&reply.trim())found.push({source_key:'tieba:'+(r.requestId??a.requestId??record.id+':'+event.callId),platform:'tieba',conversation:'tieba',topic:String(a.title??record.title).slice(0,300),reply_text:reply});
+  }else if(['reply','send_message','send_qq_message'].includes(event.name)&&(r.deliveryStatus==='confirmed'||r.sent===true&&r.deliveryStatus===undefined)){
+   const reply=r.text??a.text,conversation=r.conversation??record.conversation;
+   if(typeof reply==='string'&&reply.trim()&&typeof conversation==='string'&&!conversation.startsWith('web:'))found.push({source_key:record.id+':'+(event.callId??found.length),platform:'qq',conversation,topic:record.title.slice(0,300),reply_text:reply});
+  }
+ }
+ if(record.kind==='qq'&&record.state==='completed'&&record.reply?.trim()&&!found.length&&!(record.events??[]).some((e:any)=>['send_meme','send_file','send_image'].includes(e.name)))
+  found.push({source_key:record.id+':reply',platform:'qq',conversation:record.conversation,topic:record.title.slice(0,300),reply_text:record.reply});
+ return found;
 }
 function queryDate(raw:string|null,end=false){
   if(!raw)return null;

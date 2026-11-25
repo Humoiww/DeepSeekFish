@@ -36,7 +36,7 @@ export function dialogueMessages(dialogue:Message[],batch:Message[],voices?:QQSp
 export const contextTools:ModelTool[]=[{type:'function',function:{name:'read_tool_result',description:'取回本轮工具资料；网页默认只读正文。section可选text/images/links/posts/replies/raw，offset按回执续读；数组按条、文字按字符。不重新联网。',parameters:{type:'object',properties:{resultId:{type:'string'},section:{type:'string',enum:['text','images','links','posts','replies','records','events','raw']},offset:{type:'integer',minimum:0}},required:['resultId'],additionalProperties:false}}}];
 const RECEIPTS=new Set(['generate_image','generate_video','send_image','send_file','send_meme','collect_meme','remember_images','reply','publish_qzone','publish_tieba','apply_tieba_moderator','check_tieba_publication','draft_daily_post']);
 const WEB_TEXT_TOKENS=4000;
-const CONTEXT_HIGH_WATER=28000;
+const CONTEXT_HIGH_WATER=48000;
 type Result={message:ChatMessage;name:string;raw:string;data:any;round:number;body?:string};
 function chatSection(result:Result){
   if(result.name==='read_forward'&&Array.isArray(result.data?.records))return 'records';

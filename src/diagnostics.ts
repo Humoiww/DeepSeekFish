@@ -13,7 +13,8 @@ export function diagnosticSafe(value:any,depth=0):any{
   .replace(/((?:skey|p_skey|rkey|refresh_token|id_token)\s*[=:]\s*)[^\s"'<>;,]+/gi,'$1[凭据省略]')
   .replace(/("(?:api[_-]?key|app[_-]?secret|access[_-]?token|refresh[_-]?token|id[_-]?token|password|authorization|cookie)"\s*:\s*")[^"]*/gi,'$1[凭据省略]');
  if(Array.isArray(value))return value.map(v=>diagnosticSafe(v,depth+1));
- if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,secret.test(k)?'[凭据省略]':k==='image_url'?{url:'[原图附件，按图库 ID 重新查看]'}:diagnosticSafe(v,depth+1)]));
+ if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,secret.test(k)?'[凭据省略]':
+  k==='reasoning_content'?'[上游推理内容省略]':k==='image_url'?{url:'[原图附件，按图库 ID 重新查看]'}:diagnosticSafe(v,depth+1)]));
  return value;
 }
 export function errorDiagnostic(error:unknown,depth=0,seen=new Set<unknown>()):Record<string,any>{

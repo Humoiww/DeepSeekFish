@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import fs from 'node:fs';
-import {fixture} from './helpers.js';
+import {fixture,assertPersonaLayout,assertVoiceHint,seedVoiceExamples} from './helpers.js';
 import {BudgetedModel} from '../src/agent/model.js';
-import {personaSettings} from '../src/character.js';
+import {INNER_VOICE_HINT} from '../src/character.js';
 import {MemoryJournal} from '../src/memory/journal.js';
 import {CuriositySummaryWorker} from '../src/memory/curiosity-summary.js';
 import {cacheGroupNames} from '../src/memory/group-names.js';
@@ -12,16 +12,13 @@ import type {ChatMessage,Model} from '../src/types.js';
 
 function setup(){
  const f=fixture({qqTransport:'onebot',privateUsers:['11223344'],groups:['88776655','88776666'],admins:['11223344']}),journal=new MemoryJournal(f.root,f.store);
+ seedVoiceExamples(f.root);
  let now=Date.parse('2026-11-22T12:00:00Z'),calls=0,decision='save_curiosity_summary',content='讨论让我想到观察鲸鱼需要耐心。';
  const inputs:ChatMessage[][]=[];
  const provider:Model={kind:'offline',async complete(messages,_max,options){
   calls++;inputs.push(messages);
-  const personality=messages.at(-1);
-  assert.equal(personality?.role,'system');
-  assert.equal(typeof personality?.content,'string');
-  for(const block of personaSettings(f.root).blocks){
-   if(block.kind!=='kaomoji')assert.ok(String(personality?.content).includes(block.text.trim()));
-  }
+  assertPersonaLayout(f.root,messages);
+  assertVoiceHint(options?.tools,'save_curiosity_summary','content',INNER_VOICE_HINT,{type:'string',maxLength:4000});
   assert.equal(options?.toolChoice,undefined);
   const args=decision==='save_curiosity_summary'?{title:'观察的耐心',content}:{};
   return {text:'',tool_calls:[{id:'decision-'+calls,type:'function',function:{name:decision,arguments:JSON.stringify(args)}}],usage:{input:100,output:30}};

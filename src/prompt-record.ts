@@ -1,6 +1,6 @@
 import { Store } from './storage/db.js';
 import {diagnosticSafe} from './diagnostics.js';
-const channels=['qq','web','image','daily','news','memory','exploration'] as const;
+const channels=['qq','web','image','portrait','daily','news','memory','curiosity','exploration','activity-chain','corpus-learning','development'] as const;
 export type PromptChannel=typeof channels[number];
 /** Store the actual request body, never Authorization headers or image data/URLs. */
 export function recordPrompt(store:Store,channel:PromptChannel,request:unknown){

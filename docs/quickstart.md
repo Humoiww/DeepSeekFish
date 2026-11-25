@@ -21,7 +21,7 @@ cd DeepSeekFish
 
 无桌面启动使用 `./start.sh --no-open`；无 API Key 演示使用 `./start.sh --mock`。Windows 双击 `start.bat`，演示模式使用 `start.bat --mock`。
 
-网页地址为 <http://127.0.0.1:17862>。自动打开使用一次性本机连接；手动打开时，用 `runtime/data/webui-admin-token` 登录。在「连接与设置」保存自己的 DeepSeek API Key，再开始聊天。不要将令牌发到群里或提交 Git。
+网页地址为 <http://127.0.0.1:17862>。自动打开使用一次性本机连接；手动打开时，用 `runtime/data/webui-admin-token` 登录。在「连接与设置」保存自己的 DeepSeek 或 OpenCode Go API Key，再开始聊天。不要将令牌发到群里或提交 Git。
 
 启动脚本完成依赖准备与构建。需要手动操作时：
 
@@ -70,7 +70,7 @@ Windows 对应 `npm run bind` 与 `npm start`。开放平台提供的事件权�
 bash scripts/manage.sh codex-login --device-auth
 ```
 
-不要复制其他项目或用户目录的认证文件。Linux 的隔离环境与排错见 [Linux](linux.md)；Windows 原生 Codex 隔离仍以对应环境的实际验证为准。普通聊天不要求先启用通用 Codex。
+不要复制其他项目或用户目录的认证文件。Linux 的隔离环境与排错见 [Linux](linux.md)；Windows 原生 Codex 隔离仍以对应环境的实际验证为准。普通聊天不要求先启用通用 Codex。需要由 Antigravity 分诊并交给 Codex 开发时，见[接入指南](neon-codex-development-bridge.md)。
 
 ## 接下来
 

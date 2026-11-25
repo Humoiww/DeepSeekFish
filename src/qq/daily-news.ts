@@ -12,7 +12,7 @@ import { FishError,codeOf,type ChatMessage,type ModelTool,type Transport,type Me
 import { qqChatTools,imageLibraryTools,fileTools } from './chat-tools.js';
 import { forwardTools } from './forward.js';
 import { qqContextPrompt } from '../prompts.js';
-import { personalityPrompt } from '../character.js';
+import {OUTBOUND_VOICE_HINT,personalityPrompt} from '../character.js';
 import { hasToolMarkup } from '../agent/tool-protocol.js';
 import {isPromptNumberBlocked,PromptNumberGuard,privateQQNumbers} from '../agent/prompt-numbers.js';
 import { knowledgeTools,knowledgeSnapshot,knowledgeTokens,knowledgeUpdateParameters,updateKnowledge } from '../memory/knowledge.js';
@@ -52,7 +52,7 @@ export function newsMemory(store:Store,owner:string,now=Date.now()){
   return {timezone:PROJECT_TIMEZONE,conversation:'private:'+owner,peerQQ:owner,recent,textTokens:tokens,more:'recall_chat'};
 }
 const memoryDecision:ModelTool={type:'function',function:{name:'finish_memory',description:'结束后台回顾。成功修改需传 {memory:{version,changes}}，不能把 version 放在外层。修改超限且没有合适的精简方案时，传 {} 保留现有知识库。',parameters:{type:'object',properties:{memory:knowledgeUpdateParameters},additionalProperties:false}}};
-const draftNews:ModelTool={type:'function',function:{name:'draft_news',description:'完成要私聊给主人的新闻分享。sources填写本次实际查到的来源链接，memory可顺便后台记住新知识。',parameters:{type:'object',properties:{text:{type:'string',maxLength:1800},sources:{type:'array',items:{type:'string'},minItems:1,maxItems:4},memory:knowledgeUpdateParameters},required:['text','sources'],additionalProperties:false}}};
+const draftNews:ModelTool={type:'function',function:{name:'draft_news',description:'完成要私聊给主人的新闻分享。sources填写本次实际查到的来源链接，memory可顺便后台记住新知识。',parameters:{type:'object',properties:{text:{type:'string',maxLength:1800,description:OUTBOUND_VOICE_HINT},sources:{type:'array',items:{type:'string'},minItems:1,maxItems:4},memory:knowledgeUpdateParameters},required:['text','sources'],additionalProperties:false}}};
 
 export class DailyNews {
   private memory:MemoryJournal;
@@ -73,7 +73,7 @@ export class DailyNews {
     let rejected:string|undefined,saved=false;
     const startedAt=this.now(),saveTrace=()=>this.log(file,{startedAt,at:this.now(),conversation:'private:'+s.owner,trace});
     const personality=personalityPrompt(this.root);
-    const messages:ChatMessage[]=[{role:'system',content:qqContextPrompt(this.root)},{role:'user',content:modelTimeJson({...feedback.previous(),task:'这是后台记忆回顾，不发QQ消息。近期私聊在recent；自己判断哪些知识、偏好、约定或经验值得长期记住，也可以不更新。当前QQ工具在qqTools，联网方法在qqWebTools；历史失败是当时的情况，不代表现在不能做。',qqTools:this.cfg().qqTransport==='onebot'?[...qqChatTools(true,this.cfg().images,true),...imageLibraryTools(),...fileTools(),...forwardTools].map(t=>t.function.name):[],qqWebTools:this.cfg().search?[...webTools,...browseTools].map(t=>({name:t.function.name,description:t.function.description})):[],...newsMemory(this.store,s.owner,this.now())})}];
+    const messages:ChatMessage[]=[{role:'system',content:qqContextPrompt(this.root)},{role:'user',content:modelTimeJson({...feedback.previous(),task:'这是后台记忆回顾，不发QQ消息。近期私聊在recent；用自己的内心独白回想这段经历，判断哪些知识、偏好、约定或经验值得长期记住，也可以不更新。知识条目按事实写。当前QQ工具在qqTools，联网方法在qqWebTools；历史失败是当时的情况，不代表现在不能做。',qqTools:this.cfg().qqTransport==='onebot'?[...qqChatTools(true,this.cfg().images,true),...imageLibraryTools(),...fileTools(),...forwardTools].map(t=>t.function.name):[],qqWebTools:this.cfg().search?[...webTools,...browseTools].map(t=>({name:t.function.name,description:t.function.description})):[],...newsMemory(this.store,s.owner,this.now())})}];
     try{
       const reviewRounds=4;
       for(let round=0;round<reviewRounds;round++){

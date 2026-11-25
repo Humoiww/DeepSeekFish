@@ -1,4 +1,27 @@
 import {FishError} from '../types.js';
+import {tiebaTarget} from '../search/tieba.js';
+
+export type TiebaReplyScope='thread'|'floor'|'subreply';
+
+export function publicationReplyTarget(link:unknown){
+ if(typeof link!=='string'||link.length>4096)return;
+ try{
+  const url=new URL(link);
+  if(url.protocol!=='https:'||url.username||url.password||url.port)return;
+  const target=tiebaTarget(url),anchor=url.hash.slice(1);
+  if(!target?.tid||anchor&&!/^[1-9]\d{0,19}$/.test(anchor))return;
+  const postId=target.kind==='comments'?target.pid:target.postId||anchor;
+  if(!postId){
+   return {replyScope:'thread' as const,action:'reply' as const,threadId:target.tid,page:target.page};
+  }
+  const subPostId=anchor&&anchor!==postId?anchor:undefined;
+  const replyScope:TiebaReplyScope=subPostId?'subreply':'floor';
+  return {replyScope,action:'comment' as const,threadId:target.tid,postId,...(subPostId?{subPostId}:{}),
+   ...(target.kind==='comments'?{commentPage:target.page}:{page:target.page})};
+ }catch{return undefined;}
+}
+
+export const replyScopeForTarget=(link:unknown):TiebaReplyScope|null=>publicationReplyTarget(link)?.replyScope??null;
 
 export interface ResolvedReplyTarget {threadId:string;parentPostId:string;subPostId?:string;commentPage:number;replyTarget:string;floor?:number;replyTo?:{id:string|null;name:string|null}|null}
 /** Resolve message relationships from actual returned floors, with the bot's

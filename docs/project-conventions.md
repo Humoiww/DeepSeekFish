@@ -1,5 +1,6 @@
 # 项目约定与运行说明
 - 肥鱼现有的人格 prompt 必须保留在模型请求的最后一条。添加功能或工具时保留原有记忆和知识库，不修改、删掉或换用替代人格。向 GPT 小姐提开发需求和查询 Codex 进度都通过工具，由肥鱼用自己的语气处理，颜文字照常保留。
+- 首条 system 以静态人格和主人可编辑的口吻示例开头。口吻示例留空即省略，随机颜文字只放在末尾人格。轮内的动态状态和工具回执保留在各自的位置，首条消息保持稳定。
 - GPT 小姐通过本项目内部 API 收到的开发请求来自肥鱼。肥鱼是能够调用本项目函数和工具的 AI。
 - Codex 非生图调用的次数和耗时只记本地统计。判断额度以服务端实际回执为准，不设本地次数、时长或开发返工轮数上限。通知要区分本地账本和服务端限流。
 - 按动作区分外部发送和内部咨询。外部发送包括真实 QQ 消息和附件名称、贴吧发帖回帖、QQ 空间发布，发送前检查可能泄漏的 QQ 号，命中后交给肥鱼改写。内部咨询包括网页工作台、联网查询、探索笔记、新闻草稿、向 GPT 小姐提问以及开发验收和离线回放，允许引用原始数字。
@@ -8,6 +9,7 @@
 - 贴吧模型回复统一使用 `publish_tieba` 的 `action=reply` 和读取结果提供的 `replyTarget`；目标为主题则盖新楼，目标为楼层或子回复则由程序解析父子关系并走楼中楼。不再向模型暴露单独的 `comment` 回复动作；旧记录和底层协议保持兼容。
 - 自由探索附带每日新帖建议：按香港时间09:00换日，未调用新主题工具时提醒可以找有意思的东西发帖，调用过则提示今日已尝试；QQ和探索共用持久标记，回复不计。标记不代表公开成功，不是发帖任务、配额、冷却或权限锁，不改变模型自由选择。
 - 用户明确要求：除权限锁外，不允许额外给肥鱼加锁，尤其禁止无意义的行为锁、跨请求失败锁、待人工验证锁。不得用旧请求失败或本地保存的状态阻止新的独立调用，不得把本地合成的拦截伪装成平台真实返回。平台验证码和错误只归属于实际返回它的那次请求；需要展示当前真实回执和对应官网画面，不能拿历史节点冒充最新情况。
+- 贴吧自动发送队列按主人要求在实际发言遇到人工验证时暂停，并持久化到主人在 WebUI 点击「恢复发送」。肥鱼仍可正常调用工具、把新帖和回复加入队列。手动验证和只读操作继续可用，验证成功后由主人决定何时继续发送。
 - Node >=24.9, TypeScript; `npm test` builds and runs bounded offline tests.
 - User instruction: do not add or run extra automated tests unless the user explicitly asks for them. Make necessary builds, fix the actual issue, and deliver generated images for the user to judge. The 47 checks from the 2026-11-09 media/debug run were explicitly requested to be removed.
 - Keep all writes, caches and secrets inside this repository. Do not publish without explicit user authorization; never modify global tooling.

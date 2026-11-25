@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
-import { fixture } from './helpers.js';
+import { fixture,assertPersonaLayout,seedVoiceExamples } from './helpers.js';
 import { makeDir } from '../src/paths.js';
 import { CHARACTER_REFERENCE,BUNDLED_CHARACTER_REFERENCE } from '../src/character.js';
 import { createWebApp } from '../src/web/app.js';
@@ -54,8 +54,14 @@ test('DeepSeek plan reaches the code runner, original self intent survives rewri
     return {text:'untrusted assistant text',images:[{id:'native',type:'imageGeneration',status:'completed',result:bytes.toString('base64'),inputImages:reference?[{path:reference,sha256:createHash('sha256').update(fs.readFileSync(reference)).digest('hex')}]:[]}]};}};
   const http=(async(_u:any,options:any)=>{payload=JSON.parse(options.body);return reply([call()]);}) as typeof fetch;
   const w=web(false,http,runner);try{
+    seedVoiceExamples(w.f.root);
     bytes=await png(w.f.root);const dir=makeDir(w.f.root,'runtime/character');fs.writeFileSync(path.join(dir,'whalechan-reference.png'),bytes);
     const s=w.app.createSession();await w.app.chat(s.id,'画一张你自己的图，穿原来的服饰','chat',signal(),()=>{});
+    assertPersonaLayout(w.f.root,payload.messages);
+    const snapshots=w.app.prompts().latest;
+    assert.deepEqual(snapshots.portrait.request.messages,payload.messages);
+    assert.equal(snapshots.web,null);
+    assert.equal(snapshots.image,null);
     assert.equal(runnerCalls,1);assert.equal(payload.tools.length,1);assert.equal(payload.tools[0].function.name,'generate_image');
     assert.match(seenPrompt,/窗边喝茶/);assert.match(seenPrompt,/用户原始要求：画一张你自己的图/);assert.match(seenPrompt,/鲸鳍耳/);
     assert.ok(seenReference.endsWith('/character-reference.png'));assert.equal(fs.existsSync(seenReference),false);

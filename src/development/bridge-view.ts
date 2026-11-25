@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import {randomUUID} from 'node:crypto';
 import {safePath,writePrivateAtomic} from '../paths.js';
 import {FishError,codeOf} from '../types.js';
-import {isBridgeRecordKind,maxRecordBytes,taskIdPattern,type AgyStatus,type BridgeRecord,type BridgeRecordSummary} from './agy-bridge-types.js';
+import {agyQuotaTtlMs,isBridgeRecordKind,maxRecordBytes,taskIdPattern,type AgyQuota,type AgyStatus,type BridgeRecord,type BridgeRecordSummary} from './agy-bridge-types.js';
 import type {Jobs} from './jobs.js';
 
 export const bridgeViewDir='runtime/data/development-activity/bridge-records';
@@ -12,6 +12,9 @@ const processingFile=developmentInbox+'/web-cancel.processing.json';
 const resetFile=developmentInbox+'/web-reset-conversation.json';
 const resetResultFile=developmentInbox+'/web-reset-conversation-result.json';
 type ConversationReset={id:string;at:number;error?:string};
+const quotaFile=bridgeViewDir+'/agy-quota.json';
+const quotaRefreshFile=developmentInbox+'/web-refresh-agy-quota.json';
+type SavedQuota=AgyQuota&{refreshId?:string};
 
 export const webCancelReason='主人在 WebUI 手动打断';
 
@@ -35,6 +38,51 @@ export function readDevelopmentJson<T>(root:string,name:string):T|undefined{
  }catch(error){
   if((error as NodeJS.ErrnoException).code!=='ENOENT'&&!(error instanceof SyntaxError))throw error;
  }finally{if(fd!==undefined)fs.closeSync(fd);}
+}
+
+function agyQuotaFiles(root:string){
+ const saved=readDevelopmentJson<SavedQuota>(root,quotaFile);
+ const request=readDevelopmentJson<{id:string;at:number}>(root,quotaRefreshFile);
+ return {saved,pending:request&&taskIdPattern.test(request.id)&&request.id!==saved?.refreshId?request:undefined};
+}
+
+export function readAgyQuota(root:string){
+ const {saved,pending}=agyQuotaFiles(root);
+ const quota=saved??{source:'agy' as const,checkedAt:0};
+ const {refreshId:_,...data}=quota as SavedQuota;
+ return {...data,pending:!!pending,stale:!!data.stale||(data.checkedAt>0&&Date.now()-data.checkedAt>=agyQuotaTtlMs)};
+}
+
+export function requestAgyQuotaRefresh(root:string){
+ const {pending}=agyQuotaFiles(root);
+ if(pending)return {ok:true,requestId:pending.id};
+ const id=randomUUID();
+ fs.mkdirSync(safePath(root,developmentInbox),{recursive:true,mode:0o700});
+ writePrivateAtomic(root,quotaRefreshFile,JSON.stringify({id,at:Date.now()}));
+ return {ok:true,requestId:id};
+}
+
+export async function syncAgyQuota(root:string,refresh:()=>Promise<AgyQuota>,refreshId?:string){
+ const previous=readDevelopmentJson<SavedQuota>(root,quotaFile);
+ let quota:AgyQuota;
+ try{quota=await refresh();}
+ catch(error){
+  const code=codeOf(error);
+  quota={source:'agy',checkedAt:0,error:code.startsWith('DEV_AGY_')?code:'DEV_AGY_BRIDGE_UNAVAILABLE',stale:true};
+ }
+ // A restarted or temporarily unavailable bridge may have no in-memory values.
+ if(!quota.checkedAt&&previous?.checkedAt){
+  quota={...quota,checkedAt:previous.checkedAt,weekly:previous.weekly,fiveHour:previous.fiveHour,stale:true};
+ }
+ const json=JSON.stringify({...quota,refreshId:refreshId??previous?.refreshId});
+ if(json!==JSON.stringify(previous))writePrivateAtomic(root,quotaFile,json);
+}
+
+export async function processAgyQuotaRefresh(root:string,refresh:()=>Promise<AgyQuota>){
+ const {pending}=agyQuotaFiles(root);
+ if(!pending)return false;
+ await syncAgyQuota(root,refresh,pending.id);
+ return true;
 }
 
 export function developmentDashboard(root:string,owner:string|undefined,includeRecords=true){

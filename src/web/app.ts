@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { configureQQ,qqStatus,readQQSettings } from '../qq/settings.js';
 import { ExplorationState } from '../exploration/state.js';
 import { randomBytes,randomUUID } from 'node:crypto';
-import { defaults,prepare,loadSecrets,loadConfig,validateConfig,type Config } from '../config.js';
+import { deepseekCredential,providerCredential,defaults,prepare,loadSecrets,loadConfig,validateConfig,type Config } from '../config.js';
 import { safePath,writePrivate } from '../paths.js';
 import { Store,redact } from '../storage/db.js';
 import { Ledger,dayKey } from '../budget/ledger.js';
@@ -21,18 +21,24 @@ import { FishError,codeOf } from '../types.js';
 import { SessionWorkspace } from './workspace.js';
 import { WebModel,type WireMessage,type WebTool } from './model.js';
 import { webPrompt,promptSystems } from '../prompts.js';
-import { characterPrompt,personaSettings,savePersona } from '../character.js';
+import { personalityPrompt,personaSettings,savePersona } from '../character.js';
 import { promptSnapshots } from '../prompt-record.js';
 import { WebImages,requestsImage } from './images.js';
 import type { ImageRunner } from '../image/codex-smoke.js';
 import { AppServerQuotaReader,CodexQuotaMonitor,type QuotaReader } from '../codex/quota.js';
 import { MemoryJournal,dayStart } from '../memory/journal.js';
 import { startQQImageBroker } from '../qq/image-broker.js';
-import { ActivityHistory } from './activity.js';
+import {Corpus} from '../memory/corpus.js';
+import {privateQQNumbers} from '../agent/prompt-numbers.js';
+import { ActivityHistory,corpusReplyCandidates,corpusTiebaReply } from './activity.js';
 import {activityChainActive,interruptActivityChains} from '../qq/activity-chain.js';
-import {developmentDashboard,developmentRecord,requestDevelopmentInterrupt,requestConversationReset} from '../development/bridge-view.js';
+import {developmentDashboard,developmentRecord,readAgyQuota,requestAgyQuotaRefresh,requestDevelopmentInterrupt,requestConversationReset} from '../development/bridge-view.js';
+import {DeepSeekBalance} from './deepseek-balance.js';
+import {OpenCodeQuota} from './opencode-quota.js';
 import {boundDevelopmentOwner} from '../development/intake.js';
-import { modelPayload } from '../agent/model.js';
+import { modelPayload,RoutedChatModel } from '../agent/model.js';
+import {ConnectionProfiles,liveModelConfig} from '../provider/connections.js';
+import {OpenCodeCatalog,mockProviderMode} from '../provider/opencode.js';
 import {traceModel} from '../agent/model-trace.js';
 import {diagnosticSafe,errorDiagnostic} from '../diagnostics.js';
 import { PROJECT_TIMEZONE } from '../time.js';
@@ -152,7 +158,41 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   }
   const affect=new Affect(budgetStore);
   const activity=new ActivityHistory(root,store,budgetStore);
-  const exploration=new ExplorationState(budgetStore,()=>validateConfig({...loadConfig(root),...JSON.parse(budgetStore.getMeta('settings')??'{}'),...readQQSettings(root)}));
+  const corpus=new Corpus(budgetStore,()=>privateQQNumbers({...loadConfig(root),...readQQSettings(root)}));
+  const corpusQueue=(data:any)=>{
+    const annotate=(item:any)=>{const reply=corpusTiebaReply(item);return {...item,...(reply?{corpusLike:{sourceKey:reply.source_key,liked:corpus.liked(reply.source_key)}}:{})};};
+    return {...data,active:data.active?.map(annotate),completed:data.completed?.map(annotate),...(data.selected?{selected:annotate(data.selected)}:{})};
+  };
+  const corpusCandidates=async(record:Awaited<ReturnType<ActivityHistory['detail']>>)=>{
+    const found=corpusReplyCandidates(record);
+    // Publication tools may originally have returned only a queued receipt.
+    // Resolve the current read-only queue record before offering a like.
+    const ids=[...new Set(record.events.filter(event=>event.name==='publish_tieba'&&(event.args as any)?.action==='reply')
+      .map(event=>event.result?.requestId).filter((id):id is string=>typeof id==='string'&&id.length<=240))];
+    for(const id of ids){
+      if(found.some(reply=>reply.source_key==='tieba:'+id))continue;
+      try{const queue=await tieba.replyQueue(0,false,id),item=queue.selected??[...queue.active,...queue.completed].find(row=>row.id===id);
+        const reply=item&&corpusTiebaReply(item);if(reply&&reply.source_key==='tieba:'+id)found.push(reply);
+      }catch{/* Missing historical queue data does not establish delivery. */}
+    }
+    return found;
+  };
+  const corpusActivity=async(id:unknown)=>{const record=await activity.detail(id);return {...record,corpusLikes:(await corpusCandidates(record)).map(reply=>({sourceKey:reply.source_key,liked:corpus.liked(reply.source_key),preview:reply.reply_text.slice(0,120)}))};};
+  const corpusToggleLike=async(input:Record<string,unknown>)=>{
+    if(Object.keys(input).some(k=>!['activityId','sourceKey','queueId'].includes(k))||Boolean(input.activityId)===Boolean(input.queueId))throw new FishError('CORPUS_INPUT_INVALID');
+    let reply;
+    if(input.activityId){
+      const candidates=await corpusCandidates(await activity.detail(input.activityId));
+      reply=candidates.find(item=>item.source_key===input.sourceKey);
+    }else{
+      if(typeof input.queueId!=='string'||!input.queueId||input.queueId.length>240)throw new FishError('CORPUS_INPUT_INVALID');
+      const queue=await tieba.replyQueue(0,false,input.queueId);
+      const item=queue.selected??[...queue.active,...queue.completed].find(row=>row.id===input.queueId);
+      if(item?.id===input.queueId)reply=corpusTiebaReply(item);
+    }
+    if(!reply)throw new FishError('CORPUS_REPLY_NOT_CONFIRMED');return corpus.toggleLike(reply);
+  };
+  const exploration=new ExplorationState(budgetStore,()=>liveModelConfig(validateConfig({...loadConfig(root),...JSON.parse(budgetStore.getMeta('settings')??'{}'),...readQQSettings(root)}),budgetStore));
   const activeExploration=()=>budgetStore.db.prepare("SELECT id,state,cancel FROM exploration_runs WHERE state IN ('queued','running') ORDER BY created DESC LIMIT 1").get()??null;
   store.db.exec(`CREATE TABLE IF NOT EXISTS web_sessions(id TEXT PRIMARY KEY,title TEXT,created INTEGER,updated INTEGER);
     CREATE TABLE IF NOT EXISTS web_turns(id TEXT PRIMARY KEY,sid TEXT,user TEXT,answer TEXT,trace TEXT,context TEXT,state TEXT,created INTEGER);`);
@@ -164,17 +204,23 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   let settings:Settings={model:'deepseek-flash',maxOutputTokens:1024,dailyCny:loadConfig(root).dailyCny,groupDailyCny:loadConfig(root).groupDailyCny,search:false,codexQueue:false,groupChatSearch:loadConfig(root).groupChatSearch,curiosityPublicSearch:loadConfig(root).curiosityPublicSearch,curiosityAutoSummary:loadConfig(root).curiosityAutoSummary,...JSON.parse(store.getMeta('web-settings')??'{}')};
   const codexImageOnly=process.env.FISH_CODEX_IMAGE_ONLY==='1';
   if(codexImageOnly)settings.codexQueue=false;
-  let secret='';const secretPath=safePath(root,'runtime/data/webui-secrets.json');
-  if(fs.existsSync(secretPath))secret=JSON.parse(fs.readFileSync(secretPath,'utf8')).deepseekKey??'';
-  const key=()=>secret||process.env.DEEPSEEK_API_KEY||'';
+  const balance=new DeepSeekBalance(()=>deepseekCredential(root),mock||/^(1|true)$/i.test(process.env.DEEPSEEK_MOCK??''),http);
+  const openCodeQuota=new OpenCodeQuota(mock||mockProviderMode(),http);
   const sessions=():Session[]=>store.db.prepare('SELECT * FROM web_sessions ORDER BY updated DESC LIMIT 50').all() as unknown as Session[];
   const cfg=():Config=>{
     const {codexQueue,...common}=settings;
-    return validateConfig({...defaults,...loadConfig(root),...common,...Object.fromEntries(Object.entries(JSON.parse(budgetStore.getMeta('settings')??'{}')).filter(([k])=>['search','dailyCny','groupDailyCny','groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'].includes(k))),codex:codexQueue,
-      groups:sessions().map(s=>'web:'+s.id),admins:['webui-local']});
+    const base=loadConfig(root);
+    const inherited=base.provider==='deepseek'?common:{...common,model:base.model,maxOutputTokens:base.maxOutputTokens};
+    return liveModelConfig(validateConfig({...defaults,...base,...inherited,...Object.fromEntries(Object.entries(JSON.parse(budgetStore.getMeta('settings')??'{}')).filter(([k])=>['search','dailyCny','groupDailyCny','groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'].includes(k))),codex:codexQueue,
+      groups:sessions().map(s=>'web:'+s.id),admins:['webui-local']}),budgetStore);
   };
-  const ledger=new Ledger(budgetStore,cfg),model=new WebModel(key,cfg,ledger,mock,http);
-  const search=new SearchService(mock?new MockSearchProvider():{search:(q:string)=>new DeepSeekSearchProvider(key(),cfg,http).search(q),fetch:(url:string)=>new DeepSeekSearchProvider(key(),cfg,http).fetch(url)},ledger,cfg);
+  const credential=()=>{const config=cfg();return providerCredential(root,config.provider,config.keySlot);};
+  const missingKey=()=>new FishError(cfg().provider==='opencode_go'?'OPENCODE_KEY_MISSING':'DEEPSEEK_KEY_MISSING');
+  const ledger=new Ledger(budgetStore,cfg);
+  const catalog=new OpenCodeCatalog(root,mock,http),provider=new RoutedChatModel(root,cfg,ledger,catalog,http);
+  const connection=new ConnectionProfiles(root,budgetStore,cfg);
+  const model=new WebModel(credential,cfg,ledger,mock,http,provider);
+  const search=new SearchService(mock?new MockSearchProvider():new DeepSeekSearchProvider(()=>deepseekCredential(root),cfg,http),ledger,cfg);
   const tasks=new Tasks(root,store,ledger,cfg,mock?new MockTaskRunner():new AppServerRunner(root));
   const quota=new CodexQuotaMonitor(store,mock,quotaReader??new AppServerQuotaReader(root));
   const images=new WebImages(root,store,ledger,cfg,mock,quota,imageRunner);
@@ -200,26 +246,43 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
   }
   function configure(input:Record<string,unknown>){
     if(codexImageOnly&&input?.codexQueue===true)throw new FishError('CODEX_IMAGE_ONLY');
-    const allowed=['apiKey','model','maxOutputTokens','dailyCny','groupDailyCny','search','codexQueue','groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'];
-    if(!input||typeof input!=='object'||Object.keys(input).some(k=>!allowed.includes(k)))throw new FishError('INVALID_WEB_SETTINGS');
-    const next={...settings,dailyCny:cfg().dailyCny,groupDailyCny:cfg().groupDailyCny,groupChatSearch:cfg().groupChatSearch,curiosityPublicSearch:cfg().curiosityPublicSearch,curiosityAutoSummary:cfg().curiosityAutoSummary};
-    for(const field of ['model','maxOutputTokens','dailyCny','groupDailyCny','search','codexQueue','groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'] as const)if(field in input)(next as any)[field]=input[field];
-    if(typeof next.model!=='string'||!/^[a-zA-Z0-9._-]{1,80}$/.test(next.model)||!Number.isInteger(next.maxOutputTokens)||next.maxOutputTokens<128||next.maxOutputTokens>4096||
-      ![next.dailyCny,next.groupDailyCny].every(n=>typeof n==='number'&&Number.isFinite(n)&&n>=0&&Number.isSafeInteger(Math.round(n*1e9)))||typeof next.search!=='boolean'||typeof next.codexQueue!=='boolean'||['groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'].some(field=>typeof next[field as keyof Settings]!=='boolean'))throw new FishError('INVALID_WEB_SETTINGS');
-    if(input.apiKey!==undefined){
-      if(typeof input.apiKey!=='string'||input.apiKey.length>256||input.apiKey&&!/^[a-zA-Z0-9_-]{8,256}$/.test(input.apiKey))throw new FishError('INVALID_API_KEY');
-      if(input.apiKey){secret=input.apiKey;writePrivate(root,'runtime/data/webui-secrets.json',JSON.stringify({deepseekKey:secret})+'\n');}
-    }
-    budgetStore.transaction(()=>{const shared=JSON.parse(budgetStore.getMeta('settings')??'{}');for(const field of ['search','dailyCny','groupDailyCny','groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'] as const)if(input[field]!==undefined)shared[field]=next[field];budgetStore.setMeta('settings',JSON.stringify(shared));});
+    const connectionFields=['apiKey','apiKeyProvider','apiKeySlot','provider','model','maxOutputTokens','keySlot','disableThinking','usdToCny','activePresetId'];
+    const commonFields=['dailyCny','groupDailyCny','search','codexQueue','groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'] as const;
+    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!connectionFields.includes(k)&&!commonFields.some(field=>field===k)))throw new FishError('INVALID_WEB_SETTINGS');
+    const current=cfg(),next={...settings,dailyCny:current.dailyCny,groupDailyCny:current.groupDailyCny,
+      groupChatSearch:current.groupChatSearch,curiosityPublicSearch:current.curiosityPublicSearch,curiosityAutoSummary:current.curiosityAutoSummary};
+    for(const field of commonFields)if(field in input)(next as any)[field]=input[field];
+    if(![next.dailyCny,next.groupDailyCny].every(n=>typeof n==='number'&&Number.isFinite(n)&&n>=0&&Number.isSafeInteger(Math.round(n*1e9)))||
+      typeof next.search!=='boolean'||typeof next.codexQueue!=='boolean'||
+      ['groupChatSearch','curiosityPublicSearch','curiosityAutoSummary'].some(field=>typeof next[field as keyof Settings]!=='boolean'))throw new FishError('INVALID_WEB_SETTINGS');
+    budgetStore.transaction(()=>{
+      if(connectionFields.some(field=>field in input))connection.configure(input);
+      const shared=JSON.parse(budgetStore.getMeta('settings')??'{}');
+      for(const field of commonFields)if(field!=='codexQueue'&&input[field]!==undefined)shared[field]=next[field];
+      budgetStore.setMeta('settings',JSON.stringify(shared));
+    });
     settings=next;store.setMeta('web-settings',JSON.stringify(settings));return status();
   }
-  function status(){return {app:'DeepSeekFish',mock,credentialPresent:!!key(),codexImageOnly,settings:{...settings,search:cfg().search,dailyCny:cfg().dailyCny,groupDailyCny:cfg().groupDailyCny,groupChatSearch:cfg().groupChatSearch,curiosityPublicSearch:cfg().curiosityPublicSearch,curiosityAutoSummary:cfg().curiosityAutoSummary},web:{enabled:cfg().search,requests:ledger.value('search'),spentCny:toCny(Number((budgetStore.db.prepare("SELECT coalesce(sum(cost_nano),0) AS n FROM reservations WHERE day=? AND kind='search' AND allowance_reset=0").get(dayKey()) as any).n)),budget:'CNY',...networkPricing(cfg().model)},workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
+  function status({refreshOpenCodeQuota=false}={}){
+    const config=cfg(),providers=connection.status(),go=providers.opencode_go;
+    const goKey=go.configured?providerCredential(root,'opencode_go',go.keySlot):'';
+    if(refreshOpenCodeQuota)void openCodeQuota.refresh(goKey);
+    const opencodeQuota={configured:Object.values(go.keys).some(key=>key.configured),keyConfigured:go.configured,active:config.provider==='opencode_go',
+      ...openCodeQuota.status(goKey)};
+    return {app:'DeepSeekFish',mock,credentialPresent:!!credential(),providers,opencodeQuota,codexImageOnly,
+    settings:{...settings,provider:config.provider,model:config.model,maxOutputTokens:config.maxOutputTokens,keySlot:config.keySlot??config.provider,
+      disableThinking:config.disableThinking,
+      usdToCny:config.usdToCny,connectionPresets:config.connectionPresets,activePresetId:config.activePresetId,search:config.search,
+      dailyCny:config.dailyCny,groupDailyCny:config.groupDailyCny,groupChatSearch:config.groupChatSearch,curiosityPublicSearch:config.curiosityPublicSearch,
+      curiosityAutoSummary:config.curiosityAutoSummary},
+    web:{enabled:config.search,requests:ledger.value('search'),spentCny:toCny(Number((budgetStore.db.prepare("SELECT coalesce(sum(cost_nano),0) AS n FROM reservations WHERE day=? AND kind='search' AND allowance_reset=0").get(dayKey()) as any).n)),budget:'CNY',...networkPricing(config.model)},workspace:'每个会话独立；20个文本文件 / 合计1 MiB',
+    corpus:corpus.status(),
     neonBusy:developmentDashboard(root,boundDevelopmentOwner(root),false).busy,
     companion:affect.status(),dailyQzone:dailyStatus(root,budgetStore),
     dailyNews:newsStatus(root,budgetStore),
     memory:{automaticDays:2,timezone:PROJECT_TIMEZONE,archive:'runtime/memory/days',persona:'personas/active.json'},
-    imageLimits:{daily:cfg().imageDaily},codexQuota:quota.status(),
-    capabilities:['会话文件列表','会话文本读写','明确请求后设计并生成单张图片',...(cfg().search?['公开搜索与网页读取']:[]),...(settings.codexQueue?['提交 Codex 待审任务']:[])],
+    imageLimits:{daily:config.imageDaily},codexQuota:quota.status(),agyQuota:readAgyQuota(root),deepseekBalance:balance.status(),
+    capabilities:['会话文件列表','会话文本读写','明确请求后设计并生成单张图片',...(config.search?['公开搜索与网页读取']:[]),...(settings.codexQueue?['提交 Codex 待审任务']:[])],
     budgets:{cost:ledger.costSummary(),dailyCny:cfg().dailyCny,groupDailyCny:cfg().groupDailyCny,usage:ledger.snapshot(),fault:budgetStore.getMeta('budgetFault')??null},
     tasks:tasks.list().map(t=>({id:t.id,sessionId:t.grp.slice(4),request:t.request,brief:t.brief,state:t.state,result:t.result})),active:active.size};}
   async function execute(s:Session,name:string,args:any,signal?:AbortSignal){
@@ -254,7 +317,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     const s=session(id);
     if(!accepting)throw new FishError('SERVER_STOPPING');
     if(typeof text!=='string'||!text.trim()||text.length>4000||!['chat','agent','image'].includes(String(mode)))throw new FishError('INVALID_MESSAGE');
-    if(!mock&&!key())throw new FishError('DEEPSEEK_KEY_MISSING');
+    if(!mock&&!credential())throw missingKey();
     if(active.has(s.id)||active.size>=2)throw new FishError('CHAT_BUSY');
     const count=Number((store.db.prepare('SELECT count(*) AS n FROM web_turns WHERE sid=?').get(s.id) as any).n);
     if(count>=100)throw new FishError('CONVERSATION_LIMIT_CREATE_NEW');
@@ -276,12 +339,12 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     const receipts:WireMessage[]=pending.previousToolErrors?[{role:'system',content:modelTimeJson(pending)}]:[];
     const recalled=memory.recall('web:'+s.id,text,prior.flatMap(t=>[{id:t.id+':user'},{id:t.id+':assistant'}]));
     const memoryContext:WireMessage[]=recalled.events.length||recalled.needsReference?[{role:'user',content:modelTimeJson({memory:recalled})}]:[];
-    const characterText=characterPrompt(root);
-    const current:WireMessage[]=[{role:'user',content:redact(text.trim())}],sent:WireMessage[]=[{role:'system',content:webPrompt(root,characterText)},...receipts,...memoryContext,...history];
+    const personaMessage:WireMessage={role:'system',content:personalityPrompt(root)};
+    const current:WireMessage[]=[{role:'user',content:redact(text.trim())}],sent:WireMessage[]=[{role:'system',content:webPrompt(root)},...receipts,...memoryContext,...history];
     const offered=mode==='agent'?tools.filter(t=>!['search_web','fetch_page','browse_page'].includes(t.function.name)||cfg().search).filter(t=>t.function.name!=='queue_codex'||settings.codexQueue):[];
     store.db.prepare('INSERT INTO web_turns VALUES (?,?,?,?,?,?,?,?)').run(turnId,s.id,current[0].content,'','[]','[]','running',Date.now());
     store.db.prepare('UPDATE web_sessions SET title=?,updated=? WHERE id=?').run(s.title==='新的对话'?redact(text.trim()).slice(0,26):s.title,Date.now(),s.id);
-    let answer='',calls=0;
+    let answer='',calls=0,mood:string|undefined;
     const saveTrace=()=>store.db.prepare('UPDATE web_turns SET trace=?,context=? WHERE id=?').run(JSON.stringify(diagnosticSafe(trace)),JSON.stringify(diagnosticSafe(current)),turnId);
     const record=(event:any,publish=true)=>{trace.push(event);saveTrace();if(publish)emit({type:'tool',event});};
     try{
@@ -289,8 +352,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
       if(!imageRequest){
         try{
           affect.feedback('web:'+turnId,text,true);
-          const mood=affect.expression();
-          if(mood)sent[0].content+='\n'+mood;
+          mood=affect.expression();
         }catch{/* Chat remains available if state recording fails. */}
       }
       emit({type:'start',turnId});
@@ -308,10 +370,12 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
         memory.record({id:turnId+':assistant',conversation:'web:'+s.id,actor:'DeepSeekFish',role:'assistant',text:answer,at:Date.now(),source:'web'});
         emit({type:'answer',text:answer});emit({type:'done',turnId});return;
       }
-      const used=new Set<string>();
+      const used=new Set<string>(),corpusContext={platform:'web' as const,conversation:'web:'+s.id,contextId:turnId};
+      const corpusReference=corpus.reference(corpusContext,text.slice(0,8000));
       for(let round=0;round<5;round++){
         joined.throwIfAborted();emit({type:'thinking',round:round+1});
-        const messages:WireMessage[]=[...sent,{role:'system',content:clockPrompt()},...current],final=round>=3||calls>=6;
+        const guidance=[clockPrompt(),mood,corpus.enabled(corpusContext)?corpusReference:''].filter(Boolean).join('\n');
+        const messages:WireMessage[]=[...sent,...current,{role:'system',content:guidance},personaMessage],final=round>=3||calls>=6;
         const m=await traceModel(trace,saveTrace,modelPayload(cfg(),messages,cfg().maxOutputTokens,{tools:offered,final}),round,onReservation=>model.complete('web:'+s.id,messages,offered,joined,final,onReservation));
         joined.throwIfAborted();
         feedback.acknowledged();
@@ -328,7 +392,6 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
             if(!offered.some(t=>t.function.name===c.function.name))throw new FishError('TOOL_NOT_ALLOWED');
             const args=toolArgs(c.function.arguments);
             result=await execute(s,c.function.name,args,joined);
-            if(c.function.name==='update_knowledge')sent[0]={role:'system',content:webPrompt(root,characterText)};
             record({name:c.function.name,state:actionState(result),round,callId:c.id,args:toolArgs(c.function.arguments),result:redact(JSON.stringify(result))});
           }catch(e){result=toolFailure(e,c.function.name);record({name:c.function.name,state:'failed',round,callId:c.id,args:c.function.arguments,result:JSON.stringify(result),diagnostic:errorDiagnostic(e)});}
           feedback.record(c.function.name,result);current.push({role:'tool',tool_call_id:c.id,content:['get_knowledge','update_knowledge'].includes(c.function.name)?modelTimeJson(result):redact(modelTimeJson(result)).slice(0,18000)});
@@ -349,9 +412,13 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     // Only this UI's reservations; never clear a QQ or standalone Codex lease.
     budgetStore.db.exec("UPDATE reservations SET state='unknown',cost_status=CASE WHEN cost_status='held' THEN 'unknown' ELSE cost_status END WHERE state='held' AND grp LIKE 'web:%'");
   }
-  async function close(){accepting=false;await qqBroker?.close();for(const c of active.values())c.abort();await tasks.stop();
+  async function close(){accepting=false;openCodeQuota.close();await qqBroker?.close();for(const c of active.values())c.abort();await tasks.stop();
     while(active.size)await new Promise(resolve=>setTimeout(resolve,10));await quota.close();store.close();budgetStore.close();}
   return {root,mock,token,
+    corpus: (params:Record<string,unknown>)=>corpus.list(params),corpusSettings:(input:unknown)=>corpus.configure(input),corpusExtract:(input:unknown)=>corpus.requestExtraction(input),
+    corpusCreate:(input:unknown)=>corpus.save(input,{human:true,origin:'webui'}),corpusUpdate:(input:unknown)=>corpus.update(input),
+    corpusStatus:(input:unknown)=>corpus.setStatus(input),corpusDelete:(input:unknown)=>corpus.delete(input),
+    corpusLikes:(params:Record<string,unknown>)=>corpus.likes(params),corpusToggleLike,corpusDeleteLikes:(input:unknown)=>corpus.deleteLikes(input),corpusQueue,
     exploration,tieba,tiebaAttempt:()=>tiebaDismissals.attempt(tiebaAttempt()),
     tiebaStatus:async()=>tiebaDismissals.status(await tieba.status(),tiebaAttempt()),
     tiebaStatusView:(value:any)=>tiebaDismissals.status(value,tiebaAttempt()),
@@ -360,7 +427,7 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     tiebaSections:()=>tiebaSectionSettings(root),saveTiebaSections:(input:unknown)=>saveTiebaSectionSettings(root,input),
     tiebaRead:async(input:any)=>{if(!input||Object.keys(input).some(k=>!['url','mode'].includes(k))||typeof input.url!=='string'||input.url.length>4096||!['public','account'].includes(input.mode)||!tiebaTarget(new URL(input.url)))throw new FishError('TIEBA_READ_TARGET_DENIED');return input.mode==='account'?tieba.read(input.url):browsePage(input.url,0,undefined,publicReader);},
     tiebaAudit:(action:string,result:any)=>budgetStore.audit('tieba-account','web',JSON.stringify({action,state:result?.state,error:result?.error??result?.lastError?.code,at:Date.now()})),
-    activity:(params:URLSearchParams,signal?:AbortSignal)=>activity.list(params,signal),activityDetail:(id:unknown)=>activity.detail(id),activityImage:(id:unknown)=>activity.image(id),
+    activity:(params:URLSearchParams,signal?:AbortSignal)=>activity.list(params,signal),activityDetail:(id:unknown)=>corpusActivity(id),activityImage:(id:unknown)=>activity.image(id),
     neon:()=>developmentDashboard(root,boundDevelopmentOwner(root)),
     neonRecord:(kind:unknown,id:unknown)=>developmentRecord(root,kind,id),
     neonResetConversation:(input:Record<string,unknown>)=>{
@@ -393,9 +460,26 @@ export function createWebApp(root:string,mock=false,http:typeof fetch=fetch,imag
     persona:()=>personaSettings(root),savePersona:(input:unknown)=>savePersona(root,input),
     prompts:()=>({systems:promptSystems(root),knowledge:knowledgeSnapshot(root),latest:promptSnapshots(budgetStore)}),
     sessions,session,createSession,detail,configure,status,chat,tasks,recover,close,
+    saveConnectionPreset:(input:Record<string,unknown>)=>{budgetStore.transaction(()=>connection.save(input));return status();},
+    deleteConnectionPreset:(input:Record<string,unknown>)=>{budgetStore.transaction(()=>connection.delete(input));return status();},
+    opencodeModels:(slot?:string)=>catalog.get(slot??connection.status().opencode_go.keySlot),
+    refreshOpencodeModels:(input:Record<string,unknown>)=>{
+      if(Object.keys(input).some(k=>k!=='keySlot')||input.keySlot!==undefined&&typeof input.keySlot!=='string')throw new FishError('INVALID_KEY_SLOT');
+      return catalog.get((input.keySlot as string|undefined)??connection.status().opencode_go.keySlot,true);
+    },
     startQQBroker:async()=>{if(!qqBroker)qqBroker=await startQQImageBroker(root,budgetStore,quota,mock,imageRunner);},
-    configureQQ:(input:Record<string,unknown>)=>{if(input.enabled&&!key())throw new FishError('DEEPSEEK_KEY_MISSING');return configureQQ(root,input,settings.model);},qqStatus:()=>qqStatus(root,budgetStore),
+    configureQQ:(input:Record<string,unknown>)=>{if(input.enabled&&!credential())throw missingKey();return configureQQ(root,input,connection.status().deepseek.model);},qqStatus:()=>qqStatus(root,budgetStore),
     startQuota:()=>quota.start(),refreshQuota:async()=>{await quota.refresh(true);return status();},
+    pollBalance:()=>balance.refresh(),
+    refreshDeepSeekBalance:(input:Record<string,unknown>)=>{
+      if(Object.keys(input).length)throw new FishError('INVALID_TOOL_ARGS');
+      return balance.refresh(true);
+    },
+    refreshAgyQuota:(input:Record<string,unknown>)=>{
+      if(Object.keys(input).length)throw new FishError('INVALID_TOOL_ARGS');
+      requestAgyQuotaRefresh(root);
+      return readAgyQuota(root);
+    },
     resetImages:()=>{if(active.size)throw new FishError('IMAGE_RESET_BUSY_OR_UNCERTAIN');ledger.resetImages();return status();},
     resetCosts:()=>{const costReset=ledger.resetCosts();return {...status(),costReset};},
     image:(sid:unknown,id:unknown)=>images.read(session(sid).id,id),workspace:(id:unknown)=>new SessionWorkspace(root,session(id).id)};

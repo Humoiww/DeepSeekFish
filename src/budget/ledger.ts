@@ -1,7 +1,7 @@
 import {networkPricing,modelPricing,modelReservation,modelCost,cnyUnits,toCny,type PriceSnapshot,type ChargeReceipt} from './pricing.js';
 import {inputCache} from '../usage.js';
 import { randomUUID } from 'node:crypto';
-import type { Config } from '../config.js';
+import type { ApiProvider,Config } from '../config.js';
 import { Store } from '../storage/db.js';
 import { FishError, type Usage } from '../types.js';
 
@@ -12,8 +12,8 @@ export const conversationCostLimit=(cfg:Config,conversation:string):number=>conv
 type Kind = 'model' | 'search' | 'codex' | 'developmentCodex' | 'image' | 'interjection';
 interface Reservation { id:string; day:string; grp:string; usr:string; kind:Kind; input:number; output:number; ms:number; state:string;cost_nano:number;cost_status:ChargeReceipt['status'];price_snapshot:string;actual_input:number|null;actual_output:number|null;cached_input:number|null;uncached_input:number|null }
 export class BudgetError extends FishError {
-  constructor(public reason:'cost'|'requests'|'output',public remaining:number,public required:number,public scope:'daily'|'conversation'='daily'){super(reason==='cost'?'CNY_BUDGET_EXHAUSTED':reason==='requests'?'DAILY_REQUEST_LIMIT':'OUTPUT_LIMIT_EXCEEDED');}
-  get notice(){return this.reason==='requests'?'今日请求次数已用完，香港时间 00:00 恢复。':this.reason==='output'?'本次输出设置超过允许上限。':`${this.scope==='conversation'?'本群今日':'今日总额度'}还剩 ¥${this.remaining.toFixed(6)}，本轮需要预留 ¥${this.required.toFixed(6)}，暂时不够。香港时间 00:00 更新额度。`;}
+  constructor(public reason:'cost'|'output',public remaining:number,public required:number,public scope:'daily'|'conversation'='daily'){super(reason==='cost'?'CNY_BUDGET_EXHAUSTED':'OUTPUT_LIMIT_EXCEEDED');}
+  get notice(){return this.reason==='output'?'本次输出设置超过允许上限。':`${this.scope==='conversation'?'本群今日':'今日总额度'}还剩 ¥${this.remaining.toFixed(6)}，本轮需要预留 ¥${this.required.toFixed(6)}，暂时不够。香港时间 00:00 更新额度。`;}
 }
 /** Every allowance is charged before dispatch under one SQLite write transaction. */
 export class Ledger {
@@ -22,6 +22,7 @@ export class Ledger {
       const columns=store.db.prepare('PRAGMA table_info(reservations)').all() as any[];
       for(const [name,type] of Object.entries({cost_nano:'INTEGER',cost_status:'TEXT',price_snapshot:'TEXT',created_at:'INTEGER',actual_input:'INTEGER',actual_output:'INTEGER',cached_input:'INTEGER',uncached_input:'INTEGER',allowance_reset:'INTEGER NOT NULL DEFAULT 0'}))
         if(!columns.some(c=>c.name===name))store.db.exec('ALTER TABLE reservations ADD COLUMN '+name+' '+type);
+      store.db.exec("CREATE INDEX IF NOT EXISTS reservation_model_time ON reservations(created_at) WHERE kind='model'");
     });
   }
   value(metric: string, scope = '*', day = dayKey()): number {
@@ -33,8 +34,22 @@ export class Ledger {
   reserve(kind: Kind, group: string, user: string, input=0, output=0, ms=0): string {
     return this.store.transaction(()=>this.charge(kind,group,user,input,output,ms));
   }
-  reserveModel(group:string,user:string,input:number,output:number,providerOutputDefault:boolean):string{
-    return this.store.transaction(()=>this.charge('model',group,user,input,output,0,dayKey(),false,providerOutputDefault));
+  reserveModel(group:string,user:string,input:number,output:number,providerOutputDefault:boolean,price?:PriceSnapshot,maxOutput?:number):string{
+    return this.store.transaction(()=>this.charge('model',group,user,input,output,0,dayKey(price?.at),false,providerOutputDefault,price,maxOutput));
+  }
+  providerWindowUsage(provider:ApiProvider,now=Date.now()){
+    const today=Date.parse(dayKey(now)+'T00:00:00+08:00'),hour=3600000;
+    const windows={fiveHours:now-5*hour,today,sevenDays:now-7*24*hour};
+    const query=this.store.db.prepare(`SELECT count(*) AS requests,coalesce(sum(actual_input),0) AS input,coalesce(sum(actual_output),0) AS output,
+      coalesce(sum(cost_nano),0) AS nano,coalesce(sum(CASE WHEN allowance_reset=0 THEN cost_nano ELSE 0 END),0) AS budgetNano,
+      count(CASE WHEN actual_input IS NULL THEN 1 END) AS usageUnknown
+      FROM reservations WHERE kind='model' AND created_at>=? AND created_at<=?
+      AND coalesce(json_extract(price_snapshot,'$.provider'),'deepseek')=?`);
+    const window=(start:number)=>{
+      const {nano,budgetNano,...usage}=query.get(start,now,provider) as {requests:number;input:number;output:number;nano:number;budgetNano:number;usageUnknown:number};
+      return {...usage,cny:toCny(nano),budgetCny:toCny(budgetNano)};
+    };
+    return {fiveHours:window(windows.fiveHours),today:window(windows.today),sevenDays:window(windows.sevenDays)};
   }
   receipt(id:string):ChargeReceipt|undefined{
     const r=this.store.db.prepare('SELECT * FROM reservations WHERE id=?').get(id) as unknown as Reservation;
@@ -80,21 +95,21 @@ export class Ledger {
     const result={currency:'CNY',day,clearedCny:toCny(cleared),pendingCny:toCny(pending),uncertainCny:toCny(uncertain),retainedCny:toCny(before-cleared)};
     this.store.audit('local-cost-reset','web',JSON.stringify(result));return result;
   });}
-  private charge(kind:Kind,group:string,user:string,input:number,output:number,ms:number,day=dayKey(),imageJob=false,providerOutputDefault=false):string{
+  private charge(kind:Kind,group:string,user:string,input:number,output:number,ms:number,day=dayKey(),imageJob=false,providerOutputDefault=false,
+    modelPrice?:PriceSnapshot,maxOutput?:number):string{
     const cfg=this.config(); const id=randomUUID();
     if (![input,output,ms].every(n => Number.isSafeInteger(n) && n >= 0)) throw new FishError('INVALID_RESERVATION');
     if (kind!=='developmentCodex'&&(kind!=='codex'||imageJob)&&this.store.getMeta('budgetFault')) throw new FishError('BUDGET_USAGE_FAULT');
     if(kind==='search'){input=0;output=0;}
-    const total=input+output,priced=kind==='model'||kind==='search',at=Date.now();
-    const price=kind==='model'?modelPricing(cfg.model,at):kind==='search'?networkPricing():undefined;
+    const total=input+output,priced=kind==='model'||kind==='search',at=modelPrice?.at??Date.now();
+    const price=kind==='model'?modelPrice??modelPricing(cfg.model,at,cfg):kind==='search'?networkPricing():undefined;
     const cost=kind==='model'?modelReservation(price as PriceSnapshot,input,output):kind==='search'?cnyUnits(networkPricing().cnyPerRequest):0;
     if(priced&&this.store.db.prepare("SELECT id FROM reservations WHERE day=? AND kind IN ('model','search') AND cost_nano IS NULL LIMIT 1").get(day))throw new FishError('LEGACY_COST_MIGRATION_REQUIRED');
     const globalRemaining=cnyUnits(cfg.dailyCny)-this.value('costNano','*',day),groupRemaining=cnyUnits(conversationCostLimit(cfg,group))-this.value('costNano','g:'+group,day);
     const scope=globalRemaining<=groupRemaining?'daily':'conversation',remaining=Math.max(0,Math.min(globalRemaining,groupRemaining));
     if (kind === 'model') {
-      if(!providerOutputDefault&&output>cfg.maxOutputTokens)throw new BudgetError('output',toCny(remaining),toCny(cost));
+      if(!providerOutputDefault&&output>(maxOutput??cfg.maxOutputTokens))throw new BudgetError('output',toCny(remaining),toCny(cost));
       if(cost>remaining)throw new BudgetError('cost',toCny(remaining),toCny(cost),scope);
-      if(this.value('requests','u:'+user,day)>=cfg.userDailyRequests)throw new BudgetError('requests',toCny(remaining),toCny(cost));
       for (const scope of ['*','g:'+group]){this.add('tokens',total,scope,day);this.add('costNano',cost,scope,day);}
       this.add('requests',1,'u:'+user,day);
     } else if(kind==='search'){

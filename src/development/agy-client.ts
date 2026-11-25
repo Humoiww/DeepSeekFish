@@ -2,8 +2,8 @@ import {request} from 'node:http';
 import {setTimeout as delay} from 'node:timers/promises';
 import {FishError} from '../types.js';
 import {hash} from './workspace.js';
-import {maxRecordBytes,allowedBridgePath,conversationPattern,maxBridgeResponse,maxChangeBytes,maxChanges,maxFileBytes,taskIdPattern,
- type BridgeRecord,type BridgeRecordKind,type BridgeRecordSummary,type AgyCancelResult,type AgyStatus,type AgySteerRequest,type AgySteerResult,type AgyTurnRequest,type AgyTurnResult} from './agy-bridge-types.js';
+import {maxRecordBytes,allowedBridgePath,allowedSitePath,conversationPattern,inkfishchanSiteUrl,maxBridgeResponse,maxChangeBytes,maxChanges,maxFileBytes,taskIdPattern,
+ type BridgeRecord,type BridgeRecordKind,type BridgeRecordSummary,type AgyCancelResult,type AgyQuota,type AgyStatus,type AgySteerRequest,type AgySteerResult,type AgyTurnRequest,type AgyTurnResult} from './agy-bridge-types.js';
 
 export function decodeAgyChanges(result:AgyTurnResult,taskId:string){
  if(result?.ok!==true||result.taskId!==taskId||!['reply_only','need_clarification','approved','escalated'].includes(result.outcome)||
@@ -14,6 +14,19 @@ export function decodeAgyChanges(result:AgyTurnResult,taskId:string){
    result.steered!==undefined&&(!Array.isArray(result.steered)||result.steered.some(receipt=>!receipt||typeof receipt.source!=='string'||!/^[a-f0-9]{64}$/.test(receipt.source)||typeof receipt.turnId!=='string'||!taskIdPattern.test(receipt.turnId)))||
    result.outcome==='approved'&&(result.summary?.verdict!=='approve'||!result.summary.buildPassed||!result.summary.testPassed)||
    result.conversationId!==undefined&&(typeof result.conversationId!=='string'||!conversationPattern.test(result.conversationId))){
+  throw new FishError('DEV_AGY_INVALID_RESPONSE');
+ }
+ const summary=result.summary;
+ if(summary?.target==='inkfishchan_site'){
+  const succeeded=result.outcome==='approved';
+  if(result.changes.length||summary.decision!=='delegate_codex'||summary.sitePushed!==succeeded||
+    summary.siteUrl!==inkfishchanSiteUrl||
+    summary.siteCommit!==undefined&&(typeof summary.siteCommit!=='string'||!/^[0-9a-f]{7,64}$/.test(summary.siteCommit))||
+    succeeded&&(!summary.siteCommit||!Array.isArray(summary.changedFiles)||!summary.changedFiles.length||
+      summary.changedFiles.length>maxChanges||!summary.changedFiles.every(allowedSitePath))||
+    !succeeded&&result.outcome!=='escalated')throw new FishError('DEV_AGY_INVALID_RESPONSE');
+ }else if(summary?.target!==undefined&&summary.target!=='main_repo'||summary?.sitePushed!==undefined||
+   summary?.siteCommit!==undefined||summary?.siteUrl!==undefined){
   throw new FishError('DEV_AGY_INVALID_RESPONSE');
  }
  const seen=new Set<string>();
@@ -72,6 +85,17 @@ export class AgyClient {
  status(signal=AbortSignal.timeout(3000)){
   return this.request<AgyStatus>('GET','/v1/status',undefined,signal);
  }
+
+ private async quotaRequest(method:'GET'|'POST',signal?:AbortSignal){
+  const timeout=AbortSignal.timeout(40_000);
+  const {quota}=await this.request<{ok:true;quota:AgyQuota}>(method,method==='GET'?'/v1/quota':'/v1/quota/refresh',
+   method==='POST'?{}:undefined,signal?AbortSignal.any([signal,timeout]):timeout);
+  if(quota?.source!=='agy'||!Number.isSafeInteger(quota.checkedAt)||quota.checkedAt<0)throw new FishError('DEV_AGY_QUOTA_INVALID_RESPONSE');
+  return quota;
+ }
+
+ quota(signal?:AbortSignal){return this.quotaRequest('GET',signal);}
+ refreshQuota(signal?:AbortSignal){return this.quotaRequest('POST',signal);}
 
  records(signal=AbortSignal.timeout(5000)){
   return this.request<{ok:true;records:BridgeRecordSummary[]}>('GET','/v1/records',undefined,signal);

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {once} from 'node:events';
 import {createServer} from 'node:http';
@@ -10,14 +11,26 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {test} from 'node:test';
 import {createAgyBridge} from '../src/development/agy-bridge-server.js';
 import {AgyClient,decodeAgyChanges} from '../src/development/agy-client.js';
-import type {AgyTurnRequest} from '../src/development/agy-bridge-types.js';
+import {parseAgyQuota} from '../src/development/agy-quota.js';
+import {allowedSitePath,type AgyTurnRequest} from '../src/development/agy-bridge-types.js';
 import {files,revision} from '../src/development/workspace.js';
 
 const tempRoot=os.tmpdir();
 const session='11111111-1111-4111-8111-111111111111';
+const siteSession='33333333-3333-4333-8333-333333333333';
 const expiredThread='22222222-2222-4222-8222-222222222222';
+const quotaText=`Quota:
+Gemini Models          Weekly Limit Remaining     68%   2026-11-30 22:17 UTC
+Gemini Models          Five Hour Limit Remaining  66%   2026-11-24 09:14 UTC
+Claude and GPT models  Weekly Limit Remaining     51%   2026-11-26 01:45 UTC
+Claude and GPT models  Five Hour Limit Remaining  100%  2026-11-24 11:42 UTC`;
 const agyScript=`
  const [events,scenario,...args]=process.argv.slice(2);
+ if(args[1]==='/quota'){
+  fs.appendFileSync(events,JSON.stringify({stage:'quota',args})+'\\n');
+  console.log(${JSON.stringify(quotaText)});
+  process.exit(0);
+ }
  const review=args.some(arg=>arg.endsWith('review.schema.json'));
  fs.appendFileSync(events,JSON.stringify({stage:review?'review':'triage',args})+'\\n');
  if(scenario==='auth-failure'){
@@ -35,7 +48,7 @@ const agyScript=`
  if(scenario==='hold-triage')await new Promise(resolve=>setTimeout(resolve,250));
  if(review){
   const codexTurns=fs.readFileSync(events,'utf8').trim().split('\\n').filter(line=>JSON.parse(line).stage==='codex').length;
-  const response=scenario==='review-retries'&&codexTurns<=2
+  const response=(scenario==='review-retries'&&codexTurns<=2||scenario==='site-retry'&&codexTurns===1)
    ? {verdict:'retry_codex',retryFeedback:'修正问题 '+codexTurns,replyToFeiyu:'已退回 Codex 修正。'}
    : {verdict:'approve',replyToFeiyu:'候选接口已验收。'};
   console.log(JSON.stringify({conversation_id:conversation,response}));
@@ -49,6 +62,7 @@ const agyScript=`
  }else{
   console.log(JSON.stringify({conversation_id:conversation,response:{
    decision:'delegate_codex',replyToFeiyu:'已收到。',codexSpec:{
+    ...(scenario.startsWith('site-')?{target:'inkfishchan_site'}:{}),
     goal:'更新小工具'.repeat(250),scopeFiles:['src/index.ts'],requirements:['返回可读的结果'],invariants:[],
     verificationCommands:['npm run build','npm test'],
    },
@@ -57,6 +71,7 @@ const agyScript=`
 `;
 const fixtureImport="import fs from 'node:fs';\n";
 const indexText='export const answer = 0;\n\nexport const a = 1;\nexport const b = 2;\nexport const c = 3;\n';
+const git=(cwd:string,...args:string[])=>execFileSync('/usr/bin/git',args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 
 async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,nativeCodex:string)=>void,codexTimeout=8000,maxRetries=0){
  const base=fs.mkdtempSync(path.join(tempRoot,'neon-'));
@@ -89,6 +104,30 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
   fs.appendFileSync(path.join(source,'src/index.ts'),"// local author's edit\n");
   fs.writeFileSync(path.join(source,'src/unrelated.ts'),'local untracked file');
  }
+ const website=scenario.startsWith('site-');
+ const siteDir=path.join(base,'site'),siteRemote=path.join(base,'site-remote.git');
+ const editDir=website?siteDir:source;
+ const thread=website?siteSession:session;
+ if(website){
+  fs.mkdirSync(path.join(siteDir,'public'),{recursive:true});
+  git(base,'init','--bare','--initial-branch=main',siteRemote);
+  git(siteDir,'init','--initial-branch=main');
+  git(siteDir,'config','user.name','Site Fixture');
+  git(siteDir,'config','user.email','site-fixture@example.invalid');
+  git(siteDir,'remote','add','origin',siteRemote);
+  fs.writeFileSync(path.join(siteDir,'package.json'),'{}\n');
+  fs.writeFileSync(path.join(siteDir,'public/index.html'),'<h1>before</h1>\n');
+  fs.writeFileSync(path.join(siteDir,'public/obsolete.css'),'body {}\n');
+  fs.appendFileSync(path.join(siteDir,'.git/info/exclude'),'\n/AGENTS.md\n/InkFishChan.md\n');
+  fs.writeFileSync(path.join(siteDir,'AGENTS.md'),'local-only instructions\n');
+  fs.writeFileSync(path.join(siteDir,'InkFishChan.md'),'local-only maintenance\n');
+  git(siteDir,'add','--','package.json','public/');
+  git(siteDir,'commit','-m','site baseline');
+  git(siteDir,'push','origin','main');
+  if(scenario==='site-push-failure'){
+   fs.writeFileSync(path.join(siteRemote,'hooks/pre-receive'),'#!/bin/sh\necho fixture-refused >&2\nexit 1\n',{mode:0o700});
+  }
+ }
  const nativeAgy=path.join(base,'native-brain'),nativeCodex=path.join(base,'native-sessions');
  const agyBin=path.join(base,'agy.mjs');
  fs.writeFileSync(agyBin,fixtureImport+agyScript);
@@ -108,7 +147,7 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
    if(method==='initialized')return;
    if(method==='account/read')return reply({account:{type:'chatgpt'}});
    if(method==='thread/start'||method==='thread/resume'){
-    assert.equal(params.cwd,source);
+    assert.equal(params.cwd,editDir);
     assert.equal(params.sandbox,'workspace-write');
     assert.equal(params.approvalPolicy,'on-request');
     assert.equal(params.approvalsReviewer,'auto_review');
@@ -118,22 +157,34 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
      assert.equal(params.excludeTurns,true);
      log({stage:'native-resume',threadId:params.threadId});
      if(params.threadId===expiredThread)return ws.send(JSON.stringify({id,error:{code:-32602,message:'no rollout found for thread id '+expiredThread}}));
-     assert.equal(params.threadId,session);
+     assert.equal(params.threadId,thread);
     }else{
      assert.equal(params.ephemeral,false);
      log({stage:'native-thread',params});
     }
-    return reply({thread:{id:session,cwd:source},sandbox:{type:'workspaceWrite'},approvalPolicy:'on-request',approvalsReviewer:'auto_review'});
+    return reply({thread:{id:thread,cwd:editDir},sandbox:{type:'workspaceWrite'},approvalPolicy:'on-request',approvalsReviewer:'auto_review'});
    }
    if(method==='turn/start'){
-    assert.equal(params.threadId,session);
-    assert.equal(params.cwd,source);
+    assert.equal(params.threadId,thread);
+    assert.equal(params.cwd,editDir);
     const turnId=randomUUID();
     log({stage:'codex',threadId:params.threadId,turnId,stdin:params.input[0].text});
-    send('item/autoApprovalReview/completed',{threadId:session,turnId,review:{status:'approved'}});
-    send('item/started',{threadId:session,turnId,item:{type:'commandExecution',command:'read fixture'}});
+    send('item/autoApprovalReview/completed',{threadId:thread,turnId,review:{status:'approved'}});
+    send('item/started',{threadId:thread,turnId,item:{type:'commandExecution',command:'read fixture'}});
     reply({turn:{id:turnId,status:'inProgress'}});
     if(scenario==='cancel')return;
+    if(website){
+     const attempt=(fs.readFileSync(events,'utf8').match(/"stage":"codex"/g)??[]).length;
+     const content=scenario==='site-csp'||scenario==='site-retry'&&attempt===1?
+      '<script>console.log(1)</script>\n':'<h1>after</h1>\n';
+     fs.writeFileSync(path.join(siteDir,'public/index.html'),content);
+     fs.writeFileSync(path.join(siteDir,'public/site.css'),'body { color: red; }\n');
+     fs.rmSync(path.join(siteDir,'public/obsolete.css'),{force:true});
+     if(scenario==='site-forbidden')fs.writeFileSync(path.join(siteDir,'package.json'),'{"changed":true}\n');
+     if(scenario==='site-symlink')fs.symlinkSync('../package.json',path.join(siteDir,'public/link.json'));
+     return send('turn/completed',{threadId:thread,turn:{id:turnId,status:'completed',
+      items:[{type:'agentMessage',phase:'final_answer',text:'已修改小屋。'}]}});
+    }
     if(scenario==='steer'){
      steeringTurn=turnId;
      finishSteer=()=>send('turn/completed',{threadId:session,turn:{id:turnId,status:'completed'}});
@@ -175,11 +226,11 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
  });
  nativeHttp.listen(codexSocket);
  await once(nativeHttp,'listening');
- const server=createAgyBridge({appRoot:installed,sourceDir:source,stateDir,agyBin,codexSocket,nativeAgy,nativeCodex,effort:'high',maxRetries,
+ const server=createAgyBridge({appRoot:installed,sourceDir:source,siteDir,stateDir,agyBin,codexSocket,nativeAgy,nativeCodex,effort:'high',maxRetries,
   stageTimeout:600000,codexTimeout},invocation=>{
   const {kind,command,args,env,cwd}=invocation;
   assert.equal(env.HOME,process.env.HOME);
-  if(kind==='agy'){
+  if(kind==='agy'&&args[1]!=='/quota'){
    const schema=args[args.indexOf('--json-schema')+1];
    assert.equal(path.dirname(schema),path.join(stateDir,'schemas'));
    assert.ok(fs.statSync(schema).isFile());
@@ -188,7 +239,7 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
    assert.equal(settings.permissions.deny,undefined);
    assert.deepEqual(settings.permissions,{ask:[],allow:['command(*)','unsandboxed(*)']});
    assert.equal(args[args.indexOf('--print-timeout')+1],'585s');
-   assert.equal(cwd,source);
+   assert.equal(cwd,website&&args.some(arg=>arg.endsWith('review.schema.json'))?siteDir:source);
   }
   if(kind==='verify'){
    assert.equal(cwd,source);
@@ -208,7 +259,7 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
  });
  const trace=()=>fs.readFileSync(events,'utf8').trim().split('\n').filter(Boolean)
   .map(line=>JSON.parse(line) as {stage:string;command?:string;args?:string[];stdin?:string;threadId?:string;turnId?:string;source?:string});
- return {client,request,trace,source,installed,stateDir,finishSteer:()=>finishSteer?.(),async cleanup(){
+ return {client,request,trace,source,installed,stateDir,siteDir,siteRemote,finishSteer:()=>finishSteer?.(),async cleanup(){
   server.close();
   await once(server,'close');
   nativeWs.close();
@@ -219,6 +270,85 @@ async function fixture(scenario:string,seed?:(stateDir:string,nativeAgy:string,n
 }
 
 const resumedId=(args:string[])=>args.includes('--conversation')?args[args.indexOf('--conversation')+1]:undefined;
+
+test('site path permits static assets and excludes protected paths',()=>{
+ for(const name of ['public/index.html','public/_headers','public/assets/a.webp','public/互动.js']){
+  assert.equal(allowedSitePath(name),true,name);
+ }
+ for(const name of ['cloudflare.config.ts','package.json','AGENTS.md','InkFishChan.md','.env','../src/app.ts',
+  'public/assets/../../README.md','public/.env','public/.git/config','public/AGENTS.md','public//file',
+  'public\\index.html','public/','/public/index.html']){
+  assert.equal(allowedSitePath(name),false,name);
+ }
+});
+
+test('website uses a separate thread, retries a CSP finding and publishes only reviewed static changes',async()=>{
+ const f=await fixture('site-retry',stateDir=>{
+  fs.mkdirSync(stateDir,{mode:0o700});
+  fs.writeFileSync(path.join(stateDir,'main-codex-thread.json'),JSON.stringify({threadId:session}));
+ });
+ try{
+  const signal=new AbortController().signal;
+  const chain=await f.client.turn(f.request({mode:'chain_discussion'}),signal);
+  assert.equal(chain.outcome,'escalated');
+  assert.ok(!f.trace().some(row=>row.stage==='codex'));
+  const request=f.request();
+  const prior=git(f.siteRemote,'rev-parse','main');
+  const result=await f.client.turn(request,signal);
+  assert.equal(result.outcome,'approved',result.replyToFeiyu);
+  assert.equal(result.codexRetries,1);
+  assert.equal(result.codexSessionId,siteSession);
+  assert.deepEqual(decodeAgyChanges(result,request.taskId),[]);
+  assert.deepEqual(result.summary.changedFiles,['public/index.html','public/obsolete.css','public/site.css']);
+  assert.equal(result.summary.target,'inkfishchan_site');
+  assert.equal(result.summary.sitePushed,true);
+  assert.equal(result.summary.siteCommit,git(f.siteRemote,'rev-parse','--short','main'));
+  assert.equal(result.summary.siteUrl,'https://fish.humoiforge.com/');
+  assert.match(result.replyToFeiyu,/Cloudflare Workers Builds/);
+  assert.equal(git(f.siteRemote,'rev-parse','main^'),prior);
+  assert.equal(git(f.siteRemote,'show','main:public/index.html'),'<h1>after</h1>');
+  assert.equal(git(f.siteRemote,'diff','--name-status','main^','main'),
+   'M\tpublic/index.html\nD\tpublic/obsolete.css\nA\tpublic/site.css');
+  assert.equal(git(f.siteDir,'status','--porcelain'),'');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.stateDir,'site-codex-thread.json'),'utf8')).threadId,siteSession);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.stateDir,'main-codex-thread.json'),'utf8')).threadId,session);
+  assert.equal(f.trace().filter(row=>row.stage==='native-thread').length,1);
+  const review=f.trace().filter(row=>row.stage==='review').map(row=>row.args?.[1]).join('\n');
+  assert.match(review,/内联 script/);
+  assert.match(review,/正式构建由 Cloudflare Workers Builds/);
+  assert.match(fs.readFileSync(path.join(f.stateDir,'patches',request.taskId+'.patch'),'utf8'),/public\/site.css/);
+  assert.throws(()=>decodeAgyChanges({...result,summary:{...result.summary,sitePushed:false}},request.taskId),/DEV_AGY_INVALID_RESPONSE/);
+  await f.client.resetConversation();
+  assert.equal(fs.existsSync(path.join(f.stateDir,'site-codex-thread.json')),false);
+  assert.equal(fs.existsSync(path.join(f.stateDir,'main-codex-thread.json')),false);
+ }finally{await f.cleanup();}
+});
+
+for(const [scenario,detail] of [
+ ['site-forbidden',/package\.json/],
+ ['site-symlink',/public\/link\.json/],
+ ['site-csp',/内联 script/],
+ ['site-push-failure',/DEV_AGY_SITE_PUSH_FAILED.*fixture-refused/s],
+] as const){
+ test('website stops without publishing when '+scenario,async()=>{
+  const f=await fixture(scenario);
+  try{
+   const request=f.request();
+   const prior=git(f.siteRemote,'rev-parse','main');
+   const result=await f.client.turn(request,new AbortController().signal);
+   assert.equal(result.outcome,'escalated');
+   assert.equal(result.summary.target,'inkfishchan_site');
+   assert.equal(result.summary.sitePushed,false);
+   assert.match(result.replyToFeiyu,detail);
+   assert.deepEqual(decodeAgyChanges(result,request.taskId),[]);
+   assert.equal(git(f.siteRemote,'rev-parse','main'),prior);
+   if(scenario==='site-push-failure'){
+    assert.equal(result.summary.siteCommit,git(f.siteDir,'rev-parse','--short','HEAD'));
+    assert.notEqual(git(f.siteDir,'rev-parse','HEAD'),prior);
+   }else assert.equal(git(f.siteDir,'rev-parse','HEAD'),prior);
+  }finally{await f.cleanup();}
+ });
+}
 
 test('Neon keeps native discussion across clarification, replies and old timestamps, with one delivery line',async()=>{
  const f=await fixture('clarify');
@@ -281,6 +411,39 @@ test('Neon reset during triage does not restore the conversation when that turn 
   await f.client.resetConversation();
   assert.equal((await turn).outcome,'reply_only');
   assert.equal((await f.client.status()).mainConversation,undefined);
+ }finally{await f.cleanup();}
+});
+
+test('AGY quota parser extracts Gemini windows and validates percentages and UTC dates',()=>{
+ const model=parseAgyQuota(quotaText,123);
+ assert.deepEqual(model,{source:'agy',checkedAt:123,
+  weekly:{remainingPercent:68,resetAt:Date.parse('2026-11-30T22:17:00Z'),resetText:'2026-11-30 22:17 UTC'},
+  fiveHour:{remainingPercent:66,resetAt:Date.parse('2026-11-24T09:14:00Z'),resetText:'2026-11-24 09:14 UTC'}});
+ assert.equal(parseAgyQuota(quotaText.replace('2026-11-30 22:17 UTC','-')).weekly?.resetAt,undefined);
+ const iso='2026-11-30T22:17:47Z';
+ assert.equal(parseAgyQuota(quotaText.replace('2026-11-30 22:17 UTC',iso)).weekly?.resetAt,Date.parse(iso));
+ for(const bad of ['Quota: unavailable',quotaText.replace('68%','101%'),quotaText.replace('11-30','11-31')]){
+  assert.throws(()=>parseAgyQuota(bad),/DEV_AGY_QUOTA_FORMAT_CHANGED/);
+ }
+});
+
+test('AGY quota shares a cached CLI query outside the main conversation and skips refresh during development',async()=>{
+ const f=await fixture('hold-triage',dir=>{
+  fs.mkdirSync(dir,{mode:0o700});
+  fs.writeFileSync(path.join(dir,'main-conversation.json'),JSON.stringify({conversationId:'retained-chat',updatedAt:1}));
+ });
+ try{
+  const [first,second]=await Promise.all([f.client.quota(),f.client.refreshQuota()]);
+  assert.equal(first.weekly?.remainingPercent,68);
+  assert.deepEqual(first,second);
+  assert.deepEqual(await f.client.refreshQuota(),first,'the manual cooldown uses the cached snapshot');
+  assert.deepEqual(f.trace().map(item=>item.args),[['-p','/quota','--print-timeout','30s']]);
+  assert.deepEqual((await f.client.status()).mainConversation,{conversationId:'retained-chat',updatedAt:1});
+  const turn=f.client.turn(f.request(),new AbortController().signal);
+  while(f.trace().length<2)await delay(5);
+  assert.deepEqual(await f.client.refreshQuota(),{...first,error:'DEV_AGY_QUOTA_BUSY',stale:true});
+  assert.equal((await turn).outcome,'reply_only');
+  assert.equal(f.trace().filter(item=>item.stage==='quota').length,1);
  }finally{await f.cleanup();}
 });
 

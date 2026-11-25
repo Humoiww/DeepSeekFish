@@ -1,7 +1,7 @@
-import {personaSettings} from '../src/character.js';
+import {OUTBOUND_VOICE_HINT} from '../src/character.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {fixture} from './helpers.js';
+import {fixture,assertPersonaLayout,assertVoiceHint,seedVoiceExamples} from './helpers.js';
 import {writePrivate} from '../src/paths.js';
 import {DailyNews,newsSlot,newsMemory,newsStatus} from '../src/qq/daily-news.js';
 import {MemoryJournal} from '../src/memory/journal.js';
@@ -13,14 +13,16 @@ import {PROJECT_TIMEZONE} from '../src/time.js';
 const morning=Date.parse('2026-11-03T08:00:00+08:00'),url='https://example.com/news/today';
 function setup(){
   const f=fixture({qqTransport:'onebot',privateUsers:['20002'],search:true}),journal=new MemoryJournal(f.root,f.store);
+  seedVoiceExamples(f.root);
   writePrivate(f.root,'runtime/data/daily-news.json',JSON.stringify({enabled:true,owner:'20002',startsOn:'2026-11-03',timezone:PROJECT_TIMEZONE}));
   let now=morning,modelCalls=0,searches=0,fetches=0,newsRound=0,sendFailure='',sends=0,unverifiedSource=false;
   const deliveries:any[]=[],contexts:ChatMessage[][]=[];
   const call=(name:string,args:unknown)=>({text:'',tool_calls:[{id:'call-'+modelCalls,type:'function' as const,function:{name,arguments:JSON.stringify(args)}}],usage:{input:100,output:50}});
   const model:Pick<BudgetedModel,'complete'>={async complete(_group,user,m,options){
     modelCalls++;contexts.push(structuredClone(m));
+    assertPersonaLayout(f.root,m);
     if(user==='memory-review')return call('finish_memory',{memory:{version:knowledgeSnapshot(f.root).version,changes:[{action:'add',text:'记住主人喜欢鲸鱼。'}]}});
-    assert.ok(options?.tools?.some(t=>t.function.name==='draft_news'));
+    assertVoiceHint(options?.tools,'draft_news','text',OUTBOUND_VOICE_HINT,{type:'string',maxLength:1800});
     if(newsRound<8)assert.ok(options?.tools?.some(t=>t.function.name==='update_knowledge'));
     if(++newsRound===1)return call('search_web',{query:'鲸鱼 近期 新闻'});
     if(newsRound===2)return call('fetch_page',{url});
@@ -88,8 +90,7 @@ test('background review can autonomously recall, update and finish without a QQ 
       assert.ok(options?.tools?.some(t=>t.function.name==='recall_chat'));
       const input=JSON.parse(String(m[1].content));assert.ok(input.qqWebTools.some((t:any)=>t.name==='download_image'));assert.ok(input.qqTools.includes('read_forward'));assert.ok(input.qqTools.includes('send_image'));
       assert.ok(!JSON.stringify(m).includes('其他人的秘密'));
-      assert.equal(m.at(-1)?.role,'system');
-      assert.ok(String(m.at(-1)?.content).includes(personaSettings(f.root).blocks.find(block=>block.kind!=='kaomoji')!.text.trim()));
+      assertPersonaLayout(f.root,m);
       assert.match(String(m.at(-2)?.content),/当前香港时间/);
       if(first)assert.deepEqual(m.slice(0,2),first);
       else first=structuredClone(m.slice(0,2));

@@ -57,7 +57,12 @@ const tieba=new TiebaSessionManager('/srv/deepseekfish/app/runtime/tieba-account
 // The original screenshot worker also runs without a Tieba installation.
 // Its writable state directory can hold unconfigured-operation diagnostics.
 const operations=new TiebaOperationQueue(fs.existsSync('/srv/deepseekfish/app/runtime/tieba-account')?'/srv/deepseekfish/app/runtime/tieba-account':base+'/state/tieba-queue',{
- describe:()=>tieba.timeoutInfo(),cancel:()=>tieba.cancelTimedOutOperation(),restart:()=>{setTimeout(()=>process.exit(1),100).unref();}
+ describe:()=>tieba.timeoutInfo(),cancel:()=>tieba.cancelTimedOutOperation(),accountId:()=>tieba.postingAccountId(),restart:()=>{setTimeout(()=>process.exit(1),100).unref();}
+});
+tieba.setPublicationChallenge(requestId=>operations.pauseForVerification(requestId));
+tieba.setPublicationAccepted((requestId,input,sourceId)=>operations.recordPublication(requestId,input,sourceId));
+tieba.setPublicationReadback(requestId=>{
+ void operations.enqueue('verify',{requestId},signal=>tieba.withOperationSignal(signal,()=>tieba.verifyPublication(requestId,true)),{key:'publication-readback:'+requestId}).catch(()=>{});
 });
 tieba.setIdleClose(()=>operations.enqueue('close',{source:'idle'},async()=>{const s=tieba.status();if(s.waitingUntil&&s.waitingUntil<=Date.now()&&!s.interaction)await tieba.close();}));
 async function dispatchTieba(action:string,input:any):Promise<any>{
@@ -65,6 +70,12 @@ async function dispatchTieba(action:string,input:any):Promise<any>{
  if(action==='verify')return tieba.verifyPublication(input.requestId);
  if(action==='history')return tieba.postingHistory(input.offset??0);
  if(action==='queue')return input.publications?operations.publicationQueue():operations.snapshot(input.offset??0,input.activeOnly??false,input.replies??false,input.selectedId);
+ if(action==='queue-resume'){
+  if(tieba.publicationResponsePending(input.requestId))throw new FishError('TIEBA_PUBLICATION_RESPONSE_PENDING');
+  return operations.resumePublications(input);
+ }
+ if(action==='queue-interval')return operations.setPublishIntervals(input);
+ if(action==='queue-cancel')return operations.cancelPublication(input.operationId);
  if(action==='replies')return tieba.replies(input.page);
  if(action==='mentions')return tieba.mentions(input.page);
  if(action==='publish')return tieba.publish(input.input,input.requestId,input.authorizedRetryOf);
@@ -110,8 +121,8 @@ const server=createServer(async(req,res)=>{
       let value:unknown;
       const action=req.url.slice(7);
       if(!input||Array.isArray(input)||typeof input!=='object')throw new FishError('TIEBA_INPUT_INVALID');
-      if(!['input','read','publish','replies','mentions','verify','publication-start','publication-submit','publication-frame','publication-evidence','moderator','queue','history'].includes(action)&&Object.keys(input).length)throw new FishError('TIEBA_INPUT_INVALID');
-      const allowed:Record<string,string[]>={'publication-start':['requestId'],'publication-submit':['requestId'],queue:['offset','activeOnly','replies','selectedId','publications'],history:['offset'],verify:['requestId'],replies:['page'],mentions:['page'],publish:['input','requestId','authorizedRetryOf'],moderator:['input','requestId'],read:['url'], 'publication-frame':['requestId'],'publication-evidence':['requestId','id']};
+      if(!['input','read','publish','replies','mentions','verify','publication-start','publication-submit','publication-frame','publication-evidence','moderator','queue','queue-resume','queue-interval','queue-cancel','history'].includes(action)&&Object.keys(input).length)throw new FishError('TIEBA_INPUT_INVALID');
+      const allowed:Record<string,string[]>={'publication-start':['requestId'],'publication-submit':['requestId'],queue:['offset','activeOnly','replies','selectedId','publications'],'queue-resume':['requestId','detectedAt'],'queue-interval':['intervalMs','maxIntervalMs'],'queue-cancel':['operationId'],history:['offset'],verify:['requestId'],replies:['page'],mentions:['page'],publish:['input','requestId','authorizedRetryOf'],moderator:['input','requestId'],read:['url'], 'publication-frame':['requestId'],'publication-evidence':['requestId','id']};
       if(allowed[action]&&Object.keys(input).some(k=>!allowed[action].includes(k)))throw new FishError('TIEBA_INPUT_INVALID');
       if(['input','publication-start','publication-submit'].includes(action)&&input.requestId!==undefined&&(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>240))throw new FishError('TIEBA_REQUEST_ID_INVALID');
       if(action==='input'&&input.scene!==undefined&&(typeof input.scene!=='string'||!input.scene||input.scene.length>64))throw new FishError('TIEBA_INPUT_INVALID');
@@ -120,10 +131,12 @@ const server=createServer(async(req,res)=>{
       if(action==='queue'&&input.replies!==undefined&&typeof input.replies!=='boolean')throw new FishError('TIEBA_INPUT_INVALID');
       if(action==='queue'&&input.publications!==undefined&&typeof input.publications!=='boolean')throw new FishError('TIEBA_INPUT_INVALID');
       if(action==='queue'&&input.selectedId!==undefined&&(typeof input.selectedId!=='string'||!input.selectedId||input.selectedId.length>240))throw new FishError('TIEBA_INPUT_INVALID');
+      if(action==='queue-resume'&&(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>240||!Number.isSafeInteger(input.detectedAt)||input.detectedAt<0))throw new FishError('TIEBA_INPUT_INVALID');
+      if(action==='queue-cancel'&&(typeof input.operationId!=='string'||!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(input.operationId)))throw new FishError('TIEBA_INPUT_INVALID');
       if(action==='publish'){input.input=publishInput(input.input);if(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>240)throw new FishError('TIEBA_REQUEST_ID_INVALID');}
       if(action==='verify'&&(typeof input.requestId!=='string'||!input.requestId||input.requestId.length>240))throw new FishError('TIEBA_REQUEST_ID_INVALID');
       const pending=action==='verify'?(operations.pendingPublication(input.requestId)??operations.publicationFallback(input.requestId)):undefined;
-      if(['status','history','queue','publication-evidence'].includes(action))value=await dispatchTieba(action,input);
+      if(['status','history','queue','queue-resume','queue-interval','queue-cancel','publication-evidence'].includes(action))value=await dispatchTieba(action,input);
       else if(pending)value=pending;
       else {
        const s=tieba.status(),work=s.interaction==='application'?s.moderatorWork:s.publicationWork;

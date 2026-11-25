@@ -1,41 +1,31 @@
 # DeepSeekFish
 
-住在服务器里的大肥鱼：通过 DeepSeek 原生工具调用聊天、浏览网页、维护记忆、收藏图片和参与贴吧，也能偶尔自己醒来探索互联网。
+DeepSeekFish（大肥鱼）是一个自托管的 QQ 与 Web 助手。她使用模型的原生工具调用聊天、查资料、管理记忆和图片，也可以在授权范围内探索互联网、参与贴吧、分享新闻和 QQ 空间动态。
 
-项目包含 QQ 私聊／群聊、WebUI、人格分块编辑、长期知识库、图片与文件发送、随机探索、每日新闻和空间动态。工具由模型选择；账号权限、资源预算和真实回执由程序处理。
+- **聊天与模型**：支持 DeepSeek 和 OpenCode Go，连接预设可切换模型、密钥槽和思考模式。WebUI 显示官方 Go 订阅额度。
+- **人格与记忆**：可编辑人格和口吻示例。静态人格放在请求开头，带随机颜文字的完整人格保留在末尾。近聊、归档、知识库和好奇心日志各有自己的读取方式。
+- **开发协作**：可选接入 Antigravity（Neon 小猫）分诊和审阅，由原生 Codex App Server 改码。任务进度、审阅和上线回执可在 WebUI 查看。
 
 ## 快速开始
 
-需要 Node.js **24.9+**。Linux 启动脚本可准备项目内运行时；Windows 使用已有 Node.js。
+需要 Node.js **24.9+**。Linux 的启动脚本可准备项目内 Node，Windows 使用 `start.bat`。
 
 ```bash
 git clone https://github.com/Humoiww/DeepSeekFish.git
 cd DeepSeekFish
-./start.sh
+./start.sh --mock
 ```
 
-WebUI：<http://127.0.0.1:17862>。在「连接与设置」配置自己的 DeepSeek API Key。Windows 使用 `start.bat`；无 Key 演示使用 `./start.sh --mock`。
+打开 <http://127.0.0.1:17862> 体验离线演示。正式运行用 `./start.sh`，在「连接与设置」保存自己的 API Key。QQ 和开发桥接可分别配置。[快速开始](docs/quickstart.md)
 
-本地启动、QQ 两种接入方式及可选 Codex 登录见 [快速开始](docs/quickstart.md)。VPS 部署与换机见 [部署与迁移](docs/migration.md)。
+## 文档
 
-## 文档入口
-
-| 想做什么 | 文档 |
+| 任务 | 入口 |
 | --- | --- |
-| 初次运行、选择接入方式 | [快速开始](docs/quickstart.md) |
-| 使用网页、设置人格、查看活动记录 | [WebUI](docs/webui.md) · [记忆与人格](docs/memory-persona.md) · [调用诊断](docs/activity-diagnostics.md) |
-| 接入个人 QQ、设置群聊唤醒、发送媒体 | [QQ 接入](docs/qq-onebot.md) · [人格与工具](docs/qq-personality-tools.md) · [图片与表情包](docs/qq-media.md) · [文件发送](docs/qq-files.md) |
-| 搜索、读网页、浏览社交平台 | [联网与知识库](docs/web-knowledge.md) · [社交平台读取](docs/social-browsing.md) |
-| 登录贴吧、看帖、回帖及申请小吧主 | [贴吧模块索引](docs/tieba/README.md) |
-| 随机探索、兴趣日志、定时分享 | [自主探索](docs/autonomous-exploration.md) · [每日新闻](docs/daily-news.md) · [每日空间](docs/daily-qzone.md) |
-| 设置每日费用、理解缓存与未知费用 | [人民币预算](docs/cny-budget.md) |
-| 部署、迁移、配置与维护 | [部署与迁移](docs/migration.md) · [配置](docs/configuration.md) · [权限边界](docs/security.md) |
-| 向肥鱼委托项目开发 | [开发任务与手工验收](docs/development.md) |
+| 配置模型、费用、人格与活动记录 | [WebUI](docs/webui.md) · [配置](docs/configuration.md) · [活动诊断](docs/activity-diagnostics.md) |
+| 接入 QQ 或贴吧 | [NapCat / OneBot](docs/qq-onebot.md) · [贴吧](docs/tieba/README.md) |
+| 了解后台探索和主动分享 | [自主探索](docs/autonomous-exploration.md) · [每日新闻](docs/daily-news.md) · [每日空间](docs/daily-qzone.md) |
+| 接入 Codex 和 Antigravity | [接入指南](docs/neon-codex-development-bridge.md) · [接口参考](docs/api.md) |
+| 开发、部署与迁移 | [目录与架构](docs/architecture.md) · [部署与迁移](docs/migration.md) · [完整文档索引](docs/README.md) |
 
-[全部文档](docs/README.md)包含模块说明、源码位置、技术研究与历史验证记录。
-
-## 使用说明
-
-账号登录、对外发布和后台功能按各模块的授权配置启用。普通 Codex 提案仍需本机审核。部署了独立开发服务的实例支持主人通过 QQ 私聊逐项授权项目开发。图片生成使用独立通道和每日张数限额。贴吧私信收发尚未接入，平台验证码及审核结果以实际返回为准。
-
-私人聊天、账号资料、密钥和运行状态保存在被 Git 忽略的 `runtime/` 中。公开仓库只保存实现与说明；人格来源和许可见 [人设说明](prompts/README.md)。
+源码在 `src/`，测试在 `tests/`，示例配置在 `config/`，服务单元与安装脚本在 `deploy/` 和 `scripts/`。聊天、登录资料、API Key 与本机配置留在各自部署环境。[权限边界](docs/security.md) · [人设与第三方来源](personas/README.md)

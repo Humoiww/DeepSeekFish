@@ -178,7 +178,9 @@ export class Jobs{
   const verified=job.phase==='done'&&!!revision&&revision===job.candidate;
   const files=job.agySummary?.changedFiles??[];
   const changed=files.length?' · 改动 '+files.slice(0,4).join('、')+(files.length>4?' 等 '+files.length+' 个文件':''):'';
-  const text=(job.goal.slice(0,180)+' · '+(verified?'已上线 '+revision.slice(0,12):'未上线')+changed)
+  const status=job.agySummary?.sitePushed?'小屋已推送 '+job.agySummary.siteCommit+'，Cloudflare 发布待核对':
+   verified?'已上线 '+revision.slice(0,12):'未上线';
+  const text=(job.goal.slice(0,180)+' · '+status+changed)
    .replace(/\s+/g,' ').trim().slice(0,600);
   return {text,at:job.modified};
  }

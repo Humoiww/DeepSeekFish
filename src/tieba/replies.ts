@@ -1,10 +1,11 @@
 import {FishError} from '../types.js';
 import {pbNumber as number,pbBytes as bytes,pbString as string,parseFields,protoMultipart,type PBField as Field} from './protobuf.js';
+import type {TiebaReplyScope} from './reply-target.js';
 
 export interface TiebaReply {
  id:string;threadId:string;parentPostId:string|null;replyToPostId?:string|null;targetStatus?:'verified'|'unresolved';targetError?:string;isFloor:boolean;time:number;
  floor?:number|null;replyTo?:{id:string|null;name:string|null}|null;
- forum:string;author:{id:string;name:string};text:string;url:string;replyTarget?:string;threadReplyTarget?:string;
+ forum:string;author:{id:string;name:string};text:string;url:string;replyTarget?:string;replyScope?:TiebaReplyScope|null;threadReplyTarget?:string;
 }
 export interface TiebaReplyPage {page:number;hasMore:boolean;replies:TiebaReply[]}
 export const threadReplyTarget=(threadId:string)=>'https://tieba.baidu.com/p/'+threadId;

@@ -12,6 +12,7 @@
 | [Linux 运行环境](linux.md) | 项目内运行时、进程管理、隔离环境排错 |
 | [VPS 部署维护](vps-deployment.md) | systemd、运行账户、部署脚本与服务维护 |
 | [配置说明](configuration.md) | JSON、WebUI、CLI 与持久设置的关系 |
+| [接口参考](api.md) | WebUI HTTP、肥鱼的开发工具、Neon Unix Socket 与原生 Codex RPC |
 
 ## QQ、人格与媒体
 
@@ -60,7 +61,7 @@
 | [活动记录与诊断](activity-diagnostics.md) | 每轮请求、工具动作、真实错误与用量来源 |
 | [架构](architecture.md) | 模型、工具、传输、任务及存储的组织 |
 | [P0 / P1 评价与改造通路](p0-p1-review-and-flows.md) | 贴吧 Web 界面卡顿与 DeepSeek 活动/工具协议根因分析及重构方案 |
-| [Neon小猫 ↔ Codex 开发桥接与活动链改造](neon-codex-development-bridge.md) | 肥鱼对接 Antigravity (Neon小猫) 分诊/Review 与 Codex CLI 执行、自动上线、任务链限流及 P0/P1 收口清单 |
+| [接入 Codex 和 Antigravity](neon-codex-development-bridge.md) | CLI 登录、Unix Socket、systemd 配置、开发委托和上线核对 |
 | [权限边界](security.md) | 凭据、工作区、账号、审批和宿主隔离 |
 | [早期技术研究](research.md) | 历史选型资料 |
 | [早期验收记录](status.md) | 按日期保存的历史结果，不能代替当前环境核验 |

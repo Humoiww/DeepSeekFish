@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { fixture, message } from './helpers.js';
+import { fixture, message,assertPersonaLayout,assertVoiceHint,seedVoiceExamples } from './helpers.js';
 import { MockModel, BudgetedModel, messageText } from '../src/agent/model.js';
 import { Tasks } from '../src/codex/tasks.js';
 import { MockTaskRunner } from '../src/codex/runner.js';
@@ -12,7 +12,10 @@ import { Bot } from '../src/agent/bot.js';
 import { SocialGate } from '../src/social/gate.js';
 import {cacheGroupNames} from '../src/memory/group-names.js';
 import {writeCuriosity} from '../src/exploration/state.js';
-import type {Model} from '../src/types.js';
+import {Affect} from '../src/affect.js';
+import {OUTBOUND_VOICE_HINT} from '../src/character.js';
+import {qqContextPrompt} from '../src/prompts.js';
+import type {ChatMessage,Model} from '../src/types.js';
 function setup(){
   const f=fixture({codex:true,search:true,images:true,bufferMs:10000});
   const provider=new MockModel(),model=new BudgetedModel(provider,f.ledger,f.cfg),tasks=new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),transport=new MockTransport();
@@ -20,6 +23,38 @@ function setup(){
   const bot=new Bot(f.root,f.cfg,f.store,f.ledger,model,tasks,search,new MockImageProvider(),transport);
   return {...f,bot,provider,tasks,transport};
 }
+
+test('QQ keeps the static system prompt identical with mood enabled and places persona last',async()=>{
+ const f=fixture({qqTransport:'onebot',privateUsers:['20002'],bufferMs:10000});
+ const affect=new Affect(f.store),transport=new MockTransport(),inputs:ChatMessage[][]=[];
+ const provider:Model={kind:'fixture',async complete(messages,_max,options){
+  assertVoiceHint(options?.tools,'reply','text',OUTBOUND_VOICE_HINT,{type:'string'});
+  assertVoiceHint(options?.tools,'send_message','text',OUTBOUND_VOICE_HINT,{type:'string'});
+  inputs.push(structuredClone(messages));
+  return {text:'收到。',usage:{input:20,output:5}};
+ }};
+ const bot=new Bot(f.root,f.cfg,f.store,f.ledger,new BudgetedModel(provider,f.ledger,f.cfg),
+  new Tasks(f.root,f.store,f.ledger,f.cfg,new MockTaskRunner()),new SearchService(new MockSearchProvider(),f.ledger,f.cfg),
+  new MockImageProvider(),transport,undefined,undefined,undefined,undefined,undefined,undefined,affect);
+ try{
+  const group='private:20002',user='20002';
+  seedVoiceExamples(f.root);
+  affect.configure({moodInfluence:'off'});
+  await bot.receive(message('说一说海边',{id:'without-mood',group,user}));await bot.flush();
+  affect.configure({moodInfluence:'current'});
+  await bot.receive(message('接着说说潮汐',{id:'with-mood',group,user}));await bot.flush();
+  assert.equal(inputs.length,2);
+  assert.deepEqual(inputs[0][0],{role:'system',content:qqContextPrompt(f.root)});
+  assert.deepEqual(inputs[1][0],inputs[0][0]);
+  const contexts=inputs.map(messages=>JSON.parse(String(messages[1].content)));
+  assert.equal(contexts[0].mood,undefined);
+  assert.equal(contexts[1].mood,affect.expression());
+  assert.match(contexts[1].mood,/肥鱼当前心情/);
+  assert.deepEqual(Object.keys(contexts[1]).slice(0,5),['character','timezone','day','qqIdentity','currentTurn']);
+  assert.equal(contexts[1].currentTurn.messageId,'with-mood');
+  for(const messages of inputs)assertPersonaLayout(f.root,messages);
+ }finally{await bot.stop();f.cleanup();}
+});
 
 test('QQ private group retrieval and public curiosity share tools while groups cannot cross-read',async()=>{
  const f=fixture({qqTransport:'onebot',privateUsers:['11223344'],admins:['11223344'],groups:['88776655','88776666'],bufferMs:10000}),transport=new MockTransport();

@@ -71,6 +71,31 @@ test('JSON-RPC approval is declined, cancellation kills actual process tree on P
     assert.throws(()=>process.kill(result.pid,0));
   }finally{await rpc.stop();f.cleanup();}
 });
+test('JSON-RPC delivers multiple large previews even when the stream exceeds two frame limits',{timeout:15000},async()=>{
+  const root=projectRoot();
+  const rpc=new RpcProcess({command:process.execPath,args:[path.join(root,'tests/fixtures/rpc-child.mjs')],cwd:root,env:{PATH:process.env.PATH}},AbortSignal.timeout(12000));
+  try{
+    const previews:{method:string;index:number;bytes:number;label:string}[]=[];
+    rpc.on('notice',(method,params)=>previews.push({
+      method,index:params.index,bytes:Buffer.byteLength(params.data),label:params.label,
+    }));
+    assert.deepEqual(await rpc.call('previews'),{ok:true});
+    assert.deepEqual(previews,Array.from({length:4},(_,index)=>({
+      method:'preview',index,bytes:18*1024*1024,label:'肥鱼预览',
+    })));
+    assert.deepEqual(await rpc.call('initialize'),{ok:true});
+  }finally{await rpc.stop();}
+});
+test('JSON-RPC rejects an oversized unterminated UTF-8 frame and stops the child',{timeout:15000},async()=>{
+  const root=projectRoot();
+  const rpc=new RpcProcess({command:process.execPath,args:[path.join(root,'tests/fixtures/rpc-child.mjs')],cwd:root,env:{PATH:process.env.PATH}},AbortSignal.timeout(12000));
+  try{
+    const closed=once(rpc.child,'close');
+    await assert.rejects(rpc.call('unterminated'),{code:'CODEX_PROTOCOL_LIMIT'});
+    await closed;
+    await assert.rejects(rpc.call('initialize'),{code:'CODEX_PROCESS_CLOSED'});
+  }finally{await rpc.stop();}
+});
 test('real runner validates task cwd and requires project login; child env excludes ambient secrets',async()=>{
   const f=fixture();try{
     process.env.FISH_TEST_SECRET='secret';process.env.OPENAI_API_KEY='do-not-inherit';

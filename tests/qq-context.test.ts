@@ -56,7 +56,7 @@ test('old web results and images shrink without losing native pairs, exact full 
   ctx.compact(4,messages);
   assert.equal(String(result.content),initial);
   assert.equal(contextMetrics(messages,[]).images,1);
-  const longHistory:ChatMessage={role:'system',content:'测试高水位。'.repeat(8000)};
+  const longHistory:ChatMessage={role:'system',content:' x'.repeat(48_000)};
   ctx.compact(5,[longHistory,...messages]);
   assert.equal(contextMetrics(messages,[]).images,0);
   assert.ok(String(result.content).length<initial.length);
@@ -66,6 +66,23 @@ test('old web results and images shrink without losing native pairs, exact full 
   let restored='',offset=0;do{const p=ctx.read({resultId:'web',offset});restored+=p.content;offset=p.nextOffset!;}while(offset!==null);
   assert.deepEqual(JSON.parse(restored),raw);
   assert.throws(()=>new TurnContext().read({resultId:'web'}),/TOOL_RESULT_NOT_FOUND/);
+});
+
+test('tool history stays intact at 48,000 context tokens and compacts just above it',()=>{
+ const ctx=new TurnContext(),padding:ChatMessage={role:'system',content:' x'};
+ const result=ctx.result('browse_page','old-page',{title:'旧页面',text:'网页正文。'.repeat(2000)},0);
+ const messages=[padding,result],original=result.content;
+ const threshold=48_000,tokens=()=>contextMetrics(messages,[]).totalTextTokens;
+ padding.content=' x'.repeat(threshold-tokens()+1);
+ assert.equal(tokens(),threshold);
+ assert.deepEqual(ctx.compact(5,messages),{abridgedResults:0,retiredImages:0});
+ assert.equal(result.content,original);
+ padding.content+=' x';
+ assert.equal(tokens(),threshold+1);
+ assert.deepEqual(ctx.compact(5,messages),{abridgedResults:1,retiredImages:0});
+ assert.equal(result.tool_call_id,'old-page');
+ assert.equal(JSON.parse(String(result.content)).readWith,'read_tool_result');
+ assert.ok(tokens()<threshold);
 });
 
 test('QQ offers recall autonomously and only adds old chat after the native tool call',async()=>{
@@ -195,7 +212,7 @@ test('tool images retain their own call IDs through text compaction and image re
  const make=(id:string)=>ctx.result('read_forward',id,{text:'旧转发'.repeat(600)},0,[{type:'text',text:'转发图片 '+id},{type:'image_url',image_url:{url:'data:image/png;base64,AA=='}}]);
  const one=make('forward-one'),two=make('forward-two');
  for(const round of [0,4,5]){
-  const highWater:ChatMessage={role:'system',content:'测试高水位。'.repeat(8000)};
+  const highWater:ChatMessage={role:'system',content:' x'.repeat(48_000)};
   ctx.compact(round,[highWater,one,two]);
   for(const [m,id] of [[one,'forward-one'],[two,'forward-two']] as const){
    assert.equal(m.role,'tool');assert.equal(m.tool_call_id,id);assert.ok(Array.isArray(m.content));

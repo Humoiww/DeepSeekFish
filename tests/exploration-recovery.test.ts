@@ -10,12 +10,15 @@ import {QQImageLibrary} from '../src/qq/image-library.js';
 import {QQMedia} from '../src/qq/media.js';
 import {MockSearchProvider,SearchService} from '../src/search/provider.js';
 import type {ChatMessage,CompletionOptions,ModelResult} from '../src/types.js';
-import {fixture} from './helpers.js';
+import {fixture,assertPersonaLayout,assertVoiceHint,seedVoiceExamples} from './helpers.js';
 import {ExplorationTools} from '../src/exploration/tools.js';
 import {TurnContext} from '../src/agent/context.js';
 import {cacheGroupNames} from '../src/memory/group-names.js';
 import {TiebaAccountClient} from '../src/tieba/client.js';
-import {personaSettings} from '../src/character.js';
+import {INNER_VOICE_HINT,OUTBOUND_VOICE_HINT,personaSettings} from '../src/character.js';
+import {explorationContinuation,explorationGuidance,explorationRestGuidance} from '../src/exploration/prompt.js';
+import {updateKnowledge} from '../src/memory/knowledge.js';
+import {UnreadFeedback} from '../src/agent/tool-feedback.js';
 import type {PublicPoster} from '../src/search/public-web.js';
 
 const usage={input:12,output:3};
@@ -38,12 +41,14 @@ function tool(id:string,name:string,args:Record<string,unknown>={}):ModelResult{
  return {text:'',usage,finishReason:'tool_calls',tool_calls:[{id,type:'function',function:{name,arguments:JSON.stringify(args)}}]};
 }
 
-async function explore(responses:ModelResult[],setup:{before?:(state:ExplorationState)=>void;trigger?:string;instruction?:string;tieba?:TiebaAccountClient;patrolPoster?:PublicPoster}={}){
+async function explore(responses:ModelResult[],setup:{before?:(state:ExplorationState,root:string)=>void;trigger?:string;instruction?:string;tieba?:TiebaAccountClient;patrolPoster?:PublicPoster}={}){
  const f=fixture({qqTransport:'onebot',privateUsers:['12345'],search:true});
+ seedVoiceExamples(f.root);
  const state=new ExplorationState(f.store,f.cfg),transport=new MockTransport();
  const calls:{messages:ChatMessage[];options:CompletionOptions}[]=[],visited:string[]=[];
  const worker=new ExplorationWorker(state,{
   async complete(_group,_user,messages,options){
+   assertPersonaLayout(f.root,messages);
    calls.push({messages:structuredClone(messages),options:options??{}});
    assert.ok(responses[calls.length-1],'unexpected model request');
    return responses[calls.length-1];
@@ -61,7 +66,7 @@ async function explore(responses:ModelResult[],setup:{before?:(state:Exploration
   },
  },Date.now,undefined,{poster:setup.patrolPoster??(async()=>{throw new Error('offline patrol transport');})});
  try{
-  setup.before?.(state);
+  setup.before?.(state,f.root);
   const {run}=setup.trigger?f.store.transaction(()=>state.enqueue(setup.trigger!,setup.instruction)):state.manual();await worker.tick();await worker.idle();
   const steps=[];
   for(let offset:number|null=0;offset!==null;){
@@ -69,27 +74,57 @@ async function explore(responses:ModelResult[],setup:{before?:(state:Exploration
    assert.ok('trace' in page&&'nextOffset' in page);
    steps.push(...page.trace);offset=page.nextOffset;
   }
+  const log=JSON.parse(fs.readFileSync(f.root+'/runtime/logs/exploration/'+run.id+'.json','utf8'));
   return {run:state.get(run.id),calls,steps,visited,sent:transport.sent,badge:state.status().tiebaRedDot,
    personaPrefix:personaSettings(f.root).blocks.filter(block=>block.kind!=='kaomoji').map(block=>block.text.trim()).filter(Boolean).join('\n'),
-   request:JSON.parse(fs.readFileSync(f.root+'/runtime/logs/exploration/'+run.id+'.json','utf8')).request,
+   request:log.request,inputContext:log.inputContext,
    seen:f.store.db.prepare('SELECT account,id,kind FROM tieba_reply_seen ORDER BY id').all()};
  }finally{await worker.stop();f.cleanup();}
 }
 
-test('the recovery round still lets the model end its exploration',async()=>{
+test('exploration keeps a stable prompt prefix through text-only recovery and preserves its final persona',async()=>{
  const result=await explore([
   text('先想想'),text('再看看'),text('决定结束'),
   tool('rest','finish_exploration',{note:'今天先休息。'}),
- ]);
+ ],{before(state,root){
+  updateKnowledge(root,{version:0,changes:[{action:'add',text:'兴趣是观察海边的潮汐。'}]});
+  new UnreadFeedback(state.store,'exploration:12345').record('fetch_page',{error:'DEEPSEEK_TIMEOUT'});
+ }});
  assert.equal(result.calls.length,4);
  assert.ok(result.calls.slice(0,3).every(call=>!call.options.requireTool));
+ const tools=result.calls[0].options.tools;
+ assertVoiceHint(tools,'send_message','text',OUTBOUND_VOICE_HINT,{type:'string'});
+ assertVoiceHint(tools,'write_curiosity','content',INNER_VOICE_HINT,{type:'string'});
+ assertVoiceHint(tools,'propose_project','idea',INNER_VOICE_HINT,{type:'string'});
+ assertVoiceHint(tools,'finish_exploration','note',INNER_VOICE_HINT,{type:'string'});
  const recovery=result.calls[3];
  assert.equal(recovery.options.requireTool,true);
  assert.ok(recovery.options.tools?.some(option=>option.function.name==='finish_exploration'));
  assert.match(String(recovery.messages.at(-2)?.content),/或者调用 finish_exploration/);
+ const sendHint=/- send_message — 直接输出文字只是私下想法，老大看不见；.*调用此工具发 QQ 私聊（没事不必硬发）。/;
+ assert.match(String(recovery.messages.at(-2)?.content),sendHint);
+ assert.doesNotMatch(explorationContinuation((recovery.options.tools??[]).filter(option=>option.function.name!=='send_message')),/send_message/);
+ for(const call of result.calls.slice(0,3))assert.doesNotMatch(String(call.messages.at(-2)?.content),sendHint);
  const persona=recovery.messages.at(-1);
  assert.deepEqual(result.calls.map(call=>call.messages.at(-1)),Array(4).fill(persona));
- assert.deepEqual(recovery.messages.slice(0,2),result.calls[0].messages.slice(0,2));
+ assert.equal(persona?.role,'system');assert.ok(String(persona?.content).startsWith(result.personaPrefix));
+ const [prefix,background,dynamic,wake]=result.calls[0].messages;
+ assert.deepEqual([prefix.role,background.role,dynamic.role,wake.role],['system','system','system','user']);
+ assert.match(String(prefix.content),/知识库[\s\S]*观察海边的潮汐/);
+ assert.ok(String(prefix.content).includes(explorationGuidance));
+ assert.ok(String(prefix.content).includes(explorationRestGuidance));
+ assert.match(String(prefix.content),/"character":\{"appearance":[\s\S]*"referenceId":"character"/);
+ const stable=JSON.parse(String(background.content)),state=JSON.parse(String(dynamic.content));
+ assert.deepEqual(Object.keys(stable),['kind','owner','delivery','day','timezone','curiosity','recent']);
+ assert.deepEqual(Object.keys(state),['startedAt','tiebaRedDot','previous','energy','web','images','previousToolErrors']);
+ assert.equal(state.previousToolErrors[0].receipt.error,'DEEPSEEK_TIMEOUT');
+ for(const call of result.calls){
+  assert.deepEqual(call.messages.slice(0,4),[prefix,background,dynamic,wake]);
+  const suffix=String(call.messages.at(-2)?.content);
+  assert.ok(!suffix.includes(explorationGuidance)&&!suffix.includes(explorationRestGuidance));
+ }
+ for(const key of [...Object.keys(stable),...Object.keys(state),'character'])assert.ok(Object.hasOwn(result.inputContext,key),key);
+ assert.equal(result.inputContext.previousToolErrors[0].receipt.error,'DEEPSEEK_TIMEOUT');
  assert.deepEqual(result.visited,[]);
  assert.deepEqual(result.sent,[]);
  assert.equal(result.run.state,'completed');
@@ -113,7 +148,8 @@ test('the rest example stays available after two silent counts of ordinary explo
  assert.equal(result.calls.length,3);
  assert.ok(result.calls.every(call=>call.options.requireTool===false));
  assert.ok(!result.steps.some(step=>step.continuation));
- assert.match(String(result.calls[2].messages.at(-2)?.content),/finish_exploration/);
+ assert.ok(String(result.calls[2].messages[0].content).includes(explorationRestGuidance));
+ assert.doesNotMatch(String(result.calls[2].messages.at(-2)?.content),/finish_exploration/);
  assert.equal(result.run.state,'completed');
  assert.equal(result.run.note,'先睡会儿');
 });
@@ -134,8 +170,8 @@ for(const kind of ['reply','mention'] as const)test(`opening a tieba_${kind} not
  });
  assert.equal(result.run.state,'completed');assert.equal(result.badge.unreadCount,1);
  assert.deepEqual(result.seen.map(row=>({id:row.id,kind:row.kind})),[{id:'401',kind}]);
- const background=JSON.parse(String(result.calls[0].messages[1].content));
- assert.equal(background.tiebaRedDot.unreadCount,1,'delivery clears the notification before the first model request');
+ const dynamic=JSON.parse(String(result.calls[0].messages[2].content));
+ assert.equal(dynamic.tiebaRedDot.unreadCount,1,'delivery clears the notification before the first model request');
 });
 
 test('a manual exploration checks new inbox data, shows the red dot and clears it through the shared reply tool',async()=>{
@@ -149,7 +185,8 @@ test('a manual exploration checks new inbox data, shows the red dot and clears i
   tieba:client,before(state){seedInbox(state,[],'reply',at);},
  });
  assert.equal(result.run.state,'completed');assert.equal(inboxReads,2,'one pre-check page and one model-selected lookup');
- const background=JSON.parse(String(result.calls[0].messages[1].content));assert.equal(background.tiebaRedDot.redDot,true);
+ const dynamic=JSON.parse(String(result.calls[0].messages[2].content));assert.equal(dynamic.tiebaRedDot.redDot,true);
+ assert.equal(result.inputContext.tiebaRedDot.redDot,true,'WebUI still sees the full merged original input');
  assert.match(String(result.calls[0].messages.at(-2)?.content),/小红点亮着.*1 条未读新通知/);
  const viewed=result.steps.find(step=>step.tool==='get_tieba_replies').result;
  assert.equal(viewed.newCount,1);assert.equal(viewed.replies[0].isNew,true);assert.equal(viewed.redDotCleared,true);

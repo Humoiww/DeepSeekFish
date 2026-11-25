@@ -13,7 +13,7 @@ import {hasToolMarkup} from '../agent/tool-protocol.js';
 import {PromptNumberGuard,privateQQNumbers} from '../agent/prompt-numbers.js';
 import {diagnosticSafe,errorDiagnostic} from '../diagnostics.js';
 import {dailyContextPrompt} from '../prompts.js';
-import {personalityPrompt} from '../character.js';
+import {OUTBOUND_VOICE_HINT,personalityPrompt} from '../character.js';
 import {knowledgeTools,knowledgeSnapshot,updateKnowledge} from '../memory/knowledge.js';
 import {MemoryJournal,recallTools} from '../memory/journal.js';
 import {webTools,browseTools} from '../search/tools.js';
@@ -46,7 +46,7 @@ export async function dailyQzoneAgent<T>(o:Options<T>):Promise<T>{
  const finalName=publishing?'publish_qzone':'draft_daily_post';
  const finalDescription=publishing?'把你选好的文案和配图公开发到自己的 QQ 空间。':
   o.phase==='preview'?'返回你选好的文案和配图供预览。':'保存你选好的文案和配图，留给零点发布。';
- const final:ModelTool={type:'function',function:{name:finalName,description:finalDescription,parameters:{type:'object',properties:{text:{type:'string',maxLength:1200},imageId:{type:'string',description:'填图库条目的 id，或 generate_image 返回的 catalogId。'}},required:['text','imageId'],additionalProperties:false}}};
+ const final:ModelTool={type:'function',function:{name:finalName,description:finalDescription,parameters:{type:'object',properties:{text:{type:'string',maxLength:1200,description:OUTBOUND_VOICE_HINT},imageId:{type:'string',description:'填图库条目的 id，或 generate_image 返回的 catalogId。'}},required:['text','imageId'],additionalProperties:false}}};
  const generate=qqChatTools(false,cfg().images,false,'background').filter(t=>t.function.name==='generate_image').map(t=>({...t,function:{...t.function,description:'请GPT小姐生图。结果保存到目录并返回catalogId，发布另用publish_qzone；画面和参考图由你选。'}}));
  const gallery=imageLibraryTools().filter(tool=>tool.function.name!=='send_image').map(tool=>({
   ...tool,function:{...tool.function,description:tool.function.name==='list_images'
@@ -55,8 +55,7 @@ export async function dailyQzoneAgent<T>(o:Options<T>):Promise<T>{
  }));
  const tools=[...recallTools,...contextTools,...knowledgeTools,...gallery,
   ...(o.phase!=='preview'?generate:[]),...(cfg().search?[...(s.search?webTools:[]),...browseTools]:[]),final];
- // The saved persona is shared with live QQ chat. This run supplies its own scene.
- const personality=personalityPrompt(root).replace('，正用 QQ 跟熟人闲聊','');
+ const personaMessage:ChatMessage={role:'system',content:personalityPrompt(root)};
  const scene=publishing?'你正在处理定时触发的 QQ 空间日常。':
   o.phase==='preview'?'你正在预览自己的 QQ 空间日常。':'你正在准备零点的 QQ 空间日常。';
  const taskPrompt=scene+'当前没有聊天对象。文案和配图由你决定，已有准备稿可沿用或重写。选好后可用 '+finalName+'。';
@@ -72,7 +71,7 @@ export async function dailyQzoneAgent<T>(o:Options<T>):Promise<T>{
    const options={tools,signal:o.signal};
    const guidance=[clockPrompt(o.now?.()),taskPrompt];
    if(textOnly)guidance.push('前面的纯文字可当作草稿沿用或重写。纯文字不会保存草稿或发布动态。');
-   const input:ChatMessage[]=[...messages,{role:'system',content:guidance.join('\n')},{role:'system',content:personality}];
+   const input:ChatMessage[]=[...messages,{role:'system',content:guidance.join('\n')},personaMessage];
    const privacy=new PromptNumberGuard(input,store,true,privateQQNumbers(cfg(),o.self,o.owner));
    const completion=await traceModel(trace,save,modelPayload(cfg(),input,cfg().maxOutputTokens,options),round,onReservation=>model.complete('private:'+o.owner,'daily-qzone',input,{...options,onReservation}));
    feedback.acknowledged();if(hasToolMarkup(completion.text))throw new FishError('DEEPSEEK_TOOL_PROTOCOL_INVALID');

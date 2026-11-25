@@ -2,12 +2,16 @@ import {test,type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {createServer} from 'node:http';
+import fs from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import path from 'node:path';
 import {fixture} from './helpers.js';
 import {TiebaOperationQueue} from '../src/tieba/queue.js';
 import {TiebaAccountClient} from '../src/tieba/client.js';
-import {TiebaPosting,publishInput,trackTiebaPublication} from '../src/tieba/posting.js';
+import {TiebaPosting,publicationDraftFingerprint,publishInput,trackTiebaPublication} from '../src/tieba/posting.js';
+import {TiebaSessionManager,type AccountBrowser} from '../src/tieba/session.js';
+import {AppPostFailure} from '../src/tieba/app-post.js';
+import {webPostResponse,webPostResult} from '../src/tieba/web-post.js';
 import {actionState,UnreadFeedback} from '../src/agent/tool-feedback.js';
 import {ProviderError} from '../src/diagnostics.js';
 import {webServer} from '../src/web/server.js';
@@ -55,13 +59,14 @@ test('Tieba reply queue assembles one item per reply and retains selected detail
  }finally{db.close();queue.close();f.cleanup();}
 });
 
-test('the existing WebUI route verifies only the selected reply and preserves the account action',async()=>{
+test('WebUI verifies the selected reply and only forwards an authenticated queue cancellation',async()=>{
  const f=fixture();
  const calls:{action:string;input:unknown}[]=[];
  const tieba=new TiebaAccountClient(async(action,input)=>{
   calls.push({action,input});
   if(action==='verify')return {requestId:(input as {requestId:string}).requestId,publicVerified:true};
   if(action==='queue')return {view:'replies'};
+  if(action==='queue-cancel')return {cancelled:true,state:'cancelled'};
   return {state:'logged_in'};
  });
  const findPort=createServer();
@@ -81,12 +86,17 @@ test('the existing WebUI route verifies only the selected reply and preserves th
   assert.deepEqual(await (await post({requestId:'selected'})).json(),{requestId:'selected',publicVerified:true});
   assert.equal((await post({requestId:'selected',submit:true})).status,400);
   assert.equal((await post({})).status,200);
+  const operationId='c329cd50-6e6e-4f30-9bfc-82c232612024',cancel=base+'/api/tieba/queue-cancel';
+  assert.equal((await fetch(cancel,{method:'POST',body:JSON.stringify({operationId})})).status,401);
+  assert.equal((await fetch(cancel,{method:'POST',headers,body:JSON.stringify({operationId,force:true})})).status,400);
+  assert.deepEqual(await (await fetch(cancel,{method:'POST',headers,body:JSON.stringify({operationId})})).json(),{cancelled:true,state:'cancelled'});
   assert.deepEqual(calls,[
    {action:'queue',input:{offset:20,replies:true,selectedId:'older'}},
    {action:'queue',input:{offset:20,replies:true,selectedId:'older'}},
    {action:'status',input:undefined},
    {action:'verify',input:{requestId:'selected'}},
    {action:'publication-check',input:undefined},
+   {action:'queue-cancel',input:{operationId}},
   ]);
  }finally{
   server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));f.cleanup();
@@ -116,6 +126,78 @@ test('reply verification requires a matching body and author from the public rea
   assert.equal(result.publicVerified,true);
   assert.equal(result.visibility,'public');
   assert.equal(result.observed.id,'7614');
+ }finally{db.close();posting.close();queue.close();f.cleanup();}
+});
+
+test('dispatched official 1989003 is checked once without submitting a second time',async()=>{
+ const f=fixture(),dir=path.join(f.root,'tieba'),who={id:'55',name:'fixture'},forum={id:'5',name:'测试吧'};
+ const queue=new TiebaOperationQueue(dir,{...queueLifecycle,accountId:()=>who.id});
+ const posting=new TiebaPosting(dir),db=new DatabaseSync(path.join(dir,'actions.sqlite'));
+ const policy={mode:'live' as const,accountId:who.id};
+ try{
+  for(const scenario of ['public','author_only','not_observed','no_dispatch','with_pid'] as const){
+   const comment=scenario==='author_only';
+   const draft=publishInput({action:comment?'comment':'reply',threadId:'1885',forumId:forum.id,content:'拟回复 '+scenario,...(comment?{postId:'421'}:{})});
+   const actionRow=()=>db.prepare('SELECT state FROM tieba_actions WHERE id=?').get(scenario)?.state;
+   const checked:string[]=[];
+   let sends=0,publicVisible=scenario==='public';
+   const post={id:'7614',author:{id:who.id},content:draft.content,...(comment?{parentPostId:'421'}:{})};
+   const page=(visible:boolean)=>({status:'content',forum,thread:{id:draft.threadId},parentPost:{id:'421',parentPostId:null,floor:2,author:{id:'54'}},
+    posts:[{...post,author:visible?post.author:{id:'54'},publishedAt:new Date().toISOString()}]});
+   const reader={
+    followed:async()=>[forum],
+    async read(url:string){if(sends)checked.push('account '+url);return page(comment);},
+    async publicRead(url:string){checked.push('public '+url);return page(publicVisible);},
+   };
+   const result=await posting.publish(draft,scenario,who,policy,reader,async()=>{
+    sends++;
+    const httpAttempts=scenario==='no_dispatch'?0:1;
+    if(httpAttempts)posting.webAttempt(scenario);
+    const native=webPostResponse(Buffer.from(JSON.stringify({error_code:1989003,error_msg:'数据加载失败',...(scenario==='with_pid'?{pid:'7614'}:{})})),200);
+    const outcome={...native,receipt:{...native.receipt,httpAttempts}};
+    posting.webOutcome(scenario,outcome);
+    return webPostResult(outcome,draft.threadId!);
+   });
+   assert.equal(result.receipt.errorCode,1989003);
+   assert.equal(result.receipt.errorMessage,'数据加载失败');
+   if(scenario==='no_dispatch'||scenario==='with_pid'){
+    assert.equal(actionRow(),'rejected');
+    assert.equal(result.error,'TIEBA_PUBLICATION_REJECTED');
+    assert.deepEqual(checked,[]);
+    continue;
+   }
+   const url=comment?'https://tieba.baidu.com/p/comment?tid=1885&pid=421':'https://tieba.baidu.com/p/1885';
+   assert.deepEqual(checked,['public '+url,...(publicVisible?[]:['account '+url])]);
+   assert.equal(result.visibility,scenario);
+   assert.equal(result.publicVerified,publicVisible);
+   const snapshot=queue.snapshot(0,false,true,scenario);
+   assert.ok('selected' in snapshot&&snapshot.selected);
+   const item=snapshot.selected;
+   assert.equal(item.canVerify,true);
+   if(scenario==='not_observed'){
+    assert.equal(actionRow(),'unknown');
+    assert.equal(result.submitted,null);
+    assert.equal(result.error,'TIEBA_PUBLICATION_UNCONFIRMED');
+    assert.match(result.notice,/数据加载失败（1989003）/);
+    assert.equal(item.result.outcome,'unknown');
+    const reused=await nonBlockingPublish(queue,'same-draft-new-id',async()=>{throw Error('unexpected second submission');},draft);
+    assert.equal(reused.requestId,scenario);
+    assert.equal(reused.existingState,'unknown');
+    await posting.verify(scenario,who,reader,true);
+    assert.equal(checked.length,2,'automatic readback is performed once');
+    publicVisible=true;
+    const later=await posting.verify(scenario,who,reader);
+    assert.equal(later.publicVerified,true);
+    assert.equal(later.error,undefined);
+   }else{
+    assert.equal(actionRow(),'confirmed');
+    assert.equal(result.deliveryStatus,'confirmed');
+    assert.equal(result.id,'7614');
+    assert.equal(result.error,undefined);
+    assert.equal(item.result.error,undefined);
+   }
+   assert.equal(sends,1);
+  }
  }finally{db.close();posting.close();queue.close();f.cleanup();}
 });
 
@@ -350,19 +432,25 @@ test('Tieba restart after an interrupted publish waits a full interval without r
  }finally{queue.stop();await queue.drained();queue.close();f.cleanup();}
 });
 
-test('Tieba publication-submit shares the publish pacing slot and advances it for later publishes',async t=>{
+test('Tieba manual submit passes the automatic cooldown and moves the next automatic slot',async t=>{
  const f=fixture(),clock=pacingClock(t),queue=new TiebaOperationQueue(path.join(f.root,'tieba'),queueLifecycle,clock.now,{publishIntervalMs:100});
  const sent:string[]=[];
+ let release:()=>void=()=>{};
  try{
   await queue.enqueue('publish',{},async()=>{sent.push('publish');return {submitted:true};});
-  const submit=queue.enqueue('publication-submit',{},async()=>{sent.push('submit');return {publicationWork:{result:{submitted:true}}};});
+  await clock.advance(40);
   const publish=queue.enqueue('publish',{},async()=>{sent.push('later');return {submitted:true};});
-  await clock.flush();assert.deepEqual(sent,['publish']);
-  assert.equal(queue.snapshot().active.find(item=>item.action==='publication-submit')?.scheduledAt,clock.now()+100);
-  await clock.advance(100);await submit;assert.deepEqual(sent,['publish','submit']);
+  const submit=queue.enqueue('publication-submit',{},async()=>{
+   sent.push('submit');await new Promise<void>(resolve=>{release=resolve;});return {publicationWork:{result:{submitted:true}}};
+  });
+  await clock.flush();assert.deepEqual(sent,['publish','submit']);
+  assert.equal(queue.snapshot().active.find(item=>item.action==='publication-submit')?.state,'running');
+  assert.deepEqual(queue.publicationQueue().active.map(item=>item.action),['publish']);
+  release();await submit;
+  assert.equal(queue.snapshot().publishPacing.nextPublishAt,clock.now()+100);
   await clock.advance(99);assert.deepEqual(sent,['publish','submit']);
   await clock.advance(1);await publish;assert.deepEqual(sent,['publish','submit','later']);
- }finally{queue.stop();await queue.drained();queue.close();f.cleanup();}
+ }finally{release();queue.stop();await queue.drained();queue.close();f.cleanup();}
 });
 
 test('Tieba live publish execution timeout preserves the next publish cooldown',async t=>{
@@ -407,13 +495,189 @@ test('Tieba pacing timers are unreferenced and cleared by both stop and close',a
  }finally{f.cleanup();}
 });
 
-function nonBlockingPublish(queue:TiebaOperationQueue,requestId:string,work:(signal:AbortSignal)=>Promise<any>){
- const input={action:'reply',forumId:'5',threadId:'123',content:requestId};
+function nonBlockingPublish(queue:TiebaOperationQueue,requestId:string,work:(signal:AbortSignal)=>Promise<any>,raw:unknown={action:'reply',forumId:'5',threadId:'123',content:requestId}){
+ const input=publishInput(raw);
  return queue.enqueue('publish',{...input,requestId},work,{payload:{requestId,input},key:'publish:'+requestId,returnImmediatelyIfQueued:true});
 }
 async function immediateReceipt(promise:Promise<any>,flush:()=>Promise<void>){
  return Promise.race([promise,flush().then(()=>{throw Error('queued receipt waited for background work');})]);
 }
+
+test('an equivalent draft with a new request ID reuses the queued or running item',async t=>{
+ const f=fixture(),clock=pacingClock(t),queue=new TiebaOperationQueue(path.join(f.root,'tieba'),queueLifecycle,clock.now,{publishIntervalMs:100});
+ let release:()=>void=()=>{},sent=0;
+ const first={action:'reply',forumId:'5',threadId:'123',content:'一份原稿'};
+ const same={content:' 一份原稿 ',forumId:'5',action:'reply',target:'https://tieba.baidu.com/p/123?pn=2'};
+ try{
+  const actual=nonBlockingPublish(queue,'first',async()=>{sent++;await new Promise<void>(resolve=>{release=resolve;});return {submitted:true};},first);
+  const before=await nonBlockingPublish(queue,'another-id',async()=>{throw Error('duplicate dispatched');},same);
+  assert.equal(before.queued,true);assert.equal(before.requestId,'first');assert.equal(before.reused,true);
+  await clock.flush();
+  const during=await nonBlockingPublish(queue,'third-id',async()=>{throw Error('duplicate dispatched');},same);
+  assert.equal(during.state,'running');assert.equal(during.requestId,'first');assert.equal(during.reused,true);
+  assert.deepEqual(queue.publicationQueue().counts,{queued:0,running:1});
+  release();await actual;assert.equal(sent,1);
+ }finally{release();queue.stop();await queue.drained();queue.close();f.cleanup();}
+});
+
+test('existing platform challenge and durable submission states refuse new queue items for the same draft',async t=>{
+ const f=fixture(),clock=pacingClock(t),dir=path.join(f.root,'tieba'),account='55';
+ const queue=new TiebaOperationQueue(dir,{...queueLifecycle,accountId:()=>account},clock.now,{publishIntervalMs:100});
+ const posting=new TiebaPosting(dir),db=new DatabaseSync(path.join(dir,'actions.sqlite'));
+ try{
+  const insert=db.prepare('INSERT INTO tieba_actions(id,account,fingerprint,state,request,result,created) VALUES (?,?,?,?,?,?,?)');
+  for(const state of ['challenge','held','unknown','accepted','confirmed','deleted']){
+   const draft=publishInput({action:'reply',forumId:'5',threadId:'123',content:'原稿 '+state});
+   const original='original-'+state,receipt=state==='challenge'?{error:'TIEBA_PUBLICATION_CHALLENGE',submitted:false}:{};
+   insert.run(original,account,publicationDraftFingerprint(draft,account),state==='challenge'?'rejected':state,JSON.stringify(draft),JSON.stringify(receipt),clock.now());
+   if(state==='challenge')queue.pauseForVerification(original);
+   const result=await nonBlockingPublish(queue,'retry-'+state,async()=>{throw Error('duplicate dispatched');},draft);
+   assert.equal(result.requestId,original);assert.equal(result.existingState,state);assert.equal(result.deliveryStatus,'skipped');
+   assert.equal(result.submitted,false);assert.equal(result.queued,false);assert.match(result.notice,/请勿重复提交/);
+  }
+  assert.deepEqual(queue.publicationQueue().counts,{queued:0,running:0});
+  const queued=await nonBlockingPublish(queue,'unrelated',async()=>{throw Error('paused job dispatched');});
+  assert.match(queued.notice,/后台排队.*主人处理/);
+  assert.match(queued.notice,/无需原地等待.*不用反复调用 check_tieba_publication.*finish_exploration/);
+  assert.equal(queue.publicationQueue().counts.queued,1);
+ }finally{posting.close();db.close();queue.stop();await queue.drained();queue.close();f.cleanup();}
+});
+
+test('live slider acceptance removes an old duplicate and starts a fresh two-minute interval before automatic release',async t=>{
+ const f=fixture(),dir=path.join(f.root,'tieba'),clock=pacingClock(t),identity={id:'55',name:'测试账号'};
+ const queue=new TiebaOperationQueue(dir,{...queueLifecycle,accountId:()=>identity.id},clock.now,{publishIntervalMs:120_000});
+ const draft=publishInput({action:'reply',forumId:'5',threadId:'123',content:'原回复'}),forum={id:'5',name:'测试吧'};
+ const challenge={transport:'official_web',challenge:true,accepted:false,httpAttempts:1};
+ const reader={followed:async()=>[forum],read:async()=>({status:'empty',forum,thread:{id:draft.threadId},posts:[]})};
+ const posting=new TiebaPosting(dir);
+ let beginSlider:()=>void=()=>{},completeSlider:()=>void=()=>{},nativePending=false,monitoredRequestId:string|undefined;
+ const browser:AccountBrowser={...reader,async identity(){return identity;},async login(){},async close(){},async frame(){return Buffer.alloc(0);},
+  async prepareWebPost(plan){monitoredRequestId=plan.traceId;},async input(){beginSlider();},
+  operationInfo:()=>({monitoredRequestId,stage:nativePending?'await_publication_response':'browser_operation'}),
+  async submitWebPost(before,outcome){
+   before();outcome({error:'TIEBA_PUBLICATION_CHALLENGE',receipt:challenge});
+   beginSlider=()=>{before();nativePending=true;};
+   completeSlider=()=>{nativePending=false;outcome({id:'302',receipt:{transport:'official_web',accepted:true,httpAttempts:2}});};
+   throw new AppPostFailure('TIEBA_PUBLICATION_CHALLENGE',challenge);
+  },
+ };
+ fs.writeFileSync(path.join(dir,'installed.json'),'{}');
+ const policy={mode:'live' as const,accountId:identity.id};
+ fs.writeFileSync(path.join(dir,'publishing.json'),JSON.stringify(policy));
+ const session=new TiebaSessionManager(dir,async()=>browser,clock.now);
+ session.setPublicationChallenge(id=>queue.pauseForVerification(id));
+ session.setPublicationAccepted((id,input,source)=>queue.recordPublication(id,input,source));
+ const db=new DatabaseSync(path.join(dir,'actions.sqlite')),sent:string[]=[];
+ try{
+  queue.pauseForVerification('original');
+  db.prepare("INSERT INTO tieba_operations(id,action,state,created,metadata,payload,draft_fingerprint) VALUES ('legacy','publish','queued',?,?,?,?)")
+   .run(clock.now(),JSON.stringify({...draft,requestId:'stale-copy'}),JSON.stringify({requestId:'stale-copy',input:draft}),publicationDraftFingerprint(draft));
+  queue.restore(async payload=>{sent.push(payload.requestId);return {submitted:true};});
+  await nonBlockingPublish(queue,'other-draft',async()=>{sent.push('other-draft');return {submitted:true};});
+  await posting.publish(draft,'original',identity,policy,reader,async()=>{throw new AppPostFailure('TIEBA_PUBLICATION_CHALLENGE',challenge);});
+  await session.startPublication('original');
+  const humanId=session.status().publicationWork!.requestId;
+  await queue.enqueue('publication-submit',{requestId:humanId},signal=>session.withOperationSignal(signal,()=>session.submitPublication()));
+  assert.equal(session.status().publicationWork?.stage,'challenge');
+  await clock.advance(160_000);
+  await queue.enqueue('input',{},signal=>session.withOperationSignal(signal,()=>session.input({kind:'drag',x:10,y:10,toX:50,toY:10})));
+  assert.equal(session.publicationResponsePending('original'),true);
+  await clock.advance(1000);assert.deepEqual(sent,[]);
+  completeSlider();
+  assert.equal(session.publicationResponsePending('original'),false);
+  assert.equal(session.status().publicationWork?.stage,'accepted');
+  assert.equal(queue.publicationFallback('stale-copy')?.state,'cancelled');
+  assert.equal(queue.publicationFallback('stale-copy')?.duplicateOf,humanId);
+  assert.equal(queue.publicationQueue().counts.queued,1);
+  const meta=db.prepare('SELECT value FROM tieba_queue_meta WHERE key=?');
+  assert.equal(Number(meta.get('last_publish_at')?.value),clock.now());
+  assert.equal(Number(meta.get('next_publish_at')?.value),clock.now()+120_000);
+  const pause=queue.publicationQueue().publishPacing.verificationPause!;
+  assert.equal(pause.requestId,'original');
+  assert.equal(queue.resumePublications(pause).resumed,true);
+  await clock.advance(119_999);assert.deepEqual(sent,[]);
+  await clock.advance(1);assert.deepEqual(sent,['other-draft']);
+ }finally{await session.close();posting.close();db.close();queue.stop();await queue.drained();queue.close();f.cleanup();}
+});
+
+test('a late 1989003 from the native slider schedules a single readback and records confirmation',async t=>{
+ const f=fixture(),dir=path.join(f.root,'tieba'),who={id:'55',name:'测试账号'},forum={id:'5',name:'测试吧'};
+ const queue=new TiebaOperationQueue(dir,{...queueLifecycle,accountId:()=>who.id},Date.now,{publishIntervalMs:120_000});
+ const draft=publishInput({action:'reply',forumId:forum.id,threadId:'123',content:'滑块后核对原稿'});
+ const policy={mode:'live' as const,accountId:who.id};
+ const challenge={transport:'official_web',challenge:true,accepted:false,httpAttempts:1};
+ const checked:string[]=[],accepted:string[]=[],readbacks:Promise<any>[]=[];
+ let sends=0,complete=()=>{};
+ const browser={
+  async identity(){return who;},async login(){},async close(){},async frame(){return Buffer.alloc(0);},async input(){},
+  async followed(){return [forum];},async prepareWebPost(){},async read(){return {status:'empty',forum,thread:{id:draft.threadId},posts:[]};},
+  async submitWebPost(before,outcome){
+   before();sends++;outcome({error:'TIEBA_PUBLICATION_CHALLENGE',receipt:challenge});
+   complete=()=>{
+    before();sends++;
+    const native=webPostResponse(Buffer.from('{"error_code":1989003,"error_msg":"数据加载失败"}'),200);
+    outcome({...native,receipt:{...native.receipt,httpAttempts:2}});
+   };
+   throw new AppPostFailure('TIEBA_PUBLICATION_CHALLENGE',challenge);
+  },
+ } satisfies AccountBrowser;
+ const verify=TiebaPosting.prototype.verify;
+ t.mock.method(TiebaPosting.prototype,'verify',function(this:TiebaPosting,id:string,identity:typeof who,reader:Parameters<typeof verify>[2],automatic:boolean){
+  return verify.call(this,id,identity,{...reader,async publicRead(url:string){
+   checked.push(url);
+   return {status:'content',forum,posts:[{id:'7614',author:who,content:draft.content,publishedAt:new Date().toISOString()}]};
+  }},automatic);
+ });
+ fs.writeFileSync(path.join(dir,'installed.json'),'{}');
+ fs.writeFileSync(path.join(dir,'publishing.json'),JSON.stringify(policy));
+ const session=new TiebaSessionManager(dir,async()=>browser),posting=new TiebaPosting(dir);
+ session.setPublicationReadback(id=>{
+  readbacks.push(queue.enqueue('verify',{requestId:id},signal=>session.withOperationSignal(signal,()=>session.verifyPublication(id,true))));
+ });
+ session.setPublicationAccepted((id,input,source)=>{accepted.push(id);queue.recordPublication(id,input,source);});
+ try{
+  await posting.publish(draft,'original',who,policy,browser,async()=>{throw new AppPostFailure('TIEBA_PUBLICATION_CHALLENGE',challenge);});
+  await session.startPublication('original');
+  const id=session.status().publicationWork!.requestId;
+  await session.submitPublication();
+  assert.equal(session.status().publicationWork?.stage,'challenge');
+  assert.equal(readbacks.length,0);
+  complete();
+  assert.equal(readbacks.length,1);
+  const result=await readbacks[0];
+  assert.equal(result.deliveryStatus,'confirmed');
+  assert.equal(result.receipt.errorCode,1989003);
+  assert.deepEqual(checked,['https://tieba.baidu.com/p/123']);
+  assert.deepEqual(accepted,[id]);
+  assert.equal(session.status().publicationWork?.stage,'confirmed');
+  assert.equal(sends,2,'only the initial click and the human slider dispatch');
+  assert.ok(queue.publicationQueue().publishPacing.nextPublishAt!>Date.now());
+ }finally{await session.close();posting.close();queue.stop();await queue.drained();queue.close();f.cleanup();}
+});
+
+test('cancelling a queued publication persists a terminal receipt and never interrupts the running one',async t=>{
+ const f=fixture(),clock=pacingClock(t),dir=path.join(f.root,'tieba');
+ let queue=new TiebaOperationQueue(dir,queueLifecycle,clock.now,{publishIntervalMs:100});
+ let release:()=>void=()=>{},runningSignal:AbortSignal|undefined;
+ const sent:string[]=[];
+ try{
+  const running=nonBlockingPublish(queue,'working',async signal=>{runningSignal=signal;await new Promise<void>(resolve=>{release=resolve;});sent.push('working');return {submitted:true};});
+  await clock.flush();
+  await nonBlockingPublish(queue,'cancel-me',async()=>{sent.push('unexpected');return {submitted:true};});
+  const [active,waiting]=queue.publicationQueue().active;
+  assert.deepEqual(queue.cancelPublication(active.id),{cancelled:false,state:'running'});
+  assert.equal(runningSignal?.aborted,false);
+  assert.deepEqual(queue.cancelPublication(waiting.id),{cancelled:true,state:'cancelled'});
+  assert.equal(queue.publicationQueue().counts.queued,0);
+  assert.equal(queue.publicationFallback('cancel-me')?.requestSent,false);
+  release();await running;await clock.flush();queue.close();
+  queue=new TiebaOperationQueue(dir,queueLifecycle,clock.now,{publishIntervalMs:100});
+  queue.restore(async()=>{sent.push('restored-cancelled');return {submitted:true};});
+  const sameId=await nonBlockingPublish(queue,'cancel-me',async()=>{sent.push('retried-cancelled');return {submitted:true};});
+  assert.equal(sameId.deliveryStatus,'cancelled');assert.equal(sameId.reused,true);
+  await clock.advance(100);assert.deepEqual(sent,['working']);
+ }finally{release();queue.stop();await queue.drained();queue.close();f.cleanup();}
+});
 
 test('non-blocking publish still waits for the real receipt when idle and deduplicates a running request',async t=>{
  const f=fixture(),clock=pacingClock(t),queue=new TiebaOperationQueue(path.join(f.root,'tieba'),queueLifecycle,clock.now,{publishIntervalMs:100});
@@ -450,6 +714,7 @@ test('queued publish receipts return immediately, persist payloads and automatic
   assert.deepEqual(queue.publicationQueue().active.map(item=>[item.queuePosition,item.scheduledAt,item.metadata.content]),[[1,scheduledAt,'second']]);
   for(const [key,value] of Object.entries({queued:true,deliveryStatus:'queued',submissionStatus:'queued',submitted:false,published:false,requestId:'second',action:'publish',queuePosition:1,scheduledAt,retryScheduled:false}))assert.equal(second[key],value,key);
   assert.match(second.notice,/1分钟到1分20秒随机间隔排队/);assert.match(second.notice,/勿重试勿重复发/);assert.equal(second.error,undefined);
+  assert.match(second.notice,/无需原地等待.*不用反复调用 check_tieba_publication.*finish_exploration/);
   const third=await immediateReceipt(nonBlockingPublish(queue,'third',()=>send('third')),clock.flush);
   assert.equal(third.queuePosition,2);assert.equal(third.scheduledAt,scheduledAt+70_000,'later slots estimate the middle of the random window');
   // A fourth call for the second request is a receipt lookup, not another job.

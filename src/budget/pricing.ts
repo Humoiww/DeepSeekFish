@@ -1,5 +1,7 @@
 import {FishError,type Usage} from '../types.js';
 import {inputCache} from '../usage.js';
+import type {ApiProvider} from '../config.js';
+import type {OpenCodeModelInfo} from '../provider/opencode.js';
 
 // CNY tariff checked 2026-11-05. Store this snapshot with each reservation.
 export const PRICE_SOURCE='https://api-docs.deepseek.com/zh-cn/quick_start/pricing/';
@@ -11,20 +13,35 @@ export const networkPricing=(_model?:string)=>({currency:'CNY' as const,cnyPerRe
 // https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm
 // Weekends stay off-peak even on make-up workdays, per DeepSeek's tariff.
 const holidays:Record<string,[string,string][]>= {'2026':[['01-01','01-03'],['02-15','02-23'],['04-04','04-06'],['05-01','05-05'],['06-19','06-21'],['09-25','09-27'],['10-01','10-07']]};
-export interface PriceSnapshot {currency:'CNY';version:string;source:string;model:string;at:number;period:'peak'|'off_peak';calendarKnown:boolean;cachedNano:number;uncachedNano:number;outputNano:number}
+export interface PriceSnapshot {currency:'CNY';version:string;source:string;model:string;at:number;period:'peak'|'off_peak';calendarKnown:boolean;cachedNano:number;uncachedNano:number;outputNano:number;
+ provider?:ApiProvider;usdToCny?:number;pricingSource?:'catalog'|'fallback'}
 export interface ChargeReceipt {reservationId:string;currency:'CNY';amountCny:number;status:'held'|'confirmed'|'estimated'|'unknown'|'refunded';pricing:PriceSnapshot|{currency:'CNY';cnyPerRequest:number;source:string};usage?:Usage}
-export function modelPricing(model:string,at=Date.now()):PriceSnapshot{
+export const openCodeFallbackPrices={input:1,cacheRead:0.1,output:4} as const;
+export function modelPricing(model:string,at=Date.now(),connection?:{provider:ApiProvider;usdToCny:number;info?:OpenCodeModelInfo}):PriceSnapshot{
+ if(connection?.provider==='opencode_go'){
+  const {usdToCny,info}=connection,multiplier=info?.maxPriceMultiplier??1;
+  const input=info?.inputUsdPerMillion??openCodeFallbackPrices.input;
+  const output=info?.outputUsdPerMillion??openCodeFallbackPrices.output;
+  const cached=info?.cacheReadUsdPerMillion??(info?.inputUsdPerMillion!==undefined?input:openCodeFallbackPrices.cacheRead);
+  // Go publishes variable rates on some models. Use their highest listed
+  // multiplier and label that estimate. Go does not use DeepSeek peak hours.
+  const rate=(usd:number)=>Math.ceil(cnyUnits(usd*usdToCny*multiplier)/1_000_000);
+  const pricingSource=info?.pricingSource??'fallback';
+  return {currency:'CNY',version:'opencode-go-cny-v1',source:'opencode_go',provider:'opencode_go',model,at,period:'peak',
+   calendarKnown:pricingSource==='catalog'&&multiplier===1,usdToCny,pricingSource,
+   cachedNano:rate(cached),uncachedNano:rate(input),outputNano:rate(output)};
+ }
  const pro=model==='deepseek-v4-pro';
  if(!pro&&!['deepseek-flash','deepseek-v4-flash','deepseek-v4-flash-vision-exp'].includes(model))throw new FishError('MODEL_PRICE_UNKNOWN');
  const d=new Date(at+8*3600000),day=d.toISOString().slice(0,10),calendar=holidays[day.slice(0,4)],hour=d.getUTCHours();
  const holiday=calendar?.some(([a,b])=>day.slice(5)>=a&&day.slice(5)<=b)??false;
  const peak=d.getUTCDay()>=1&&d.getUTCDay()<=5&&!holiday&&(hour>=9&&hour<12||hour>=14&&hour<18);
  const factor=peak?1:0.5;
- return {currency:'CNY',version:PRICE_VERSION,source:PRICE_SOURCE,model,at,period:peak?'peak':'off_peak',calendarKnown:!!calendar||!peak,
+ return {currency:'CNY',version:PRICE_VERSION,source:PRICE_SOURCE,provider:'deepseek',model,at,period:peak?'peak':'off_peak',calendarKnown:!!calendar||!peak,
   cachedNano:(pro?300:40)*factor,uncachedNano:(pro?9000:2000)*factor,outputNano:(pro?27000:8000)*factor};
 }
 /** Reserve the maximum tariff, including a call crossing a price boundary. */
-export function modelReservation(price:PriceSnapshot,input:number,output:number){const factor=price.period==='peak'?1:2;return checked((input*price.uncachedNano+output*price.outputNano)*factor);}
+export function modelReservation(price:PriceSnapshot,input:number,output:number){const factor=price.period==='peak'?1:2;return checked((input*Math.max(price.cachedNano,price.uncachedNano)+output*price.outputNano)*factor);}
 export function modelCost(price:PriceSnapshot,usage:Usage){
  const cache=inputCache(usage.input,usage.cachedInput,usage.uncachedInput),known=cache.cachedInput!==undefined;
  const amount=checked((cache.cachedInput??0)*price.cachedNano+(cache.uncachedInput??usage.input)*price.uncachedNano+usage.output*price.outputNano);
